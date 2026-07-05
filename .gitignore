@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build
+/.swiftpm
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcresult
+
+# Model weights are downloaded at runtime, never committed
+/Models/
