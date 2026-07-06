@@ -72,8 +72,8 @@ import VideoUnderstanding
     #expect(paragraphs == [
         "Kitchen Demo",
         "A two-shot cooking demo.",
-        "Shot 1 (0s-4s)\nNarration: Start with the sauce.\nVisual: Close-up of sauce simmering.\nPacing: Warm intro",
-        "Shot 2 (5s-8.3s)\nNarration: Then plate the noodles.\nVisual: A bowl slides into frame.\nPacing: Quick payoff"
+        "## 分镜 1 (0s–4s)\n台词: Start with the sauce.\n画面: Close-up of sauce simmering.\n节奏: Warm intro",
+        "## 分镜 2 (5s–8.3s)\n台词: Then plate the noodles.\n画面: A bowl slides into frame.\n节奏: Quick payoff"
     ])
 }
 
@@ -106,9 +106,9 @@ import VideoUnderstanding
 
     let text = ScriptRendering.indexableText(script)
 
-    #expect(!text.contains("Narration: \n"))
-    #expect(!text.contains("Narration:  "))
-    #expect(!text.contains("Pacing: \n"))
-    #expect(text.contains("Visual: A quiet cutaway to the street outside."))
-    #expect(text.contains("Visual: The presenter returns to camera."))
+    #expect(!text.contains("台词: \n"))
+    #expect(!text.contains("台词:  "))
+    #expect(!text.contains("节奏: \n"))
+    #expect(text.contains("画面: A quiet cutaway to the street outside."))
+    #expect(text.contains("画面: The presenter returns to camera."))
 }

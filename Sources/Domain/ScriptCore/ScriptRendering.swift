@@ -6,17 +6,17 @@ public enum ScriptRendering {
 
         for shot in script.shots.sorted(by: { $0.index < $1.index }) {
             var lines = [
-                "Shot \(shot.index + 1) (\(formatSeconds(shot.startSeconds))-\(formatSeconds(shot.endSeconds)))"
+                "## 分镜 \(shot.index + 1) (\(formatSeconds(shot.startSeconds))–\(formatSeconds(shot.endSeconds)))"
             ]
 
             if let narration = shot.narration?.trimmedForIndexing, !narration.isEmpty {
-                lines.append("Narration: \(narration)")
+                lines.append("台词: \(narration)")
             }
 
-            lines.append("Visual: \(shot.visualDescription.trimmedForIndexing)")
+            lines.append("画面: \(shot.visualDescription.trimmedForIndexing)")
 
             if let pacingNote = shot.pacingNote?.trimmedForIndexing, !pacingNote.isEmpty {
-                lines.append("Pacing: \(pacingNote)")
+                lines.append("节奏: \(pacingNote)")
             }
 
             blocks.append(lines.joined(separator: "\n"))
