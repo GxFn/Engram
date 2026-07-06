@@ -20,6 +20,8 @@ let package = Package(
         .library(name: "RAGCore", targets: ["RAGCore"]),
         .library(name: "ClipCore", targets: ["ClipCore"]),
         .library(name: "MetricsKit", targets: ["MetricsKit"]),
+        .library(name: "VideoUnderstanding", targets: ["VideoUnderstanding"]),
+        .library(name: "ScriptCore", targets: ["ScriptCore"]),
         .library(name: "MLXEngine", targets: ["MLXEngine"]),
         .library(name: "FMEngine", targets: ["FMEngine"]),
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
@@ -43,6 +45,12 @@ let package = Package(
         .target(name: "RAGCore", path: "Sources/Domain/RAGCore"),
         .target(name: "ClipCore", path: "Sources/Domain/ClipCore"),
         .target(name: "MetricsKit", path: "Sources/Domain/MetricsKit"),
+        .target(name: "VideoUnderstanding", path: "Sources/Domain/VideoUnderstanding"),
+        .target(
+            name: "ScriptCore",
+            dependencies: ["VideoUnderstanding"],
+            path: "Sources/Domain/ScriptCore"
+        ),
 
         // MARK: - Shared kits
         .target(name: "AppGroupSupport", path: "Sources/Shared/AppGroupSupport"),
@@ -195,6 +203,8 @@ let package = Package(
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
         .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence"], path: "Tests/PersistenceTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
+        .testTarget(name: "VideoUnderstandingTests", dependencies: ["VideoUnderstanding"], path: "Tests/VideoUnderstandingTests"),
+        .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
         .testTarget(name: "VectorStoreSQLiteTests", dependencies: ["VectorStoreSQLite", "RAGCore"], path: "Tests/VectorStoreSQLiteTests"),
