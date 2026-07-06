@@ -152,11 +152,15 @@ public actor ClipDigestService: ClipDigesting {
         self.now = now
     }
 
-    public static func live(modelContainer: ModelContainer) throws -> ClipDigestService {
+    public static func live(
+        modelContainer: ModelContainer,
+        indexer: (any ClipDigestIndexing)? = nil
+    ) throws -> ClipDigestService {
         let locations = try EngramAppGroup.locations()
         return ClipDigestService(
             queueStore: ClipQueueStore(locations: locations),
-            recordStore: ClipRecordStore(modelContainer: modelContainer)
+            recordStore: ClipRecordStore(modelContainer: modelContainer),
+            indexer: indexer ?? DigestPreviewIndexer()
         )
     }
 

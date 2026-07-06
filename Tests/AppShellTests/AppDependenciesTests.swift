@@ -1,11 +1,14 @@
 import AppShell
+import AskFeature
 import ClipCore
 import ClipDigest
 import ClipPipeline
 import EngineKit
 import Foundation
+import MemoryFeature
 import ModelStore
 import Persistence
+import RAGCore
 import SwiftData
 import Testing
 
@@ -129,6 +132,47 @@ import Testing
     #expect(scheduler.hasRegisteredHandler)
 }
 
+@MainActor
+@Test func appShellBuildsAskViewModelWithInjectedRetrieverAndCitationRoute() async {
+    let citation = CitationRef(
+        chunkID: "chunk-route",
+        clipID: "clip-route",
+        snippet: "Route snippet"
+    )
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        activeModel: ModelCatalog.qwen3_1_7B_4bit,
+        defaults: nil,
+        retriever: FakeRetriever(results: [
+            RetrievedChunk(
+                chunk: Chunk(
+                    id: "chunk-route",
+                    clipID: "clip-route",
+                    text: "Route evidence",
+                    indexInClip: 0,
+                    preview: "Route snippet"
+                ),
+                score: 0.04,
+                citation: citation
+            ),
+        ])
+    )
+    let ask = dependencies.makeAskViewModel()
+
+    guard let task = ask.send("Route?") else {
+        Issue.record("Expected Ask send to start")
+        return
+    }
+
+    await task.value
+
+    #expect(ask.messages[1].citations == [citation])
+
+    let target = AppDependencies.memoryNavigationTarget(for: citation)
+    #expect(target.clipID == "clip-route")
+    #expect(target.chunkID == "chunk-route")
+}
+
 private func makeDefaults() -> UserDefaults {
     let suiteName = "EngramAppShellTests-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
@@ -181,5 +225,17 @@ private final class FakeBackgroundScheduler: ClipDigestBackgroundScheduling, @un
     func submit() -> Bool {
         submitCallCount += 1
         return true
+    }
+}
+
+private actor FakeRetriever: Retriever {
+    private let results: [RetrievedChunk]
+
+    init(results: [RetrievedChunk]) {
+        self.results = results
+    }
+
+    func retrieve(question: String, topK: Int) async throws -> [RetrievedChunk] {
+        Array(results.prefix(topK))
     }
 }

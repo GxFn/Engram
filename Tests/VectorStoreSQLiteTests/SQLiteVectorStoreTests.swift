@@ -118,6 +118,25 @@ import Testing
     #expect(keywordResults.map(\.chunkID) == ["chunk-070"])
 }
 
+@Test func vectorStoreResolvesIndexedChunksForCitations() async throws {
+    let url = temporaryDatabaseURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let store = SQLiteVectorStore(
+        configuration: .file(url, embeddingEngineID: "test-embedding", expectedDimension: 3)
+    )
+    let chunks = makeChunks()
+
+    try await store.upsert(vectorEntries(for: chunks))
+
+    let resolved = try await store.resolve(chunkIDs: ["chunk-042", "missing", "chunk-007"])
+
+    #expect(resolved["chunk-042"]?.clipID == "clip-a")
+    #expect(resolved["chunk-042"]?.preview?.contains("中文子串") == true)
+    #expect(resolved["chunk-007"]?.startOffset == 70)
+    #expect(resolved["missing"] == nil)
+}
+
 private func temporaryDatabaseURL() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("engram-sqlite-\(UUID().uuidString)")

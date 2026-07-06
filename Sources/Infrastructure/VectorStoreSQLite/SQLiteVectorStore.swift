@@ -76,7 +76,7 @@ public enum SQLiteIndexError: Error, Sendable, Equatable, CustomStringConvertibl
 
 /// Dense index backed by statically linked SQLite + sqlite-vec. The concrete
 /// database URL is injected by the app composition root in a later package.
-public actor SQLiteVectorStore: VectorStore {
+public actor SQLiteVectorStore: VectorStore, ChunkResolver {
     private let configuration: SQLiteIndexConfiguration
     private let database: SQLiteConnection
     private var schemaReady = false
@@ -213,6 +213,35 @@ public actor SQLiteVectorStore: VectorStore {
             )
             try pruneChunksWithoutIndexes(clipID: clipID)
         }
+    }
+
+    public func resolve(chunkIDs: [String]) async throws -> [String: Chunk] {
+        guard !chunkIDs.isEmpty else {
+            return [:]
+        }
+
+        try ensureSchema()
+        let placeholders = Array(repeating: "?", count: chunkIDs.count).joined(separator: ", ")
+        let chunks = try database.query(
+            sql: """
+            SELECT chunk_id, clip_id, text, index_in_clip, start_offset, end_offset, preview
+            FROM engram_chunks
+            WHERE chunk_id IN (\(placeholders))
+            """,
+            bindings: chunkIDs.map(SQLiteBinding.text)
+        ) { statement in
+            Chunk(
+                id: try statement.text(at: 0),
+                clipID: try statement.text(at: 1),
+                text: try statement.text(at: 2),
+                indexInClip: try statement.int(at: 3),
+                startOffset: try statement.optionalInt(at: 4),
+                endOffset: try statement.optionalInt(at: 5),
+                preview: try statement.optionalText(at: 6)
+            )
+        }
+
+        return Dictionary(uniqueKeysWithValues: chunks.map { ($0.id, $0) })
     }
 
     private func ensureSchema() throws {
@@ -764,8 +793,22 @@ private final class SQLiteStatement {
         return String(cString: value)
     }
 
+    func optionalText(at index: Int32) throws -> String? {
+        guard sqlite3_column_type(raw, index) != SQLITE_NULL else {
+            return nil
+        }
+        return try text(at: index)
+    }
+
     func int(at index: Int32) throws -> Int {
         Int(try int64(at: index))
+    }
+
+    func optionalInt(at index: Int32) throws -> Int? {
+        guard sqlite3_column_type(raw, index) != SQLITE_NULL else {
+            return nil
+        }
+        return try int(at: index)
     }
 
     func int64(at index: Int32) throws -> Int64 {

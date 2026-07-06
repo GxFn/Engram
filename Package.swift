@@ -151,19 +151,34 @@ let package = Package(
                 "BenchFeature",
                 "SettingsFeature",
                 "EngineKit",
+                "RAGCore",
                 "ClipDigest",
+                "EmbeddingMLX",
                 "MLXEngine",
                 "ModelStore",
                 "Persistence",
+                "VectorStoreSQLite",
+                "AppGroupSupport",
             ],
             path: "Sources/AppShell"
         ),
 
         // MARK: - Tests
-        .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit"], path: "Tests/AskFeatureTests"),
+        .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit", "RAGCore"], path: "Tests/AskFeatureTests"),
         .testTarget(
             name: "AppShellTests",
-            dependencies: ["AppShell", "EngineKit", "ModelStore", "ClipCore", "ClipDigest", "ClipPipeline", "Persistence"],
+            dependencies: [
+                "AppShell",
+                "AskFeature",
+                "EngineKit",
+                "RAGCore",
+                "MemoryFeature",
+                "ModelStore",
+                "ClipCore",
+                "ClipDigest",
+                "ClipPipeline",
+                "Persistence",
+            ],
             path: "Tests/AppShellTests"
         ),
         .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit"], path: "Tests/BenchFeatureTests"),

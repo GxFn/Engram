@@ -35,15 +35,26 @@ public struct RootView: View {
 }
 
 private struct RootContent: View {
+    private enum RootTab: Hashable {
+        case memory
+        case ask
+        case bench
+    }
+
     @Environment(\.deps) private var dependencies
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarded") private var onboarded = false
+    @State private var selectedTab: RootTab = .memory
+    @State private var memoryNavigationTarget: MemoryNavigationTarget?
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack {
                 if let dependencies {
-                    MemoryView(viewModel: dependencies.makeMemoryViewModel())
+                    MemoryView(
+                        viewModel: dependencies.makeMemoryViewModel(),
+                        navigationTarget: $memoryNavigationTarget
+                    )
                         .toolbar { settingsToolbar }
                 } else {
                     ContentUnavailableView("Memory", systemImage: "tray.full")
@@ -51,19 +62,20 @@ private struct RootContent: View {
                 }
             }
                 .tabItem { Label("Memory", systemImage: "tray.full") }
+                .tag(RootTab.memory)
 
             NavigationStack {
                 if let dependencies {
-                    AskView(
-                        engine: dependencies.activeEngine,
-                        model: dependencies.activeModel,
-                        generationConfig: dependencies.generationConfig
-                    )
+                    AskView(viewModel: dependencies.makeAskViewModel()) { citation in
+                        memoryNavigationTarget = AppDependencies.memoryNavigationTarget(for: citation)
+                        selectedTab = .memory
+                    }
                     .id(consumerIdentity(for: dependencies))
                     .toolbar { settingsToolbar }
                 }
             }
                 .tabItem { Label("Ask", systemImage: "questionmark.bubble") }
+                .tag(RootTab.ask)
 
             NavigationStack {
                 if let dependencies {
@@ -77,6 +89,7 @@ private struct RootContent: View {
                 }
             }
                 .tabItem { Label("Bench", systemImage: "gauge.with.dots.needle.67percent") }
+                .tag(RootTab.bench)
         }
         .sheet(isPresented: onboardingPresented) {
             if let dependencies {

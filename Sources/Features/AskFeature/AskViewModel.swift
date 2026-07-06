@@ -1,10 +1,31 @@
 import EngineKit
 import Foundation
 import Observation
+import RAGCore
+
+public struct AskRetrievalConfiguration: Sendable, Hashable {
+    public var resultLimit: Int
+    public var minimumScore: Double
+    public var promptTokenBudget: Int?
+
+    public init(
+        resultLimit: Int = 8,
+        minimumScore: Double = 0.015,
+        promptTokenBudget: Int? = nil
+    ) {
+        self.resultLimit = resultLimit
+        self.minimumScore = minimumScore
+        self.promptTokenBudget = promptTokenBudget
+    }
+
+    public static let `default` = AskRetrievalConfiguration()
+}
 
 @MainActor
 @Observable
 public final class AskViewModel {
+    public nonisolated static let noSupportingClipsMessage = "你的剪藏里没有这条"
+
     public struct DisplayMessage: Identifiable, Sendable {
         public enum Role: Sendable {
             case user
@@ -17,6 +38,7 @@ public final class AskViewModel {
         public var metrics: GenerationMetrics?
         public var finishReason: FinishReason?
         public var errorMessage: String?
+        public var citations: [CitationRef]
         public let createdAt: Date
 
         public init(
@@ -26,6 +48,7 @@ public final class AskViewModel {
             metrics: GenerationMetrics? = nil,
             finishReason: FinishReason? = nil,
             errorMessage: String? = nil,
+            citations: [CitationRef] = [],
             createdAt: Date = Date()
         ) {
             self.id = id
@@ -34,6 +57,7 @@ public final class AskViewModel {
             self.metrics = metrics
             self.finishReason = finishReason
             self.errorMessage = errorMessage
+            self.citations = citations
             self.createdAt = createdAt
         }
     }
@@ -47,6 +71,8 @@ public final class AskViewModel {
 
     @ObservationIgnored private let engine: any LLMEngine
     @ObservationIgnored private let model: ModelIdentity
+    @ObservationIgnored private let retriever: (any Retriever)?
+    @ObservationIgnored private let retrievalConfiguration: AskRetrievalConfiguration
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private var loadedModelID: String?
 
@@ -54,10 +80,14 @@ public final class AskViewModel {
         engine: any LLMEngine,
         model: ModelIdentity,
         generationConfig: GenerationConfig = .default,
+        retriever: (any Retriever)? = nil,
+        retrievalConfiguration: AskRetrievalConfiguration = .default,
         messages: [DisplayMessage] = []
     ) {
         self.engine = engine
         self.model = model
+        self.retriever = retriever
+        self.retrievalConfiguration = retrievalConfiguration
         self.generationConfig = generationConfig
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
@@ -72,7 +102,9 @@ public final class AskViewModel {
             return nil
         }
 
-        let requestMessages = chatTranscript(appendingUserText: text)
+        let directRequestMessages = retriever == nil
+            ? chatTranscript(appendingUserText: text)
+            : []
         let assistantID = UUID()
 
         messages.append(DisplayMessage(role: .user, text: text))
@@ -81,7 +113,11 @@ public final class AskViewModel {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.runGeneration(requestMessages, assistantID: assistantID)
+            if self.retriever == nil {
+                await self.runGeneration(directRequestMessages, assistantID: assistantID)
+            } else {
+                await self.runGroundedGeneration(question: text, assistantID: assistantID)
+            }
         }
         generationTask = task
         return task
@@ -133,6 +169,68 @@ public final class AskViewModel {
         }
     }
 
+    private func runGroundedGeneration(question: String, assistantID: UUID) async {
+        var receivedTerminalEvent = false
+
+        defer {
+            generationTask = nil
+            isGenerating = false
+        }
+
+        do {
+            try Task.checkCancellation()
+            guard let retriever else {
+                await runGeneration(chatTranscript(appendingUserText: question), assistantID: assistantID)
+                return
+            }
+
+            let retrieved = try await retriever.retrieve(
+                question: question,
+                topK: retrievalConfiguration.resultLimit
+            )
+            let grounded = retrieved.filter { $0.score >= retrievalConfiguration.minimumScore }
+
+            guard !grounded.isEmpty else {
+                markNoSupportingClips(assistantID)
+                return
+            }
+
+            try Task.checkCancellation()
+            try await ensureModelLoaded()
+            try Task.checkCancellation()
+
+            let prompt = try await buildGroundedPrompt(question: question, retrieved: grounded)
+            attachCitations(prompt.citations, to: assistantID)
+
+            let stream = await engine.generate(GenerationRequest(
+                messages: [ChatMessage(role: .user, content: prompt.text)],
+                config: generationConfig
+            ))
+            for try await event in stream {
+                switch event {
+                case .token(let text):
+                    appendAssistantText(text, to: assistantID)
+
+                case .finished(let reason, let metrics):
+                    receivedTerminalEvent = true
+                    finishAssistantMessage(assistantID, reason: reason, metrics: metrics)
+                }
+            }
+
+            if !receivedTerminalEvent, Task.isCancelled {
+                markAssistantCancelled(assistantID)
+            }
+        } catch is CancellationError {
+            if !receivedTerminalEvent {
+                markAssistantCancelled(assistantID)
+            }
+        } catch {
+            if !receivedTerminalEvent {
+                markAssistantError(assistantID, error: error)
+            }
+        }
+    }
+
     private func ensureModelLoaded() async throws {
         guard loadedModelID != model.id else {
             return
@@ -140,6 +238,86 @@ public final class AskViewModel {
 
         try await engine.load(model)
         loadedModelID = model.id
+    }
+
+    private struct GroundedPrompt: Sendable {
+        let text: String
+        let citations: [CitationRef]
+    }
+
+    private func buildGroundedPrompt(
+        question: String,
+        retrieved: [RetrievedChunk]
+    ) async throws -> GroundedPrompt {
+        let budget = promptTokenBudget()
+        var selected = Array(retrieved.prefix(max(retrievalConfiguration.resultLimit, 1)))
+        var prompt = Self.groundedPrompt(question: question, chunks: selected)
+
+        while selected.count > 1 {
+            let tokens = try await engine.countTokens(in: prompt)
+            if tokens <= budget {
+                return GroundedPrompt(text: prompt, citations: selected.map(\.citation))
+            }
+            selected.removeLast()
+            prompt = Self.groundedPrompt(question: question, chunks: selected)
+        }
+
+        if let first = selected.first {
+            var trimmedChunk = first
+            var text = first.chunk.text
+            while try await engine.countTokens(in: prompt) > budget, text.count > 160 {
+                text = String(text.prefix(max(160, text.count / 2)))
+                trimmedChunk = Self.replacingText(in: first, with: "\(text)...")
+                prompt = Self.groundedPrompt(question: question, chunks: [trimmedChunk])
+            }
+            return GroundedPrompt(text: prompt, citations: [first.citation])
+        }
+
+        return GroundedPrompt(text: Self.noSupportingClipsMessage, citations: [])
+    }
+
+    private func promptTokenBudget() -> Int {
+        if let promptTokenBudget = retrievalConfiguration.promptTokenBudget {
+            return max(promptTokenBudget, 1)
+        }
+
+        let contextAfterGeneration = model.contextLength - generationConfig.maxTokens - 128
+        return max(256, min(contextAfterGeneration, 4_096))
+    }
+
+    private nonisolated static func replacingText(
+        in result: RetrievedChunk,
+        with text: String
+    ) -> RetrievedChunk {
+        let chunk = Chunk(
+            id: result.chunk.id,
+            clipID: result.chunk.clipID,
+            text: text,
+            indexInClip: result.chunk.indexInClip,
+            startOffset: result.chunk.startOffset,
+            endOffset: result.chunk.endOffset,
+            preview: result.chunk.preview
+        )
+        return RetrievedChunk(chunk: chunk, score: result.score, citation: result.citation)
+    }
+
+    private nonisolated static func groundedPrompt(
+        question: String,
+        chunks: [RetrievedChunk]
+    ) -> String {
+        let numberedChunks = chunks.enumerated().map { index, result in
+            "[\(index + 1)] \(result.chunk.text)"
+        }.joined(separator: "\n\n")
+
+        return """
+        仅基于以上剪藏回答，引用编号。不要使用剪藏外信息；如果剪藏不足以回答，就回答“\(Self.noSupportingClipsMessage)”。
+
+        剪藏:
+        \(numberedChunks)
+
+        问题:
+        \(question)
+        """
     }
 
     private func chatTranscript(appendingUserText text: String) -> [ChatMessage] {
@@ -167,6 +345,19 @@ public final class AskViewModel {
     private func appendAssistantText(_ text: String, to id: UUID) {
         updateMessage(id) { message in
             message.text += text
+        }
+    }
+
+    private func attachCitations(_ citations: [CitationRef], to id: UUID) {
+        updateMessage(id) { message in
+            message.citations = citations
+        }
+    }
+
+    private func markNoSupportingClips(_ id: UUID) {
+        updateMessage(id) { message in
+            message.text = Self.noSupportingClipsMessage
+            message.finishReason = .stop
         }
     }
 

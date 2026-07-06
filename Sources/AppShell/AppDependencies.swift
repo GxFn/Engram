@@ -1,3 +1,4 @@
+import AskFeature
 import ClipDigest
 import EngramLogging
 import EngineKit
@@ -6,6 +7,7 @@ import MLXEngine
 import ModelStore
 import Observation
 import Persistence
+import RAGCore
 import SettingsFeature
 import SwiftData
 import SwiftUI
@@ -28,6 +30,7 @@ public final class AppDependencies {
     public var generationConfig: GenerationConfig
 
     @ObservationIgnored public let clipDigestService: ClipDigestService?
+    @ObservationIgnored public let retriever: (any Retriever)?
     @ObservationIgnored private let deviceCapability: DeviceCapability
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private let clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling
@@ -43,6 +46,7 @@ public final class AppDependencies {
         defaults: UserDefaults? = .standard,
         modelContainer: ModelContainer? = nil,
         clipDigestService: ClipDigestService? = nil,
+        retriever: (any Retriever)? = nil,
         clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler()
     ) {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
@@ -62,8 +66,9 @@ public final class AppDependencies {
                 ?? Self.storedGenerationConfig(defaults: defaults)
                 ?? .default
         )
-        self.clipDigestService = clipDigestService
-            ?? modelContainer.flatMap { try? ClipDigestService.live(modelContainer: $0) }
+        let retrievalServices = modelContainer.flatMap { try? RetrievalAssembly.makeServices(modelContainer: $0) }
+        self.clipDigestService = clipDigestService ?? retrievalServices?.clipDigestService
+        self.retriever = retriever ?? retrievalServices?.retriever
         self.deviceCapability = deviceCapability
         self.defaults = defaults
         self.clipDigestBackgroundScheduler = clipDigestBackgroundScheduler
@@ -164,6 +169,19 @@ public final class AppDependencies {
                 try await clipDigestService.retryFailedClip(id: id)
             }
         ))
+    }
+
+    public func makeAskViewModel() -> AskViewModel {
+        AskViewModel(
+            engine: activeEngine,
+            model: activeModel,
+            generationConfig: generationConfig,
+            retriever: retriever
+        )
+    }
+
+    public nonisolated static func memoryNavigationTarget(for citation: CitationRef) -> MemoryNavigationTarget {
+        MemoryNavigationTarget(clipID: citation.clipID, chunkID: citation.chunkID)
     }
 
     public func configureClipDigestTriggers() {

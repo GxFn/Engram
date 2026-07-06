@@ -6,6 +6,7 @@ public struct AppGroupLocations: Equatable, Sendable {
     public let storeURL: URL
     public let queueDirectory: URL
     public let modelsDirectory: URL
+    public let retrievalIndexURL: URL
     public let usesAppGroupContainer: Bool
 
     public init(
@@ -14,6 +15,7 @@ public struct AppGroupLocations: Equatable, Sendable {
         storeURL: URL,
         queueDirectory: URL,
         modelsDirectory: URL,
+        retrievalIndexURL: URL,
         usesAppGroupContainer: Bool
     ) {
         self.groupIdentifier = groupIdentifier
@@ -21,6 +23,7 @@ public struct AppGroupLocations: Equatable, Sendable {
         self.storeURL = storeURL
         self.queueDirectory = queueDirectory
         self.modelsDirectory = modelsDirectory
+        self.retrievalIndexURL = retrievalIndexURL
         self.usesAppGroupContainer = usesAppGroupContainer
     }
 }
@@ -28,6 +31,7 @@ public struct AppGroupLocations: Equatable, Sendable {
 public enum EngramAppGroup {
     public static let identifier = "group.com.gxfn.engram"
     public static let storeFileName = "Engram.store"
+    public static let retrievalIndexFileName = "EngramRetrieval.sqlite"
     public static let queueDirectoryName = "queue"
     public static let modelsDirectoryName = "Models"
     public static let fallbackDirectoryName = "Engram"
@@ -50,6 +54,7 @@ public enum EngramAppGroup {
             storeURL: rootDirectory.appendingPathComponent(storeFileName, isDirectory: false),
             queueDirectory: rootDirectory.appendingPathComponent(queueDirectoryName, isDirectory: true),
             modelsDirectory: rootDirectory.appendingPathComponent(modelsDirectoryName, isDirectory: true),
+            retrievalIndexURL: rootDirectory.appendingPathComponent(retrievalIndexFileName, isDirectory: false),
             usesAppGroupContainer: groupContainerURL != nil
         )
 

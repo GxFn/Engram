@@ -42,6 +42,17 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct MemoryNavigationTarget: Identifiable, Hashable, Sendable {
+    public var id: String { "\(clipID)#\(chunkID)" }
+    public let clipID: String
+    public let chunkID: String
+
+    public init(clipID: String, chunkID: String) {
+        self.clipID = clipID
+        self.chunkID = chunkID
+    }
+}
+
 public struct MemoryClient: Sendable {
     public let loadItems: @Sendable () async throws -> [MemoryClip]
     public let digestPending: @Sendable () async throws -> Void
@@ -117,9 +128,14 @@ public final class MemoryViewModel {
 /// Memory surface — the app-side digest status timeline.
 public struct MemoryView: View {
     @State private var viewModel: MemoryViewModel
+    @Binding private var navigationTarget: MemoryNavigationTarget?
 
-    public init(viewModel: MemoryViewModel = MemoryViewModel()) {
+    public init(
+        viewModel: MemoryViewModel = MemoryViewModel(),
+        navigationTarget: Binding<MemoryNavigationTarget?> = .constant(nil)
+    ) {
         _viewModel = State(initialValue: viewModel)
+        _navigationTarget = navigationTarget
     }
 
     public var body: some View {
@@ -167,8 +183,21 @@ public struct MemoryView: View {
             }
         }
         .navigationTitle("Memory")
+        .navigationDestination(item: $navigationTarget) { target in
+            if let item = viewModel.items.first(where: { $0.id == target.clipID }) {
+                MemoryDetailView(item: item, highlightedChunkID: target.chunkID) {
+                    Task { await viewModel.retry(item) }
+                }
+            } else {
+                ContentUnavailableView("Clip not found", systemImage: "doc.text.magnifyingglass")
+            }
+        }
         .task {
             await viewModel.digestAndRefresh()
+        }
+        .onChange(of: navigationTarget) { _, target in
+            guard target != nil else { return }
+            Task { await viewModel.refresh() }
         }
     }
 }
@@ -204,6 +233,7 @@ private struct MemoryRow: View {
 
 private struct MemoryDetailView: View {
     let item: MemoryClip
+    var highlightedChunkID: String? = nil
     let retry: () -> Void
 
     var body: some View {
@@ -236,6 +266,13 @@ private struct MemoryDetailView: View {
                 Section("Original") {
                     Text(bodyText)
                         .textSelection(.enabled)
+                }
+            }
+
+            if let highlightedChunkID {
+                Section("Citation") {
+                    LabeledContent("Clip", value: item.id)
+                    LabeledContent("Chunk", value: highlightedChunkID)
                 }
             }
 

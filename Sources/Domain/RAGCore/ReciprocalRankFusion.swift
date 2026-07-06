@@ -8,6 +8,13 @@ public enum ReciprocalRankFusion {
         rankings: [[ID]],
         k: Double = 60
     ) -> [ID] {
+        score(rankings: rankings, k: k).map(\.id)
+    }
+
+    public static func score<ID: Hashable & Comparable & Sendable>(
+        rankings: [[ID]],
+        k: Double = 60
+    ) -> [RankedID<ID>] {
         var scores: [ID: Double] = [:]
         for ranking in rankings {
             for (index, id) in ranking.enumerated() {
@@ -19,6 +26,6 @@ public enum ReciprocalRankFusion {
                 if lhs.value != rhs.value { return lhs.value > rhs.value }
                 return lhs.key < rhs.key // deterministic tie-break keeps eval runs reproducible
             }
-            .map(\.key)
+            .map { RankedID(id: $0.key, score: $0.value) }
     }
 }

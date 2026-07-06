@@ -49,3 +49,13 @@ public protocol KeywordIndex: Actor {
     func query(text: String, topK: Int) async throws -> [ScoredChunk]
     func deleteClip(clipID: String) async throws
 }
+
+/// Resolves ranked ids back to source chunks so every Ask citation can carry
+/// real clip/chunk data instead of an unreachable display stub.
+public protocol ChunkResolver: Actor {
+    func resolve(chunkIDs: [String]) async throws -> [String: Chunk]
+}
+
+public protocol Retriever: Actor {
+    func retrieve(question: String, topK: Int) async throws -> [RetrievedChunk]
+}

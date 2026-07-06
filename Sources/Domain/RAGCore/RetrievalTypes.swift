@@ -53,6 +53,16 @@ public struct ScoredChunk: Sendable, Hashable {
     }
 }
 
+public struct RankedID<ID: Hashable & Comparable & Sendable>: Sendable, Hashable {
+    public let id: ID
+    public let score: Double
+
+    public init(id: ID, score: Double) {
+        self.id = id
+        self.score = score
+    }
+}
+
 /// What the Ask surface renders under an answer; tapping one must jump to the
 /// original clip position (anti-hallucination rule: citations always resolve).
 public struct CitationRef: Sendable, Hashable {
@@ -64,6 +74,18 @@ public struct CitationRef: Sendable, Hashable {
         self.chunkID = chunkID
         self.clipID = clipID
         self.snippet = snippet
+    }
+}
+
+public struct RetrievedChunk: Sendable, Hashable {
+    public let chunk: Chunk
+    public let score: Double
+    public let citation: CitationRef
+
+    public init(chunk: Chunk, score: Double, citation: CitationRef) {
+        self.chunk = chunk
+        self.score = score
+        self.citation = citation
     }
 }
 

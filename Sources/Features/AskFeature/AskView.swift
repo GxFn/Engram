@@ -1,4 +1,5 @@
 import EngineKit
+import RAGCore
 import SwiftUI
 
 /// Ask surface — "问出来". During M1 this doubles as the engine debugging
@@ -8,21 +9,30 @@ public struct AskView: View {
     @State private var viewModel: AskViewModel
     @State private var draft = ""
     @FocusState private var composerFocused: Bool
+    private let onCitationSelected: @MainActor (CitationRef) -> Void
 
     public init(
         engine: any LLMEngine,
         model: ModelIdentity,
-        generationConfig: GenerationConfig = .default
+        generationConfig: GenerationConfig = .default,
+        retriever: (any Retriever)? = nil,
+        onCitationSelected: @escaping @MainActor (CitationRef) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: AskViewModel(
             engine: engine,
             model: model,
-            generationConfig: generationConfig
+            generationConfig: generationConfig,
+            retriever: retriever
         ))
+        self.onCitationSelected = onCitationSelected
     }
 
-    public init(viewModel: AskViewModel) {
+    public init(
+        viewModel: AskViewModel,
+        onCitationSelected: @escaping @MainActor (CitationRef) -> Void = { _ in }
+    ) {
         _viewModel = State(initialValue: viewModel)
+        self.onCitationSelected = onCitationSelected
     }
 
     public var body: some View {
@@ -74,7 +84,10 @@ public struct AskView: View {
                     }
 
                     ForEach(viewModel.messages) { message in
-                        AskMessageRow(message: message)
+                        AskMessageRow(
+                            message: message,
+                            onCitationSelected: onCitationSelected
+                        )
                             .id(message.id)
                     }
                 }
@@ -144,6 +157,7 @@ public struct AskView: View {
 
 private struct AskMessageRow: View {
     let message: AskViewModel.DisplayMessage
+    let onCitationSelected: @MainActor (CitationRef) -> Void
 
     var body: some View {
         HStack {
@@ -162,6 +176,10 @@ private struct AskMessageRow: View {
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+
+                if !message.citations.isEmpty {
+                    citations
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -171,6 +189,33 @@ private struct AskMessageRow: View {
                 Spacer(minLength: 40)
             }
         }
+    }
+
+    private var citations: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(message.citations.enumerated()), id: \.element.chunkID) { index, citation in
+                Button {
+                    onCitationSelected(citation)
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("[\(index + 1)]")
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                        Text(citation.snippet)
+                            .font(.caption)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open citation \(index + 1)")
+            }
+        }
+        .padding(.top, 4)
     }
 
     private var backgroundStyle: Color {
