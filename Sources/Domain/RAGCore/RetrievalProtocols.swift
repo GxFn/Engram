@@ -2,10 +2,38 @@ public protocol Chunker: Sendable {
     func chunk(clipID: String, text: String, config: ChunkingConfig) -> [Chunk]
 }
 
-/// On-device embedding backend (M2: Qwen3-Embedding via MLX).
+/// Stable embedding identity recorded with vector indexes so engine switches
+/// can force a rebuild instead of mixing incompatible vectors.
+public struct EmbeddingEngineMetadata: Sendable, Hashable, Codable {
+    public let id: String
+    public let displayName: String
+    public let dimension: Int
+    public let modelIdentifier: String?
+
+    public init(
+        id: String,
+        displayName: String,
+        dimension: Int,
+        modelIdentifier: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.dimension = dimension
+        self.modelIdentifier = modelIdentifier
+    }
+}
+
+/// On-device embedding backend.
 public protocol EmbeddingEngine: Actor {
+    nonisolated var metadata: EmbeddingEngineMetadata { get }
     nonisolated var dimension: Int { get }
     func embed(_ texts: [String]) async throws -> [[Float]]
+}
+
+public extension EmbeddingEngine {
+    nonisolated var dimension: Int {
+        metadata.dimension
+    }
 }
 
 /// Dense retrieval half of hybrid search (M2: SQLite-vec).

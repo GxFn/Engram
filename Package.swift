@@ -67,7 +67,14 @@ let package = Package(
         ),
         .target(
             name: "EmbeddingMLX",
-            dependencies: ["RAGCore", "EngramLogging"],
+            dependencies: [
+                "RAGCore",
+                "EngramLogging",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXEmbedders", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ],
             path: "Sources/Infrastructure/EmbeddingMLX"
         ),
         .target(
@@ -147,6 +154,7 @@ let package = Package(
         .testTarget(name: "ClipDigestTests", dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence"], path: "Tests/ClipDigestTests"),
         .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
+        .testTarget(name: "EmbeddingMLXTests", dependencies: ["EmbeddingMLX", "RAGCore"], path: "Tests/EmbeddingMLXTests"),
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),

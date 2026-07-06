@@ -70,4 +70,14 @@ public struct CitationRef: Sendable, Hashable {
 public enum RetrievalError: Error, Sendable {
     /// Placeholder used by infrastructure stubs; the payload names the roadmap milestone.
     case notImplemented(String)
+    /// A local engine exists, but the current platform/runtime/assets cannot run it.
+    case embeddingUnavailable(engineID: String, reason: String)
+    /// A configured local embedding model has no verified payload in the model store.
+    case embeddingModelNotDownloaded(modelID: String, expectedPath: String)
+    /// A local embedding model payload exists but failed during runtime load.
+    case embeddingModelLoadFailed(modelID: String, reason: String)
+    /// The caller supplied text that cannot produce a meaningful embedding.
+    case invalidEmbeddingInput(String)
+    /// The runtime produced a vector count, dimension, or value that cannot be indexed.
+    case invalidEmbeddingOutput(engineID: String, reason: String)
 }
