@@ -31,6 +31,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.4")),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
         // MARK: - Domain (pure Swift contracts and types, zero third-party dependencies)
@@ -48,8 +50,10 @@ let package = Package(
             dependencies: [
                 "EngineKit",
                 "EngramLogging",
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
             ],
             path: "Sources/Infrastructure/MLXEngine"
         ),
