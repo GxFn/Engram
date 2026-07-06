@@ -29,6 +29,9 @@ let package = Package(
         .library(name: "Persistence", targets: ["Persistence"]),
         .library(name: "EngramLogging", targets: ["EngramLogging"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
+    ],
     targets: [
         // MARK: - Domain (pure Swift contracts and types, zero third-party dependencies)
         .target(name: "EngineKit", path: "Sources/Domain/EngineKit"),
@@ -42,7 +45,12 @@ let package = Package(
         // MARK: - Infrastructure (protocol implementations, leaf plugins)
         .target(
             name: "MLXEngine",
-            dependencies: ["EngineKit", "EngramLogging"],
+            dependencies: [
+                "EngineKit",
+                "EngramLogging",
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
             path: "Sources/Infrastructure/MLXEngine"
         ),
         .target(
@@ -107,6 +115,7 @@ let package = Package(
 
         // MARK: - Tests
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
+        .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
     ]

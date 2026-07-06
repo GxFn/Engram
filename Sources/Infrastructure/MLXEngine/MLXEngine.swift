@@ -1,9 +1,10 @@
 import EngineKit
+import MLXLLM
+import MLXLMCommon
 
 /// MLX-backed inference engine — the M1 workhorse.
-/// This target deliberately carries no mlx-swift dependency yet: the package
-/// must build clean everywhere until the engine actually lands; the dependency
-/// arrives in the same commit as the implementation.
+/// The full loading/generation path lands in W1.3; W1.1 wires the package and
+/// keeps unsupported simulator behavior explicit.
 public actor MLXEngine: LLMEngine {
     public nonisolated let descriptor = EngineDescriptor(
         id: "mlx",
@@ -14,7 +15,12 @@ public actor MLXEngine: LLMEngine {
     public init() {}
 
     public func load(_ model: ModelIdentity) async throws {
-        throw EngineError.notImplemented("M1")
+        #if os(iOS) && targetEnvironment(simulator)
+        throw EngineError.notImplemented("simulator unsupported - use a device or macOS")
+        #else
+        _ = model
+        throw EngineError.notImplemented("M1 W1.3")
+        #endif
     }
 
     public func unload() async {}
