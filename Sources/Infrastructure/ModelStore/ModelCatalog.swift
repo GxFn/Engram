@@ -36,18 +36,3 @@ public enum ModelCatalog {
         qwen3Embedding_0_6B,
     ]
 }
-
-/// Download, verify and manage model artifacts on disk (M1): background
-/// URLSession with resume, hash check, storage accounting, and the
-/// device-capability recommendation shown during first-launch onboarding.
-public actor ModelStore {
-    public init() {}
-
-    public func localURL(for model: ModelIdentity) async throws -> URL {
-        throw EngineError.notImplemented("M1")
-    }
-
-    public func download(_ model: ModelIdentity) async throws {
-        throw EngineError.notImplemented("M1")
-    }
-}
