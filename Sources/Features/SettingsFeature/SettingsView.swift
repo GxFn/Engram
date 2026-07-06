@@ -1,7 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
+    @State private var importTarget: ManagedModel?
+    @State private var isShowingModelImporter = false
 
     public init(viewModel: SettingsViewModel) {
         _viewModel = State(initialValue: viewModel)
@@ -23,6 +26,21 @@ public struct SettingsView: View {
         }
         .task { await viewModel.refresh() }
         .refreshable { await viewModel.refresh() }
+        .fileImporter(
+            isPresented: $isShowingModelImporter,
+            allowedContentTypes: [.folder]
+        ) { result in
+            let target = importTarget
+            importTarget = nil
+
+            guard let target, case .success(let url) = result else {
+                return
+            }
+
+            Task {
+                await viewModel.installLocalModel(target, from: url)
+            }
+        }
         .navigationTitle("Settings")
     }
 
@@ -57,7 +75,10 @@ public struct SettingsView: View {
                     isActive: model.id == viewModel.selectedModelID,
                     isOperating: model.id == viewModel.operationModelID,
                     select: { viewModel.selectModel(model.model) },
-                    download: { Task { await viewModel.download(model) } },
+                    importModel: {
+                        importTarget = model
+                        isShowingModelImporter = true
+                    },
                     delete: { Task { await viewModel.delete(model) } }
                 )
             }
@@ -119,7 +140,7 @@ private struct ModelManagementRow: View {
     let isActive: Bool
     let isOperating: Bool
     let select: () -> Void
-    let download: () -> Void
+    let importModel: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -156,7 +177,9 @@ private struct ModelManagementRow: View {
                 if model.isDownloaded {
                     Button("Delete", role: .destructive, action: delete)
                 } else {
-                    Button("Download", action: download)
+                    Button(action: importModel) {
+                        Label("Import", systemImage: "folder.badge.plus")
+                    }
                         .disabled(!model.canRunOnDevice)
                 }
             }

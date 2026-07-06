@@ -77,8 +77,72 @@ import Testing
     await viewModel.download(model)
 
     #expect(viewModel.operationModelID == nil)
-    #expect(viewModel.errorMessage == "Remote model download is not wired yet. Add a verified local model in Settings.")
+    #expect(viewModel.errorMessage == "Remote model download is unavailable. Import a verified local model folder.")
     #expect(viewModel.models.first?.isDownloaded == false)
+}
+
+@MainActor
+@Test func settingsLocalImportRefreshesModelStateAndSelectsModel() async {
+    let registry = FakeModelRegistry(models: [
+        managedModel(otherModel, isDownloaded: true, isRecommended: false),
+        managedModel(recommendedModel, isDownloaded: false, isRecommended: true),
+    ])
+    var appliedModelIDs: [String] = []
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: otherModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client,
+        applyActiveModel: { appliedModelIDs.append($0.id) }
+    )
+    await viewModel.refresh()
+
+    guard let model = viewModel.models.first(where: { $0.id == recommendedModel.id }) else {
+        Issue.record("Expected recommended model row")
+        return
+    }
+
+    await viewModel.installLocalModel(model, from: URL(fileURLWithPath: "/tmp/VerifiedModel"))
+
+    #expect(await registry.importedModelIDs == [recommendedModel.id])
+    #expect(viewModel.models.first(where: { $0.id == recommendedModel.id })?.isDownloaded == true)
+    #expect(viewModel.selectedModelID == recommendedModel.id)
+    #expect(appliedModelIDs == [recommendedModel.id])
+    #expect(viewModel.errorMessage == nil)
+    #expect(viewModel.operationModelID == nil)
+}
+
+@MainActor
+@Test func settingsLocalImportFailureDoesNotFakeDownloadedState() async {
+    let registry = FakeModelRegistry(
+        models: [managedModel(recommendedModel, isDownloaded: false, isRecommended: true)],
+        installError: TestInstallError()
+    )
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: recommendedModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client
+    )
+    await viewModel.refresh()
+
+    guard let model = viewModel.models.first else {
+        Issue.record("Expected a model row")
+        return
+    }
+
+    await viewModel.installLocalModel(model, from: URL(fileURLWithPath: "/tmp/InvalidModel"))
+
+    #expect(await registry.importedModelIDs == [])
+    #expect(viewModel.errorMessage == "Selected folder is missing MLX model files: tokenizer, weights.")
+    #expect(viewModel.models.first?.isDownloaded == false)
+    #expect(viewModel.operationModelID == nil)
 }
 
 @MainActor
@@ -170,28 +234,37 @@ private actor FakeModelRegistry {
     private var models: [ManagedModel]
     private let modelsAfterDelete: [ManagedModel]?
     private let downloadError: Error?
+    private let installError: Error?
     private var deletedIDs: [String] = []
+    private var importedIDs: [String] = []
 
     init(
         models: [ManagedModel],
         modelsAfterDelete: [ManagedModel]? = nil,
-        downloadError: Error? = nil
+        downloadError: Error? = nil,
+        installError: Error? = nil
     ) {
         self.models = models
         self.modelsAfterDelete = modelsAfterDelete
         self.downloadError = downloadError
+        self.installError = installError
     }
 
     nonisolated var client: ModelManagementClient {
         ModelManagementClient(
             refreshModels: { await self.refresh() },
             downloadModel: { try await self.download($0) },
+            installLocalModel: { try await self.install($0, from: $1) },
             deleteModel: { await self.delete($0) }
         )
     }
 
     var deletedModelIDs: [String] {
         deletedIDs
+    }
+
+    var importedModelIDs: [String] {
+        importedIDs
     }
 
     private func refresh() -> [ManagedModel] {
@@ -215,10 +288,34 @@ private actor FakeModelRegistry {
         }
     }
 
+    private func install(_ model: ModelIdentity, from _: URL) throws {
+        if let installError {
+            throw installError
+        }
+
+        importedIDs.append(model.id)
+        models = models.map { row in
+            guard row.id == model.id else { return row }
+            return ManagedModel(
+                model: row.model,
+                isDownloaded: true,
+                storageBytes: 512,
+                canRunOnDevice: row.canRunOnDevice,
+                isRecommended: row.isRecommended
+            )
+        }
+    }
+
     private func delete(_ model: ModelIdentity) {
         deletedIDs.append(model.id)
         if let modelsAfterDelete {
             models = modelsAfterDelete
         }
+    }
+}
+
+private struct TestInstallError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Selected folder is missing MLX model files: tokenizer, weights."
     }
 }

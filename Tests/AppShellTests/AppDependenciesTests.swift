@@ -77,6 +77,38 @@ import Testing
 }
 
 @MainActor
+@Test func appShellSettingsBridgeInstallsLocalModelIntoModelStore() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellInstallTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let modelsDirectory = root.appendingPathComponent("Models", isDirectory: true)
+    let sourceDirectory = root.appendingPathComponent("VerifiedModel", isDirectory: true)
+    try makeLocalModelFixture(at: sourceDirectory)
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        modelStore: store,
+        activeModel: ModelCatalog.qwen3_4B_4bit,
+        deviceCapability: DeviceCapability(physicalMemoryBytes: 4 * DeviceCapability.gibibyte),
+        defaults: nil
+    )
+    let settings = dependencies.makeSettingsViewModel()
+    await settings.refresh()
+
+    let row = try #require(settings.models.first { $0.id == model.id })
+
+    await settings.installLocalModel(row, from: sourceDirectory)
+
+    #expect(settings.errorMessage == nil)
+    #expect(settings.models.first { $0.id == model.id }?.isDownloaded == true)
+    #expect(try await store.isDownloaded(model))
+    #expect(dependencies.activeModel == model)
+}
+
+@MainActor
 @Test func appShellMemoryBridgeDigestsQueueIntoViewModelItems() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramAppShellMemoryTests-\(UUID().uuidString)", isDirectory: true)
@@ -196,6 +228,13 @@ private func makeDefaults() -> UserDefaults {
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.removePersistentDomain(forName: suiteName)
     return defaults
+}
+
+private func makeLocalModelFixture(at directory: URL) throws {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data(repeating: 0x41, count: 2).write(to: directory.appendingPathComponent("config.json"))
+    try Data(repeating: 0x42, count: 3).write(to: directory.appendingPathComponent("tokenizer.json"))
+    try Data(repeating: 0x43, count: 5).write(to: directory.appendingPathComponent("model.safetensors"))
 }
 
 private actor FakeEngine: LLMEngine {

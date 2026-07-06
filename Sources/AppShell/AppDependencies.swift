@@ -122,6 +122,9 @@ public final class AppDependencies {
             downloadModel: { model in
                 try await store.download(model)
             },
+            installLocalModel: { model, sourceURL in
+                try await store.installLocalModel(model, from: sourceURL)
+            },
             deleteModel: { model in
                 try await store.delete(model)
             }

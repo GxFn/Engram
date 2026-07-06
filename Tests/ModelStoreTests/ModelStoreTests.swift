@@ -154,6 +154,59 @@ import Foundation
     }
 }
 
+@Test func installLocalModelCopiesVerifiedFolderAndWritesManifest() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+    let sourceDirectory = modelsDirectory
+        .deletingLastPathComponent()
+        .appendingPathComponent("DownloadedModel", isDirectory: true)
+    try makeModelFixture(at: sourceDirectory)
+
+    let result = try await store.installLocalModel(model, from: sourceDirectory)
+    let expectedDirectory = modelsDirectory
+        .appendingPathComponent("mlx-community", isDirectory: true)
+        .appendingPathComponent("Qwen3-1.7B-4bit", isDirectory: true)
+
+    #expect(result.model == model)
+    #expect(result.localURL == expectedDirectory)
+    #expect(result.storageBytes == (try await store.storageBytes(for: model)))
+    #expect(try await store.isDownloaded(model))
+    #expect(try await store.downloadedModels() == [model])
+    #expect(FileManager.default.fileExists(atPath: sourceDirectory.path))
+    #expect(FileManager.default.fileExists(
+        atPath: expectedDirectory.appendingPathComponent(".engram-model.json").path
+    ))
+}
+
+@Test func installLocalModelRejectsInvalidFolderWithoutDownloadedState() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+    let invalidDirectory = modelsDirectory
+        .deletingLastPathComponent()
+        .appendingPathComponent("InvalidModel", isDirectory: true)
+    try FileManager.default.createDirectory(at: invalidDirectory, withIntermediateDirectories: true)
+    try writeFile(named: "config.json", bytes: 2, in: invalidDirectory)
+
+    do {
+        try await store.installLocalModel(model, from: invalidDirectory)
+        Issue.record("Expected invalid model folder to fail")
+    } catch ModelInstallationError.missingRequiredFiles(let missingFiles) {
+        #expect(missingFiles.contains("tokenizer.json or tokenizer.model"))
+        #expect(missingFiles.contains("model weights"))
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try await store.isDownloaded(model) == false)
+    #expect(try await store.storageBytes(for: model) == 0)
+}
+
 @Test func deviceCapabilityRecommendsFourBOnlyAtSevenGiBOrAbove() {
     let belowThreshold = DeviceCapability(
         physicalMemoryBytes: DeviceCapability.qwen3FourBRecommendedMemoryBytes - 1
@@ -206,6 +259,13 @@ private func makeModelDirectory(for model: ModelIdentity, in modelsDirectory: UR
 private func writeFile(named name: String, bytes: Int, in directory: URL) throws {
     let data = Data(repeating: 0x41, count: bytes)
     try data.write(to: directory.appendingPathComponent(name, isDirectory: false))
+}
+
+private func makeModelFixture(at directory: URL) throws {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try writeFile(named: "config.json", bytes: 2, in: directory)
+    try writeFile(named: "tokenizer.json", bytes: 3, in: directory)
+    try writeFile(named: "model.safetensors", bytes: 5, in: directory)
 }
 
 private func writeManifest(for model: ModelIdentity, in directory: URL) throws {

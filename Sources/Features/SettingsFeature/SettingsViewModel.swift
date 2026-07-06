@@ -117,6 +117,32 @@ public final class SettingsViewModel {
         }
     }
 
+    public func installLocalModel(_ model: ManagedModel, from sourceURL: URL) async {
+        guard operationModelID == nil else {
+            return
+        }
+
+        operationModelID = model.id
+        errorMessage = nil
+        let hasScopedAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasScopedAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+            operationModelID = nil
+        }
+
+        do {
+            try await client.installLocalModel(model.model, sourceURL)
+            await refresh()
+            if models.first(where: { $0.id == model.id })?.isDownloaded == true {
+                selectModel(model.model)
+            }
+        } catch {
+            errorMessage = Self.userFacingMessage(for: error)
+        }
+    }
+
     public func delete(_ model: ManagedModel) async {
         guard operationModelID == nil else {
             return
@@ -165,7 +191,7 @@ public final class SettingsViewModel {
         if let engineError = error as? EngineError {
             switch engineError {
             case .notImplemented(let message) where message.contains("remote model download deferred"):
-                return "Remote model download is not wired yet. Add a verified local model in Settings."
+                return "Remote model download is unavailable. Import a verified local model folder."
             case .notImplemented:
                 return "Model management is not ready yet."
             case .modelNotLoaded:
@@ -175,6 +201,11 @@ public final class SettingsViewModel {
             case .cancelled:
                 return "Stopped."
             }
+        }
+
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
         }
 
         return "Model operation failed."

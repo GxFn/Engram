@@ -81,6 +81,18 @@ Reproduce: `swift test --filter retrievalEvalRunnerReportsReadmeComparisonFromBu
 - iOS 26.0+,建议 8GB 内存机型(iPhone 15 Pro / 16 系起)
 - Xcode 26+ / Swift 6
 
+## Model Setup
+
+Engram runs local MLX model folders. For M2 validation, place a verified
+MLX-compatible folder such as `mlx-community/Qwen3-1.7B-4bit` in Files, then
+open Engram Settings or Welcome and choose `Import Model Folder`/`Import`.
+
+The selected folder must contain `config.json`, a tokenizer file such as
+`tokenizer.json` or `tokenizer.model`, and model weights such as
+`.safetensors`, `.gguf`, `.npz`, or `.bin`. Engram copies the folder into app
+storage, writes `.engram-model.json`, and the model row changes to Ready with
+its local storage size. No API key, backend, or remote inference is used.
+
 ## Building
 
 SPM 包(全部模块 + 测试):

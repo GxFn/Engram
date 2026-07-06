@@ -1,7 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct OnboardingView: View {
     @State private var viewModel: SettingsViewModel
+    @State private var importTarget: ManagedModel?
+    @State private var isShowingModelImporter = false
     private let complete: () -> Void
 
     public init(viewModel: SettingsViewModel, complete: @escaping () -> Void) {
@@ -24,7 +27,10 @@ public struct OnboardingView: View {
                         ModelSetupRow(
                             model: recommendedModel,
                             isOperating: recommendedModel.id == viewModel.operationModelID,
-                            download: { Task { await viewModel.download(recommendedModel) } }
+                            importModel: {
+                                importTarget = recommendedModel
+                                isShowingModelImporter = true
+                            }
                         )
                     } else if viewModel.isRefreshing {
                         ProgressView()
@@ -43,6 +49,21 @@ public struct OnboardingView: View {
                 }
             }
             .task { await viewModel.refresh() }
+            .fileImporter(
+                isPresented: $isShowingModelImporter,
+                allowedContentTypes: [.folder]
+            ) { result in
+                let target = importTarget
+                importTarget = nil
+
+                guard let target, case .success(let url) = result else {
+                    return
+                }
+
+                Task {
+                    await viewModel.installLocalModel(target, from: url)
+                }
+            }
             .navigationTitle("Welcome")
         }
     }
@@ -51,7 +72,7 @@ public struct OnboardingView: View {
 private struct ModelSetupRow: View {
     let model: ManagedModel
     let isOperating: Bool
-    let download: () -> Void
+    let importModel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -69,8 +90,8 @@ private struct ModelSetupRow: View {
             }
 
             if !model.isDownloaded {
-                Button(action: download) {
-                    Label("Download", systemImage: "arrow.down.circle")
+                Button(action: importModel) {
+                    Label("Import Model Folder", systemImage: "folder.badge.plus")
                 }
                 .disabled(!model.canRunOnDevice || isOperating)
             }

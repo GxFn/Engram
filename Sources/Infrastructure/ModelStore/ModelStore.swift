@@ -1,4 +1,5 @@
 import EngineKit
+import EngramLogging
 import Foundation
 
 public struct DownloadState: Sendable, Equatable {
@@ -31,12 +32,32 @@ public struct DownloadResult: Sendable, Equatable {
     }
 }
 
+public enum ModelInstallationError: Error, Equatable, LocalizedError, Sendable {
+    case sourceMissing(path: String)
+    case sourceNotDirectory(path: String)
+    case sourceOverlapsDestination
+    case missingRequiredFiles([String])
+
+    public var errorDescription: String? {
+        switch self {
+        case .sourceMissing:
+            return "Selected model folder could not be found."
+        case .sourceNotDirectory:
+            return "Selected item is not a model folder."
+        case .sourceOverlapsDestination:
+            return "Choose a model folder outside Engram's model storage."
+        case .missingRequiredFiles(let files):
+            return "Selected folder is missing MLX model files: \(files.joined(separator: ", "))."
+        }
+    }
+}
+
 /// Manages local model artifacts under Application Support/Models.
 ///
-/// Remote hub integration is intentionally bounded in W1.2. The store can
-/// resolve, scan, account, and delete local assets now; a missing remote model
-/// fails explicitly until the onboarding/download slice wires product decisions
-/// such as large-file network prompts and resumable background behavior.
+/// Remote hub integration is intentionally bounded. The store resolves, imports,
+/// scans, accounts, and deletes verified local MLX assets; a missing remote
+/// model fails explicitly until large-file network prompts and resumable
+/// background behavior are designed.
 public actor ModelStore {
     private static let manifestFileName = ".engram-model.json"
 
@@ -97,6 +118,55 @@ public actor ModelStore {
         )
     }
 
+    @discardableResult
+    public func installLocalModel(_ model: ModelIdentity, from sourceURL: URL) throws -> DownloadResult {
+        try ensureModelsDirectory()
+
+        let source = sourceURL.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory) else {
+            throw ModelInstallationError.sourceMissing(path: source.path)
+        }
+
+        guard isDirectory.boolValue else {
+            throw ModelInstallationError.sourceNotDirectory(path: source.path)
+        }
+
+        try validateModelDirectory(source)
+
+        let destination = directoryURL(for: model).standardizedFileURL
+        if source.path == destination.path {
+            try removeModelStoreManifests(under: destination)
+            try writeManifest(for: model, in: destination)
+            let storageBytes = try regularFileBytes(in: destination)
+            Log.store.info("Registered local model \(model.id, privacy: .public) in place")
+            return DownloadResult(model: model, localURL: destination, storageBytes: storageBytes)
+        }
+
+        guard !isOverlapping(source, destination) else {
+            throw ModelInstallationError.sourceOverlapsDestination
+        }
+
+        let parent = destination.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        let temporaryDirectory = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).installing-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try? FileManager.default.removeItem(at: temporaryDirectory)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        try FileManager.default.copyItem(at: source, to: temporaryDirectory)
+        try removeModelStoreManifests(under: temporaryDirectory)
+        try writeManifest(for: model, in: temporaryDirectory)
+        try replaceDirectory(at: destination, with: temporaryDirectory)
+
+        let storageBytes = try regularFileBytes(in: destination)
+        Log.store.info("Installed local model \(model.id, privacy: .public) from a verified folder")
+        return DownloadResult(model: model, localURL: destination, storageBytes: storageBytes)
+    }
+
     private nonisolated static func defaultModelsDirectory() -> URL {
         let fileManager = FileManager.default
         let applicationSupport = fileManager.urls(
@@ -141,6 +211,102 @@ public actor ModelStore {
         }
 
         return directories
+    }
+
+    private func validateModelDirectory(_ directory: URL) throws {
+        var hasConfig = false
+        var hasTokenizer = false
+        var hasWeights = false
+
+        try visitRegularFiles(under: directory) { fileURL in
+            let fileName = fileURL.lastPathComponent.lowercased()
+            let fileExtension = fileURL.pathExtension.lowercased()
+
+            if fileName == "config.json" {
+                hasConfig = true
+            }
+
+            if Self.tokenizerFileNames.contains(fileName) {
+                hasTokenizer = true
+            }
+
+            if Self.weightFileExtensions.contains(fileExtension) {
+                hasWeights = true
+            }
+        }
+
+        var missingFiles: [String] = []
+        if !hasConfig {
+            missingFiles.append("config.json")
+        }
+        if !hasTokenizer {
+            missingFiles.append("tokenizer.json or tokenizer.model")
+        }
+        if !hasWeights {
+            missingFiles.append("model weights")
+        }
+
+        guard missingFiles.isEmpty else {
+            throw ModelInstallationError.missingRequiredFiles(missingFiles)
+        }
+    }
+
+    private nonisolated static let tokenizerFileNames: Set<String> = [
+        "merges.txt",
+        "tokenizer.json",
+        "tokenizer.model",
+        "vocab.json",
+    ]
+
+    private nonisolated static let weightFileExtensions: Set<String> = [
+        "bin",
+        "gguf",
+        "npz",
+        "safetensors",
+    ]
+
+    private func writeManifest(for model: ModelIdentity, in directory: URL) throws {
+        let data = try JSONEncoder().encode(model)
+        try data.write(to: directory.appendingPathComponent(Self.manifestFileName), options: .atomic)
+    }
+
+    private func removeModelStoreManifests(under directory: URL) throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            return
+        }
+
+        try visitRegularFiles(under: directory) { fileURL in
+            if fileURL.lastPathComponent == Self.manifestFileName {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        }
+    }
+
+    private func replaceDirectory(at destination: URL, with source: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: destination.path) else {
+            try fileManager.moveItem(at: source, to: destination)
+            return
+        }
+
+        let backup = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).replacing-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try? fileManager.removeItem(at: backup)
+        try fileManager.moveItem(at: destination, to: backup)
+
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+            try? fileManager.removeItem(at: backup)
+        } catch {
+            try? fileManager.moveItem(at: backup, to: destination)
+            throw error
+        }
+    }
+
+    private nonisolated func isOverlapping(_ source: URL, _ destination: URL) -> Bool {
+        source.path.hasPrefix(destination.path + "/") || destination.path.hasPrefix(source.path + "/")
     }
 
     private struct ManifestRecord {

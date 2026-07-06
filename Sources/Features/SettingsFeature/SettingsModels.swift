@@ -44,21 +44,25 @@ public struct ManagedModel: Identifiable, Sendable, Hashable {
 public struct ModelManagementClient: Sendable {
     public var refreshModels: @Sendable () async throws -> [ManagedModel]
     public var downloadModel: @Sendable (ModelIdentity) async throws -> Void
+    public var installLocalModel: @Sendable (ModelIdentity, URL) async throws -> Void
     public var deleteModel: @Sendable (ModelIdentity) async throws -> Void
 
     public init(
         refreshModels: @escaping @Sendable () async throws -> [ManagedModel],
         downloadModel: @escaping @Sendable (ModelIdentity) async throws -> Void,
+        installLocalModel: @escaping @Sendable (ModelIdentity, URL) async throws -> Void,
         deleteModel: @escaping @Sendable (ModelIdentity) async throws -> Void
     ) {
         self.refreshModels = refreshModels
         self.downloadModel = downloadModel
+        self.installLocalModel = installLocalModel
         self.deleteModel = deleteModel
     }
 
     public static let empty = ModelManagementClient(
         refreshModels: { [] },
         downloadModel: { _ in },
+        installLocalModel: { _, _ in },
         deleteModel: { _ in }
     )
 }
