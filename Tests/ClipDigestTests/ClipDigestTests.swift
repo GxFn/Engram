@@ -133,6 +133,31 @@ import Testing
     #expect(snapshot.failureReason == nil)
 }
 
+@Test func digestVideoFileRecordsExplicitPendingPipelineFailure() async throws {
+    let fixture = try DigestFixture()
+    let videoURL = URL(fileURLWithPath: "/tmp/local-video.mov")
+    let clip = Clip(
+        id: "video-clip",
+        source: .videoFile(videoURL),
+        title: "Local video",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_040)
+    )
+    try fixture.store.enqueue(clip)
+    let service = try fixture.makeService(fetcher: FailingFetcher())
+
+    try await service.digestPending()
+
+    #expect(try fixture.store.pendingItems().isEmpty)
+    let failedFiles = try jsonFiles(in: fixture.store.failedDirectory)
+    #expect(failedFiles.contains { $0.pathExtension == "json" })
+    let snapshot = try await fixture.records.snapshot(id: "video-clip")
+    #expect(snapshot.url == videoURL)
+    #expect(snapshot.state == .failed)
+    #expect(!snapshot.failureRetryable)
+    #expect(snapshot.failureReason?.contains("W-M3.6") == true)
+}
+
 private final class DigestFixture {
     let rootURL: URL
     let store: ClipQueueStore

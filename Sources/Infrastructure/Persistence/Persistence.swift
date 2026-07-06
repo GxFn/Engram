@@ -12,6 +12,7 @@ public final class ClipRecord {
     public var note: String?
     public var bodyText: String?
     public var urlString: String?
+    public var sourceKindRaw: String?
     public var createdAt: Date
     public var updatedAt: Date
     public var stateRaw: String
@@ -25,6 +26,7 @@ public final class ClipRecord {
         note: String?,
         bodyText: String?,
         urlString: String?,
+        sourceKindRaw: String? = nil,
         createdAt: Date,
         updatedAt: Date? = nil,
         stateRaw: String,
@@ -37,6 +39,7 @@ public final class ClipRecord {
         self.note = note
         self.bodyText = bodyText
         self.urlString = urlString
+        self.sourceKindRaw = sourceKindRaw
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
         self.stateRaw = stateRaw
@@ -114,6 +117,7 @@ public actor ClipRecordStore {
                 note: clip.note,
                 bodyText: bodyText(from: clip),
                 urlString: urlString(from: clip),
+                sourceKindRaw: sourceKindRaw(from: clip),
                 createdAt: clip.createdAt,
                 updatedAt: now,
                 stateRaw: ClipState.queued.rawValue
@@ -206,7 +210,11 @@ public actor ClipRecordStore {
         }
 
         let source: ClipSource
-        if let urlString = record.urlString, let url = URL(string: urlString) {
+        if sourceKind(of: record) == .videoFile,
+           let urlString = record.urlString,
+           let url = URL(string: urlString) {
+            source = .videoFile(url)
+        } else if let urlString = record.urlString, let url = URL(string: urlString) {
             source = .url(url)
         } else if let bodyText = record.bodyText, !bodyText.isEmpty {
             source = .text(bodyText)
@@ -277,6 +285,7 @@ public actor ClipRecordStore {
         record.note = clip.note
         record.bodyText = bodyText(from: clip)
         record.urlString = urlString(from: clip)
+        record.sourceKindRaw = sourceKindRaw(from: clip)
     }
 
     private func ensureTransition(id: String, from current: ClipState, to next: ClipState) throws {
@@ -306,6 +315,16 @@ public actor ClipRecordStore {
     }
 }
 
+private enum ClipRecordSourceKind: String {
+    case text
+    case url
+    case videoFile
+}
+
+private func sourceKind(of record: ClipRecord) -> ClipRecordSourceKind? {
+    record.sourceKindRaw.flatMap(ClipRecordSourceKind.init(rawValue:))
+}
+
 private func bodyText(from clip: Clip) -> String? {
     if let bodyText = clip.bodyText {
         return bodyText
@@ -317,10 +336,23 @@ private func bodyText(from clip: Clip) -> String? {
 }
 
 private func urlString(from clip: Clip) -> String? {
-    if case let .url(url) = clip.source {
+    switch clip.source {
+    case let .url(url), let .videoFile(url):
         return url.absoluteString
+    case .text:
+        return nil
     }
-    return nil
+}
+
+private func sourceKindRaw(from clip: Clip) -> String {
+    switch clip.source {
+    case .text:
+        return ClipRecordSourceKind.text.rawValue
+    case .url:
+        return ClipRecordSourceKind.url.rawValue
+    case .videoFile:
+        return ClipRecordSourceKind.videoFile.rawValue
+    }
 }
 
 public enum PersistenceStack {

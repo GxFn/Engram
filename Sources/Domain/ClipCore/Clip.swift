@@ -34,25 +34,38 @@ public struct Clip: Sendable, Hashable, Codable {
 public enum ClipSource: Sendable, Hashable, Codable {
     case text(String)
     case url(URL)
+    case videoFile(URL)
 }
 
 /// Digestion lifecycle. Text clips skip `fetching` because their body arrived
 /// with the share; URL clips pass through it for the one-time article fetch.
+/// Video clips enter the M3 pipeline through transcription, frame analysis,
+/// script composition, and finally the shared indexed terminal state.
 public enum ClipState: String, Sendable, Codable, CaseIterable {
     case queued
     case fetching
     case indexing
     case indexed
     case failed
+    case transcribing
+    case analyzing
+    case scripting
 
     public func canTransition(to next: ClipState) -> Bool {
         switch (self, next) {
         case (.queued, .fetching),   // URL clip starts its one-time fetch
              (.queued, .indexing),   // text clip skips fetching
+             (.queued, .transcribing),
              (.fetching, .indexing),
              (.fetching, .failed),
              (.indexing, .indexed),
              (.indexing, .failed),
+             (.transcribing, .analyzing),
+             (.transcribing, .failed),
+             (.analyzing, .scripting),
+             (.analyzing, .failed),
+             (.scripting, .indexed),
+             (.scripting, .failed),
              (.failed, .queued):     // retry re-queues; indexed is terminal
             return true
         default:

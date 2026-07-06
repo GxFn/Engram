@@ -305,7 +305,7 @@ private struct StateBadge: View {
             .green
         case .failed:
             .red
-        case .fetching, .indexing:
+        case .fetching, .indexing, .transcribing, .analyzing, .scripting:
             .blue
         case .queued:
             .secondary

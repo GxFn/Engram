@@ -1,4 +1,5 @@
 import AppGroupSupport
+import ClipCore
 import Foundation
 import Persistence
 import SwiftData
@@ -79,6 +80,34 @@ import Testing
     )
 
     #expect(storeURL == fallbackRoot.appendingPathComponent("Engram.store"))
+}
+
+@Test func clipRecordStorePreservesVideoFileSourceForRetry() async throws {
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let store = ClipRecordStore(modelContainer: container)
+    let videoURL = URL(fileURLWithPath: "/tmp/demo-video.mov")
+    let clip = Clip(
+        id: "video-retry",
+        source: .videoFile(videoURL),
+        title: "Video retry",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_100)
+    )
+
+    let queued = try await store.upsertQueuedClip(clip)
+    #expect(queued.url == videoURL)
+
+    _ = try await store.transition(id: clip.id, to: .transcribing)
+    let failed = try await store.markFailed(
+        id: clip.id,
+        reason: "transcription unavailable",
+        retryable: true
+    )
+    #expect(failed.state == .failed)
+
+    let retryClip = try await store.clipForRetry(id: clip.id)
+    #expect(retryClip.source == .videoFile(videoURL))
+    #expect(retryClip.state == .queued)
 }
 
 private func makeTemporaryDirectory() throws -> URL {

@@ -124,6 +124,7 @@ public struct DigestPreviewIndexer: ClipDigestIndexing {
 public enum ClipDigestServiceError: Error, Equatable, Sendable {
     case unsupportedEmptyText(String)
     case unsupportedURL(URL)
+    case videoDigestionNotWired(URL)
     case extractionFailed(String)
     case retryUnavailable(String)
 }
@@ -220,6 +221,14 @@ public actor ClipDigestService: ClipDigesting {
                     now: now()
                 )
                 _ = try await recordStore.transition(id: clip.id, to: .indexing, now: now())
+
+            case let .videoFile(url):
+                _ = try await recordStore.transition(id: clip.id, to: .transcribing, now: now())
+                throw ClassifiedDigestFailure(
+                    reason: "Video digestion is not wired until W-M3.6 for \(url.lastPathComponent)",
+                    retryable: false,
+                    underlyingDescription: String(describing: ClipDigestServiceError.videoDigestionNotWired(url))
+                )
             }
 
             let bodyText = try normalizedRequired(clip.bodyText, fallback: nil)
