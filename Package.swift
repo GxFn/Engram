@@ -113,11 +113,20 @@ let package = Package(
         // MARK: - AppShell (assembly layer; the only place allowed to wire Infrastructure into Features)
         .target(
             name: "AppShell",
-            dependencies: ["AskFeature", "MemoryFeature", "BenchFeature", "SettingsFeature"],
+            dependencies: [
+                "AskFeature",
+                "MemoryFeature",
+                "BenchFeature",
+                "SettingsFeature",
+                "EngineKit",
+                "MLXEngine",
+                "ModelStore",
+            ],
             path: "Sources/AppShell"
         ),
 
         // MARK: - Tests
+        .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit"], path: "Tests/AskFeatureTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
