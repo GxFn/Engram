@@ -346,6 +346,66 @@ import Foundation
     #expect(DownloadState(completedBytes: 25, totalBytes: nil).fractionCompleted == nil)
 }
 
+@Test func huggingFaceSnapshotSelectionKeepsRequiredMLXFiles() {
+    let selected = HuggingFaceModelSnapshotDownloader.selectedSnapshotFilenames(from: [
+        ".gitattributes",
+        "README.md",
+        "config.json",
+        "model.safetensors",
+        "notes.txt",
+        "tokenizer.json",
+        "vocab.json",
+    ])
+
+    #expect(selected == [
+        "README.md",
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "vocab.json",
+    ])
+}
+
+@Test func huggingFaceKnownSnapshotFilenamesCoverBundledQwenTextModels() {
+    let expected = [
+        "README.md",
+        "added_tokens.json",
+        "config.json",
+        "merges.txt",
+        "model.safetensors.index.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "model.safetensors",
+    ]
+
+    #expect(HuggingFaceModelSnapshotDownloader.knownSnapshotFilenames(
+        for: ModelCatalog.qwen3_1_7B_4bit.id
+    ) == expected)
+    #expect(HuggingFaceModelSnapshotDownloader.knownSnapshotFilenames(
+        for: ModelCatalog.qwen3_4B_4bit.id
+    ) == expected)
+}
+
+@Test func huggingFaceDownloadSourcesIncludeModelScopeFallbackForBundledQwenTextModels() {
+    #expect(HuggingFaceModelSnapshotDownloader.fileURLs(
+        for: ModelCatalog.qwen3_1_7B_4bit.id,
+        filename: "config.json"
+    ).map(\.absoluteString) == [
+        "https://huggingface.co/mlx-community/Qwen3-1.7B-4bit/resolve/main/config.json",
+        "https://modelscope.cn/models/lmstudio-community/Qwen3-1.7B-MLX-4bit/resolve/master/config.json",
+    ])
+
+    #expect(HuggingFaceModelSnapshotDownloader.fileURLs(
+        for: ModelCatalog.qwen3_4B_4bit.id,
+        filename: "model.safetensors"
+    ).map(\.absoluteString) == [
+        "https://huggingface.co/mlx-community/Qwen3-4B-4bit/resolve/main/model.safetensors",
+        "https://modelscope.cn/models/lmstudio-community/Qwen3-4B-MLX-4bit/resolve/master/model.safetensors",
+    ])
+}
+
 private func makeTemporaryModelsDirectory() throws -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramModelStoreTests-\(UUID().uuidString)", isDirectory: true)

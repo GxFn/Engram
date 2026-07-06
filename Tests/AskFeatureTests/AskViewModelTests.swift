@@ -37,6 +37,30 @@ import Testing
 }
 
 @MainActor
+@Test func askViewModelHidesQwenThinkingTagsFromFinishedResponse() async {
+    let engine = FakeEngine(events: [
+        .token("<think>\n"),
+        .token("internal scratchpad"),
+        .token("\n</think>\n\nVisible answer"),
+        .finished(.stop, GenerationMetrics(
+            firstTokenLatencyMillis: nil,
+            tokensPerSecond: nil,
+            outputTokenCount: 2
+        )),
+    ])
+    let viewModel = AskViewModel(engine: engine, model: testModel)
+
+    guard let task = viewModel.send("Hello?") else {
+        Issue.record("Expected send to start")
+        return
+    }
+
+    await task.value
+
+    #expect(viewModel.messages[1].text == "Visible answer")
+}
+
+@MainActor
 @Test func askViewModelSurfacesSimulatorUnsupportedLoadFailure() async {
     let engine = FakeEngine(
         loadError: EngineError.notImplemented("simulator unsupported - use a device or macOS"),
@@ -189,6 +213,43 @@ import Testing
     #expect(prompt.contains("What did I save?"))
     #expect(viewModel.messages[1].text == "Grounded answer [1]")
     #expect(viewModel.messages[1].citations == citations.map(\.citation))
+}
+
+@MainActor
+@Test func askViewModelClearsCitationsWhenGroundedAnswerDeclinesSupport() async {
+    let engine = FakeEngine(events: [
+        .token("<think>\n</think>\n\n"),
+        .token("\(AskViewModel.noSupportingClipsMessage)。"),
+        .finished(.stop, GenerationMetrics(
+            firstTokenLatencyMillis: 3,
+            tokensPerSecond: 4,
+            outputTokenCount: 1
+        )),
+    ])
+    let retrieved = RetrievedChunk(
+        chunk: testChunk("one", text: "This domain is for use in documentation examples."),
+        score: 0.04,
+        citation: CitationRef(
+            chunkID: "one",
+            clipID: "clip-one",
+            snippet: "This domain is for use in documentation examples."
+        )
+    )
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: [retrieved])
+    )
+
+    guard let task = viewModel.send("你是什么模型") else {
+        Issue.record("Expected send to start")
+        return
+    }
+
+    await task.value
+
+    #expect(viewModel.messages[1].text == "\(AskViewModel.noSupportingClipsMessage)。")
+    #expect(viewModel.messages[1].citations.isEmpty)
 }
 
 @MainActor

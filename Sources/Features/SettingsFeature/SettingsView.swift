@@ -4,9 +4,7 @@ import UniformTypeIdentifiers
 public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
-    @State private var downloadTarget: ManagedModel?
     @State private var isShowingModelImporter = false
-    @State private var isShowingDownloadConfirmation = false
 
     public init(viewModel: SettingsViewModel) {
         _viewModel = State(initialValue: viewModel)
@@ -42,18 +40,6 @@ public struct SettingsView: View {
             Task {
                 await viewModel.installLocalModel(target, from: url)
             }
-        }
-        .confirmationDialog(
-            "Download Model",
-            isPresented: $isShowingDownloadConfirmation,
-            titleVisibility: .visible,
-            presenting: downloadTarget
-        ) { model in
-            Button("Download") {
-                viewModel.beginDownload(model)
-            }
-        } message: { _ in
-            Text("Large public model download. Use Wi-Fi or a stable connection.")
         }
         .navigationTitle("Settings")
     }
@@ -91,8 +77,7 @@ public struct SettingsView: View {
                     downloadProgress: model.id == viewModel.operationModelID ? viewModel.downloadProgress : nil,
                     select: { viewModel.selectModel(model.model) },
                     downloadModel: {
-                        downloadTarget = model
-                        isShowingDownloadConfirmation = true
+                        viewModel.beginDownload(model)
                     },
                     importModel: {
                         importTarget = model
@@ -195,6 +180,9 @@ private struct ModelManagementRow: View {
                 } else {
                     ProgressView()
                 }
+                Text(SettingsViewModel.formatProgress(downloadProgress))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             HStack {

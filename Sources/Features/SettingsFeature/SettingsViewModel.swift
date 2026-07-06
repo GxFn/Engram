@@ -220,6 +220,24 @@ public final class SettingsViewModel {
         return formatter.string(fromByteCount: safeBytes)
     }
 
+    public static func formatProgress(_ progress: ModelDownloadProgress?) -> String {
+        guard let progress else {
+            return "Preparing download"
+        }
+
+        let completed = formatBytes(progress.completedUnitCount)
+        if let total = progress.totalUnitCount, total > 0, let fraction = progress.fractionCompleted {
+            let percent = Int((fraction * 100).rounded(.down))
+            return "\(percent)% · \(completed) of \(formatBytes(total))"
+        }
+
+        if progress.completedUnitCount > 0 {
+            return "\(completed) downloaded"
+        }
+
+        return "Preparing download"
+    }
+
     public static func userFacingMessage(for error: Error) -> String {
         if let engineError = error as? EngineError {
             switch engineError {

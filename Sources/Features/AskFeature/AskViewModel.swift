@@ -367,6 +367,7 @@ public final class AskViewModel {
         metrics: GenerationMetrics
     ) {
         updateMessage(id) { message in
+            message.text = Self.displayText(from: message.text)
             message.metrics = metrics
             message.finishReason = reason
 
@@ -377,6 +378,10 @@ public final class AskViewModel {
                 message.errorMessage = message.text
             } else if message.text.isEmpty {
                 message.text = "No response."
+            }
+
+            if Self.isNoSupportingClipsAnswer(message.text) {
+                message.citations = []
             }
         }
     }
@@ -428,5 +433,45 @@ public final class AskViewModel {
         }
 
         return "Generation failed."
+    }
+
+    private nonisolated static func displayText(from rawText: String) -> String {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.localizedCaseInsensitiveContains("<think") else {
+            return trimmed
+        }
+
+        let closedThinkPattern = #"<think\b[^>]*>.*?</think>"#
+        let trailingThinkPattern = #"<think\b[^>]*>.*$"#
+        let strayThinkTagPattern = #"</?think\b[^>]*>"#
+        return [closedThinkPattern, trailingThinkPattern, strayThinkTagPattern].reduce(trimmed) { text, pattern in
+            replacingMatches(pattern, in: text, with: "")
+        }
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated static func isNoSupportingClipsAnswer(_ text: String) -> Bool {
+        text.contains(noSupportingClipsMessage)
+    }
+
+    private nonisolated static func replacingMatches(
+        _ pattern: String,
+        in text: String,
+        with replacement: String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else {
+            return text
+        }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: replacement
+        )
     }
 }

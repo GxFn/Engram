@@ -114,6 +114,24 @@ import Testing
 }
 
 @MainActor
+@Test func settingsDownloadProgressSummaryUsesBytesWhenTotalIsUnknown() {
+    let progress = ModelDownloadProgress(completedUnitCount: 1_048_576, totalUnitCount: nil)
+
+    #expect(SettingsViewModel.formatProgress(nil) == "Preparing download")
+    #expect(SettingsViewModel.formatProgress(progress) == "1 MB downloaded")
+}
+
+@MainActor
+@Test func settingsDownloadProgressSummaryUsesPercentWhenTotalIsKnown() {
+    let progress = ModelDownloadProgress(
+        completedUnitCount: 50 * 1_024 * 1_024,
+        totalUnitCount: 100 * 1_024 * 1_024
+    )
+
+    #expect(SettingsViewModel.formatProgress(progress) == "50% · 50 MB of 100 MB")
+}
+
+@MainActor
 @Test func settingsCancelledDownloadDoesNotFakeDownloadedState() async {
     let registry = FakeModelRegistry(
         models: [managedModel(recommendedModel, isDownloaded: false, isRecommended: true)],

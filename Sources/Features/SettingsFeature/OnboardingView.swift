@@ -4,9 +4,7 @@ import UniformTypeIdentifiers
 public struct OnboardingView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
-    @State private var downloadTarget: ManagedModel?
     @State private var isShowingModelImporter = false
-    @State private var isShowingDownloadConfirmation = false
     private let complete: () -> Void
 
     public init(viewModel: SettingsViewModel, complete: @escaping () -> Void) {
@@ -33,8 +31,7 @@ public struct OnboardingView: View {
                                 ? viewModel.downloadProgress
                                 : nil,
                             downloadModel: {
-                                downloadTarget = recommendedModel
-                                isShowingDownloadConfirmation = true
+                                viewModel.beginDownload(recommendedModel)
                             },
                             importModel: {
                                 importTarget = recommendedModel
@@ -74,18 +71,6 @@ public struct OnboardingView: View {
                     await viewModel.installLocalModel(target, from: url)
                 }
             }
-            .confirmationDialog(
-                "Download Model",
-                isPresented: $isShowingDownloadConfirmation,
-                titleVisibility: .visible,
-                presenting: downloadTarget
-            ) { model in
-                Button("Download") {
-                    viewModel.beginDownload(model)
-                }
-            } message: { _ in
-                Text("Large public model download. Use Wi-Fi or a stable connection.")
-            }
             .navigationTitle("Welcome")
         }
     }
@@ -116,6 +101,9 @@ private struct ModelSetupRow: View {
                 } else {
                     ProgressView()
                 }
+                Text(SettingsViewModel.formatProgress(downloadProgress))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if !model.isDownloaded {
