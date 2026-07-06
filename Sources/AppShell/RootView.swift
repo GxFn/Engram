@@ -39,7 +39,14 @@ private struct RootContent: View {
             }
                 .tabItem { Label("Ask", systemImage: "questionmark.bubble") }
 
-            NavigationStack { BenchView() }
+            NavigationStack {
+                if let dependencies {
+                    BenchView(
+                        engine: dependencies.activeEngine,
+                        model: dependencies.activeModel
+                    )
+                }
+            }
                 .tabItem { Label("Bench", systemImage: "gauge.with.dots.needle.67percent") }
         }
     }

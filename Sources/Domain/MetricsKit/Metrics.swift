@@ -1,5 +1,12 @@
 import Foundation
 
+public enum BenchMetric: String, Sendable, Hashable, Codable, CaseIterable {
+    case firstTokenLatencyMillis
+    case tokensPerSecond
+    case outputTokenCount
+    case peakMemoryBytes
+}
+
 /// One measured value inside a bench run (TTFT, tokens/s, peak RSS, …).
 public struct BenchSample: Sendable, Hashable, Codable {
     public let metric: String
@@ -50,6 +57,12 @@ public struct BenchRun: Sendable, Hashable, Codable {
         self.modelID = modelID
         self.environment = environment
         self.samples = samples
+    }
+}
+
+public extension BenchRun {
+    func sampleValue(_ metric: BenchMetric) -> Double? {
+        samples.first { $0.metric == metric.rawValue }?.value
     }
 }
 

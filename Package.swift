@@ -102,7 +102,8 @@ let package = Package(
         .target(
             name: "BenchFeature",
             dependencies: ["EngineKit", "MetricsKit", "EngramLogging"],
-            path: "Sources/Features/BenchFeature"
+            path: "Sources/Features/BenchFeature",
+            resources: [.process("BenchSuite")]
         ),
         .target(
             name: "SettingsFeature",
@@ -127,7 +128,9 @@ let package = Package(
 
         // MARK: - Tests
         .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit"], path: "Tests/AskFeatureTests"),
+        .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit"], path: "Tests/BenchFeatureTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
+        .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
