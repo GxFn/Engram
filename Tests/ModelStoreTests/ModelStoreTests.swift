@@ -32,6 +32,49 @@ import Foundation
     #expect(try await store.isDownloaded(model))
 }
 
+@Test func downloadedModelsIncludeManifestBackedDirectories() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelIdentity(
+        id: "custom/local-model",
+        family: "custom",
+        quantization: "4bit",
+        contextLength: 4_096,
+        estimatedMemoryBytes: 256_000_000
+    )
+    let manifestDirectory = modelsDirectory.appendingPathComponent("Imported/custom-model", isDirectory: true)
+    try FileManager.default.createDirectory(at: manifestDirectory, withIntermediateDirectories: true)
+    try writeManifest(for: model, in: manifestDirectory)
+    try writeFile(named: "weights.safetensors", bytes: 5, in: manifestDirectory)
+
+    let downloaded = try await store.downloadedModels()
+
+    #expect(downloaded == [model])
+}
+
+@Test func downloadedModelsIgnoreManifestDirectoriesWithoutPayload() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelIdentity(
+        id: "custom/metadata-only",
+        family: "custom",
+        quantization: "4bit",
+        contextLength: 4_096,
+        estimatedMemoryBytes: 256_000_000
+    )
+    let manifestDirectory = modelsDirectory.appendingPathComponent("Imported/metadata-only", isDirectory: true)
+    try FileManager.default.createDirectory(at: manifestDirectory, withIntermediateDirectories: true)
+    try writeManifest(for: model, in: manifestDirectory)
+
+    let downloaded = try await store.downloadedModels()
+
+    #expect(downloaded.isEmpty)
+}
+
 @Test func storageBytesIncludeNestedRegularFiles() async throws {
     let modelsDirectory = try makeTemporaryModelsDirectory()
     defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
@@ -136,4 +179,9 @@ private func makeModelDirectory(for model: ModelIdentity, in modelsDirectory: UR
 private func writeFile(named name: String, bytes: Int, in directory: URL) throws {
     let data = Data(repeating: 0x41, count: bytes)
     try data.write(to: directory.appendingPathComponent(name, isDirectory: false))
+}
+
+private func writeManifest(for model: ModelIdentity, in directory: URL) throws {
+    let data = try JSONEncoder().encode(model)
+    try data.write(to: directory.appendingPathComponent(".engram-model.json", isDirectory: false))
 }

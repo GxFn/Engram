@@ -59,8 +59,8 @@ public actor ModelStore {
             models.insert(model)
         }
 
-        for manifestModel in try manifestModels() where try containsPayloadFile(in: directoryURL(for: manifestModel)) {
-            models.insert(manifestModel)
+        for manifest in try manifests() where try containsPayloadFile(in: manifest.directory) {
+            models.insert(manifest.model)
         }
 
         return models.sorted { $0.id < $1.id }
@@ -117,12 +117,17 @@ public actor ModelStore {
         }
     }
 
-    private func manifestModels() throws -> [ModelIdentity] {
+    private struct ManifestRecord {
+        let model: ModelIdentity
+        let directory: URL
+    }
+
+    private func manifests() throws -> [ManifestRecord] {
         guard FileManager.default.fileExists(atPath: modelsDirectory.path) else {
             return []
         }
 
-        var models: [ModelIdentity] = []
+        var records: [ManifestRecord] = []
         try visitDirectories(under: modelsDirectory) { directory in
             let manifestURL = directory.appendingPathComponent(Self.manifestFileName)
             guard FileManager.default.fileExists(atPath: manifestURL.path) else {
@@ -130,10 +135,11 @@ public actor ModelStore {
             }
 
             let data = try Data(contentsOf: manifestURL)
-            models.append(try JSONDecoder().decode(ModelIdentity.self, from: data))
+            let model = try JSONDecoder().decode(ModelIdentity.self, from: data)
+            records.append(ManifestRecord(model: model, directory: directory))
         }
 
-        return models
+        return records
     }
 
     private func containsPayloadFile(in directory: URL) throws -> Bool {
