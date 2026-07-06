@@ -132,7 +132,7 @@ let package = Package(
         ),
         .target(
             name: "BenchFeature",
-            dependencies: ["EngineKit", "MetricsKit", "EngramLogging"],
+            dependencies: ["EngineKit", "MetricsKit", "RAGCore", "EngramLogging"],
             path: "Sources/Features/BenchFeature",
             resources: [.process("BenchSuite")]
         ),
@@ -181,7 +181,7 @@ let package = Package(
             ],
             path: "Tests/AppShellTests"
         ),
-        .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit"], path: "Tests/BenchFeatureTests"),
+        .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit", "RAGCore"], path: "Tests/BenchFeatureTests"),
         .testTarget(name: "ClipDigestTests", dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence"], path: "Tests/ClipDigestTests"),
         .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),

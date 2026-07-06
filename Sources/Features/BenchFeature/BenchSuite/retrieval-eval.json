@@ -1,0 +1,328 @@
+{
+  "clips": [
+    {
+      "id": "clip-share-extension",
+      "title": "Share Extension target",
+      "bodyText": "Share Extension receives selected text, URLs, and web page property lists. It enqueues clips through ClipPipeline and must not link MLX, ModelStore, SwiftData, or retrieval engines."
+    },
+    {
+      "id": "clip-app-group-queue",
+      "title": "App Group queue",
+      "bodyText": "The App Group queue stores one JSON clip per pending file. Enqueue writes a temporary file first, moves it atomically into pending, and uses failed quarantine for unreadable items."
+    },
+    {
+      "id": "clip-bg-digest",
+      "title": "Digest trigger paths",
+      "bodyText": "ClipDigest runs from app launch, foreground activation, Darwin clip-enqueued notifications, and a registered BGProcessing task. Registration happens at launch, while foreground digest is the reliable fallback."
+    },
+    {
+      "id": "clip-url-extraction",
+      "title": "URL extraction",
+      "bodyText": "URL clips are fetched only by the app-side digest service with a bounded timeout. Article extraction removes script, style, navigation, and prefers article or main content before paragraph-density fallback."
+    },
+    {
+      "id": "clip-paragraph-chunker",
+      "title": "Paragraph chunker",
+      "bodyText": "ParagraphChunker is pure RAGCore logic. It splits by blank-line paragraphs first, greedily merges near 800 characters, keeps 120 characters of overlap, and hard-splits overlong paragraphs."
+    },
+    {
+      "id": "clip-apple-embedding",
+      "title": "Apple embedding",
+      "bodyText": "AppleContextualEmbedding uses NaturalLanguage contextual embedding as the zero-download local path. It preserves input order, returns explicit unavailable errors when assets are missing, and never downloads from the network."
+    },
+    {
+      "id": "clip-qwen-embedding",
+      "title": "Qwen embedding",
+      "bodyText": "Qwen3EmbeddingMLX uses local Qwen3-Embedding model payloads through MLX. It reports not-downloaded, simulator-unavailable, load-failed, or invalid-output errors instead of returning synthetic vectors."
+    },
+    {
+      "id": "clip-sqlite-vector",
+      "title": "SQLite vector index",
+      "bodyText": "SQLiteVectorStore stores chunks and vectors in a statically linked sqlite-vec vec0 table. It records embedding engine id and dimension so incompatible embeddings force a rebuild."
+    },
+    {
+      "id": "clip-fts5-keyword",
+      "title": "FTS5 keyword index",
+      "bodyText": "FTS5KeywordIndex uses the same SQLite database with the trigram tokenizer. It supports Chinese substring keyword search, deterministic ordering, and deleteClip cleanup."
+    },
+    {
+      "id": "clip-hybrid-rrf",
+      "title": "Hybrid retrieval",
+      "bodyText": "HybridRetriever embeds the question, queries dense vector and sparse keyword indexes, then fuses both rankings with reciprocal rank fusion. The default path takes top 20 from each side and returns 8 citation chunks."
+    },
+    {
+      "id": "clip-ask-citations",
+      "title": "Ask citations",
+      "bodyText": "Ask retrieves local chunks before generation, builds numbered citation prompts like [1] through [8], trims context with countTokens, renders citation cards, and routes taps to Memory with clipID and chunkID."
+    },
+    {
+      "id": "clip-zero-hit",
+      "title": "Zero hit behavior",
+      "bodyText": "When retrieval has zero hits or a low fused score, Ask short-circuits without loading or generating from the LLM. The user-facing message is 你的剪藏里没有这条."
+    },
+    {
+      "id": "clip-bench-metrics",
+      "title": "Bench metrics",
+      "bodyText": "Bench uses a fixed prompt suite, three rounds, median aggregation, first-token latency, tokens per second, output tokens, peak memory, thermal state, and Markdown export for README evidence."
+    },
+    {
+      "id": "clip-settings-model",
+      "title": "Settings model management",
+      "bodyText": "Settings manages active engine, active model, generation temperature, topP, maxTokens, downloaded model rows, delete actions, and explicit download failure states without pretending progress."
+    },
+    {
+      "id": "clip-device-memory",
+      "title": "Device memory gate",
+      "bodyText": "DeviceCapability recommends a launch model from physical memory. The 4B model targets larger-memory devices, while smaller devices use the 1.7B model and avoid out-of-memory runs."
+    },
+    {
+      "id": "clip-offline-mode",
+      "title": "Offline mode",
+      "bodyText": "Engram's M2 loop is designed for airplane mode after clips are indexed. Local embeddings, SQLite vector search, FTS5 keyword search, and on-device generation should answer with citations without network access."
+    },
+    {
+      "id": "clip-queue-corruption",
+      "title": "Queue corruption handling",
+      "bodyText": "Corrupt or unreadable queue files move to failed quarantine with an error sidecar. The digest pipeline skips poisoned files, keeps valid queue files moving, and exposes retryable failure state."
+    },
+    {
+      "id": "clip-memory-ui",
+      "title": "Memory UI",
+      "bodyText": "Memory shows clip timeline rows with title, source URL, note, body text, indexed or failed state, index preview, retry for failed clips, and detail navigation for citation destinations."
+    },
+    {
+      "id": "clip-share-memory-limit",
+      "title": "Share extension memory limit",
+      "bodyText": "The Share Extension is intentionally lightweight because extension memory is tight. It links only ClipCore and ClipPipeline directly, completes quickly, and leaves URL fetching, indexing, and MLX work to the app."
+    },
+    {
+      "id": "clip-local-privacy",
+      "title": "Local privacy",
+      "bodyText": "Engram stores memory traces on the user's device. Product scope excludes cloud backend, accounts, sync, API keys, and generic server chat so clip memory remains physically local."
+    }
+  ],
+  "chunks": [
+    {
+      "id": "chunk-share-extension-0",
+      "clipID": "clip-share-extension",
+      "text": "Share Extension target receives selected text, URLs, and web page property lists. It enqueues clips through ClipPipeline and must not link MLX, ModelStore, SwiftData, or retrieval engines."
+    },
+    {
+      "id": "chunk-app-group-queue-0",
+      "clipID": "clip-app-group-queue",
+      "text": "App Group queue stores one JSON clip per pending file. Enqueue writes a temporary file first, moves it atomically into pending, and sends unreadable items to failed quarantine."
+    },
+    {
+      "id": "chunk-bg-digest-0",
+      "clipID": "clip-bg-digest",
+      "text": "ClipDigest trigger paths are app launch, foreground activation, Darwin clip-enqueued notification, and BGProcessing. BGProcessing registration happens at launch, while foreground digest is the reliable fallback."
+    },
+    {
+      "id": "chunk-url-extraction-0",
+      "clipID": "clip-url-extraction",
+      "text": "URL extraction belongs only to the app-side digest service. It uses a bounded timeout, removes script style navigation, prefers article or main content, and falls back to paragraph density."
+    },
+    {
+      "id": "chunk-paragraph-chunker-0",
+      "clipID": "clip-paragraph-chunker",
+      "text": "ParagraphChunker is pure RAGCore logic. It splits blank-line paragraphs first, greedily merges near 800 characters, keeps 120 characters of overlap, and hard-splits overlong paragraphs."
+    },
+    {
+      "id": "chunk-apple-embedding-0",
+      "clipID": "clip-apple-embedding",
+      "text": "AppleContextualEmbedding uses NaturalLanguage contextual embedding as the zero-download local path. It preserves input order and reports unavailable local assets without network downloads."
+    },
+    {
+      "id": "chunk-qwen-embedding-0",
+      "clipID": "clip-qwen-embedding",
+      "text": "Qwen3EmbeddingMLX uses local Qwen3-Embedding payloads through MLX. It reports not-downloaded, simulator-unavailable, load-failed, and invalid-output errors instead of synthetic vectors."
+    },
+    {
+      "id": "chunk-sqlite-vector-0",
+      "clipID": "clip-sqlite-vector",
+      "text": "SQLiteVectorStore stores chunks and vectors in statically linked sqlite-vec vec0 tables. The schema records embedding engine id and vector dimension to force rebuilds for incompatible embeddings."
+    },
+    {
+      "id": "chunk-fts5-keyword-0",
+      "clipID": "clip-fts5-keyword",
+      "text": "FTS5KeywordIndex shares the SQLite database and uses the trigram tokenizer. It enables Chinese substring keyword search, deterministic order, and deleteClip cleanup."
+    },
+    {
+      "id": "chunk-hybrid-rrf-0",
+      "clipID": "clip-hybrid-rrf",
+      "text": "HybridRetriever embeds each question, queries dense vector and sparse keyword indexes, then fuses both rankings with reciprocal rank fusion. It takes top 20 from each side and returns 8 citation chunks."
+    },
+    {
+      "id": "chunk-ask-citations-0",
+      "clipID": "clip-ask-citations",
+      "text": "Ask retrieves local chunks before generation, builds numbered citation prompts [1] through [8], trims context with countTokens, renders citation cards, and routes citation taps to Memory by clipID and chunkID."
+    },
+    {
+      "id": "chunk-zero-hit-0",
+      "clipID": "clip-zero-hit",
+      "text": "Zero-hit or low-score retrieval short-circuits Ask without loading or generating from the LLM. The fixed user-facing message is 你的剪藏里没有这条."
+    },
+    {
+      "id": "chunk-bench-metrics-0",
+      "clipID": "clip-bench-metrics",
+      "text": "Bench runs a fixed prompt suite for three rounds and aggregates medians for first-token latency, tokens per second, output tokens, peak memory, thermal state, and Markdown export."
+    },
+    {
+      "id": "chunk-settings-model-0",
+      "clipID": "clip-settings-model",
+      "text": "Settings manages active engine, active model, generation temperature, topP, maxTokens, downloaded model rows, delete actions, and explicit download failure states without pretending progress."
+    },
+    {
+      "id": "chunk-device-memory-0",
+      "clipID": "clip-device-memory",
+      "text": "DeviceCapability recommends a launch model from physical memory. The 4B model targets larger-memory devices, while smaller devices use the 1.7B model and avoid out-of-memory runs."
+    },
+    {
+      "id": "chunk-offline-mode-0",
+      "clipID": "clip-offline-mode",
+      "text": "Offline mode works after clips are indexed. Local embeddings, SQLite vector search, FTS5 keyword search, and on-device generation answer with citations without network access."
+    },
+    {
+      "id": "chunk-queue-corruption-0",
+      "clipID": "clip-queue-corruption",
+      "text": "Corrupt or unreadable queue files move to failed quarantine with an error sidecar. The digest pipeline skips poisoned files, keeps valid queue files moving, and exposes retryable failure state."
+    },
+    {
+      "id": "chunk-memory-ui-0",
+      "clipID": "clip-memory-ui",
+      "text": "Memory UI shows timeline rows with title, source URL, note, body text, indexed or failed state, index preview, retry for failed clips, and detail navigation for citation destinations."
+    },
+    {
+      "id": "chunk-share-memory-limit-0",
+      "clipID": "clip-share-memory-limit",
+      "text": "Share Extension memory is tight, so the extension links only ClipCore and ClipPipeline directly, completes quickly, and leaves URL fetching, indexing, and MLX work to the app."
+    },
+    {
+      "id": "chunk-local-privacy-0",
+      "clipID": "clip-local-privacy",
+      "text": "Local privacy means Engram stores memory traces on the user's device. Product scope excludes cloud backend, accounts, sync, API keys, and generic server chat."
+    }
+  ],
+  "questions": [
+    {
+      "id": "q-share-extension-deps",
+      "question": "Which note says the Share Extension enqueues clips through ClipPipeline and must not link MLX or ModelStore?",
+      "relevantClipIDs": ["clip-share-extension"]
+    },
+    {
+      "id": "q-app-group-atomic",
+      "question": "Where is the one JSON clip per pending file App Group queue and atomic temporary move described?",
+      "relevantClipIDs": ["clip-app-group-queue"]
+    },
+    {
+      "id": "q-bg-launch-registration",
+      "question": "Which clip says BGProcessing registration happens at launch and foreground digest is the reliable fallback?",
+      "relevantClipIDs": ["clip-bg-digest"]
+    },
+    {
+      "id": "q-url-article",
+      "question": "Which note explains URL extraction removing script style navigation and preferring article or main content?",
+      "relevantClipIDs": ["clip-url-extraction"]
+    },
+    {
+      "id": "q-paragraph-overlap",
+      "question": "What clip describes ParagraphChunker blank-line splitting, 800 character merge target, 120 overlap, and hard splits?",
+      "relevantClipIDs": ["clip-paragraph-chunker"]
+    },
+    {
+      "id": "q-apple-zero-download",
+      "question": "Which clip covers AppleContextualEmbedding as a NaturalLanguage zero-download local path with unavailable asset errors?",
+      "relevantClipIDs": ["clip-apple-embedding"]
+    },
+    {
+      "id": "q-qwen-local-errors",
+      "question": "Where are Qwen3EmbeddingMLX local payloads, not-downloaded, simulator-unavailable, load-failed, and invalid-output errors described?",
+      "relevantClipIDs": ["clip-qwen-embedding"]
+    },
+    {
+      "id": "q-sqlite-dimension",
+      "question": "Which note says SQLiteVectorStore uses statically linked sqlite-vec vec0 and records embedding engine id plus vector dimension?",
+      "relevantClipIDs": ["clip-sqlite-vector"]
+    },
+    {
+      "id": "q-fts5-trigram",
+      "question": "Which clip describes FTS5KeywordIndex trigram tokenizer for Chinese substring keyword search and deleteClip cleanup?",
+      "relevantClipIDs": ["clip-fts5-keyword"]
+    },
+    {
+      "id": "q-hybrid-rrf",
+      "question": "Where is HybridRetriever described as dense vector plus sparse keyword retrieval fused with reciprocal rank fusion?",
+      "relevantClipIDs": ["clip-hybrid-rrf"]
+    },
+    {
+      "id": "q-ask-numbered-citations",
+      "question": "Which note says Ask builds numbered citation prompts [1] through [8], uses countTokens, and routes citation taps by clipID and chunkID?",
+      "relevantClipIDs": ["clip-ask-citations"]
+    },
+    {
+      "id": "q-zero-hit-message",
+      "question": "Which clip contains the zero-hit message 你的剪藏里没有这条 and says the LLM is not loaded?",
+      "relevantClipIDs": ["clip-zero-hit"]
+    },
+    {
+      "id": "q-bench-median",
+      "question": "Where are Bench three rounds, median aggregation, first-token latency, tokens per second, peak memory, and Markdown export described?",
+      "relevantClipIDs": ["clip-bench-metrics"]
+    },
+    {
+      "id": "q-settings-config",
+      "question": "Which note covers Settings active engine, active model, generation temperature, topP, maxTokens, model rows, and delete actions?",
+      "relevantClipIDs": ["clip-settings-model"]
+    },
+    {
+      "id": "q-device-capability",
+      "question": "Where does DeviceCapability recommend a launch model from physical memory, choosing 4B for larger memory and 1.7B for smaller devices?",
+      "relevantClipIDs": ["clip-device-memory"]
+    },
+    {
+      "id": "q-offline-search",
+      "question": "Which clip explains airplane or offline mode after indexing with local embeddings, SQLite vector search, FTS5 keyword search, and citations without network?",
+      "relevantClipIDs": ["clip-offline-mode"]
+    },
+    {
+      "id": "q-corrupt-quarantine",
+      "question": "Which note says corrupt queue files move to failed quarantine with an error sidecar and valid files continue?",
+      "relevantClipIDs": ["clip-queue-corruption"]
+    },
+    {
+      "id": "q-memory-timeline",
+      "question": "Where is the Memory UI timeline with source URL, indexed or failed state, index preview, retry, and citation destination navigation described?",
+      "relevantClipIDs": ["clip-memory-ui"]
+    },
+    {
+      "id": "q-extension-memory",
+      "question": "Which clip says Share Extension memory is tight and it links only ClipCore and ClipPipeline while leaving URL fetching indexing and MLX to the app?",
+      "relevantClipIDs": ["clip-share-memory-limit"]
+    },
+    {
+      "id": "q-local-privacy",
+      "question": "Which note says Engram stores memory traces on the user's device and excludes cloud backend accounts sync API keys and generic server chat?",
+      "relevantClipIDs": ["clip-local-privacy"]
+    },
+    {
+      "id": "q-vector-and-keyword",
+      "question": "Which clips together describe SQLite vector search and FTS5 keyword search?",
+      "relevantClipIDs": ["clip-sqlite-vector", "clip-fts5-keyword"]
+    },
+    {
+      "id": "q-retrieval-to-ask",
+      "question": "Which clips together explain HybridRetriever ranking and Ask citation rendering?",
+      "relevantClipIDs": ["clip-hybrid-rrf", "clip-ask-citations"]
+    },
+    {
+      "id": "q-queue-to-digest",
+      "question": "Which clips together explain App Group queue files and ClipDigest trigger paths?",
+      "relevantClipIDs": ["clip-app-group-queue", "clip-bg-digest"]
+    },
+    {
+      "id": "q-privacy-offline",
+      "question": "Which clips together support local privacy and offline retrieval without network?",
+      "relevantClipIDs": ["clip-local-privacy", "clip-offline-mode"]
+    }
+  ]
+}

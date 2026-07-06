@@ -1,4 +1,5 @@
 import AskFeature
+import BenchFeature
 import ClipDigest
 import EngramLogging
 import EngineKit
@@ -177,6 +178,15 @@ public final class AppDependencies {
             model: activeModel,
             generationConfig: generationConfig,
             retriever: retriever
+        )
+    }
+
+    public func makeBenchViewModel() -> BenchViewModel {
+        BenchViewModel(
+            engine: activeEngine,
+            model: activeModel,
+            generationConfig: generationConfig,
+            retrievalEvalRunner: try? RetrievalEvalRunner.bundledFixture()
         )
     }
 

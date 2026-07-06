@@ -79,11 +79,7 @@ private struct RootContent: View {
 
             NavigationStack {
                 if let dependencies {
-                    BenchView(
-                        engine: dependencies.activeEngine,
-                        model: dependencies.activeModel,
-                        generationConfig: dependencies.generationConfig
-                    )
+                    BenchView(viewModel: dependencies.makeBenchViewModel())
                     .id(consumerIdentity(for: dependencies))
                     .toolbar { settingsToolbar }
                 }

@@ -1,5 +1,6 @@
 import AppShell
 import AskFeature
+import BenchFeature
 import ClipCore
 import ClipDigest
 import ClipPipeline
@@ -171,6 +172,23 @@ import Testing
     let target = AppDependencies.memoryNavigationTarget(for: citation)
     #expect(target.clipID == "clip-route")
     #expect(target.chunkID == "chunk-route")
+}
+
+@MainActor
+@Test func appShellBuildsBenchViewModelWithRetrievalEvalRunner() async throws {
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        activeModel: ModelCatalog.qwen3_1_7B_4bit,
+        defaults: nil
+    )
+    let bench = dependencies.makeBenchViewModel()
+
+    let task = try #require(bench.runRetrievalEval())
+    await task.value
+
+    let hybrid = try #require(bench.latestRetrievalEval?.result(for: .hybrid))
+    #expect(hybrid.recallAt8 >= 0.8)
+    #expect(bench.latestRetrievalEval?.questionCount == 24)
 }
 
 private func makeDefaults() -> UserDefaults {

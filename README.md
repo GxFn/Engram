@@ -65,6 +65,17 @@ App (Xcode target: @main + assembly)
 | Qwen3-4B-4bit | — | — | — | — | — |
 | Qwen3-1.7B-4bit | — | — | — | — | — |
 
+## Retrieval Evaluation
+
+Source: `Sources/Features/BenchFeature/BenchSuite/retrieval-eval.json` (20 fixed clips, 24 gold questions).
+Reproduce: `swift test --filter retrievalEvalRunnerReportsReadmeComparisonFromBundledFixture`.
+
+| Strategy | Questions | Recall@8 | MRR |
+| --- | ---: | ---: | ---: |
+| Hybrid | 24 | 1.00 | 0.98 |
+| Vector-only | 24 | 1.00 | 0.96 |
+| Keyword-only | 24 | 1.00 | 0.98 |
+
 ## Requirements
 
 - iOS 26.0+,建议 8GB 内存机型(iPhone 15 Pro / 16 系起)

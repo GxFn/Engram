@@ -37,6 +37,7 @@ public struct BenchView: View {
                 if let latestRun = viewModel.latestRun {
                     resultSection(latestRun)
                 }
+                retrievalEvalSection
                 historySection
             }
             .padding()
@@ -100,6 +101,55 @@ public struct BenchView: View {
         }
     }
 
+    private var retrievalEvalSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Retrieval")
+                .font(.headline)
+
+            if let progress = viewModel.retrievalEvalProgress {
+                ProgressView(
+                    value: Double(progress.completedQueries),
+                    total: Double(progress.totalQueries)
+                )
+                Text("\(progress.strategy.displayName) · \(progress.completedQueries)/\(progress.totalQueries)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 10) {
+                Button(action: { viewModel.runRetrievalEval() }) {
+                    Label("Retrieval Eval", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isRunningRetrievalEval)
+
+                Button(action: viewModel.stopRetrievalEval) {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.isRunningRetrievalEval)
+
+                if viewModel.latestRetrievalEval != nil {
+                    ShareLink(item: viewModel.retrievalEvalMarkdown) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            if let errorMessage = viewModel.retrievalEvalErrorMessage {
+                Text(errorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            if let run = viewModel.latestRetrievalEval {
+                retrievalEvalTable(run)
+            }
+        }
+    }
+
     private func resultSection(_ run: BenchRun) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Latest")
@@ -143,6 +193,32 @@ public struct BenchView: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    private func retrievalEvalTable(_ run: RetrievalEvalRun) -> some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Strategy")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Recall@\(run.topK)")
+                    .foregroundStyle(.secondary)
+                Text("MRR")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+
+            ForEach(run.strategyResults, id: \.strategy) { result in
+                HStack {
+                    Text(result.strategy.displayName)
+                    Spacer()
+                    Text(String(format: "%.2f", result.recallAt8))
+                        .font(.body.monospacedDigit())
+                    Text(String(format: "%.2f", result.mrr))
+                        .font(.body.monospacedDigit())
                 }
             }
         }

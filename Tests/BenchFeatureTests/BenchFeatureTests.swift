@@ -1,6 +1,7 @@
 import EngineKit
 import Foundation
 import MetricsKit
+import RAGCore
 import Testing
 @testable import BenchFeature
 
@@ -118,6 +119,104 @@ import Testing
     } catch {
         Issue.record("Unexpected error: \(error)")
     }
+}
+
+@Test func retrievalEvalSuiteLoadsBundledFixtureAndValidatesGoldClips() throws {
+    let suite = try RetrievalEvalSuite.bundled()
+
+    #expect(suite.clips.count == 20)
+    #expect(suite.chunks.count == 20)
+    #expect(suite.questions.count == 24)
+    #expect(suite.questions.allSatisfy { !$0.relevantClipIDs.isEmpty })
+    #expect(suite.questions.contains { $0.id == "q-zero-hit-message" })
+    #expect(suite.chunks.contains { $0.clipID == "clip-hybrid-rrf" })
+}
+
+@Test func retrievalEvalMetricsCalculateRecallAndMRR() {
+    let relevant = ["clip-a", "clip-c"]
+    let ranked = ["clip-b", "clip-c", "clip-d", "clip-a"]
+
+    #expect(RetrievalEvalMetrics.recallAtK(
+        relevantClipIDs: relevant,
+        rankedClipIDs: ranked,
+        k: 3
+    ) == 0.5)
+    #expect(RetrievalEvalMetrics.reciprocalRank(
+        relevantClipIDs: relevant,
+        rankedClipIDs: ranked
+    ) == 0.5)
+    #expect(RetrievalEvalMetrics.uniqueClipIDs(from: [
+        RetrievalEvalHit(clipID: "clip-a", chunkID: "a-1", score: 1),
+        RetrievalEvalHit(clipID: "clip-a", chunkID: "a-2", score: 0.9),
+        RetrievalEvalHit(clipID: "clip-b", chunkID: "b-1", score: 0.8),
+    ]) == ["clip-a", "clip-b"])
+}
+
+@Test func retrievalEvalClientRunsHybridVectorAndKeywordStrategiesAgainstFixture() async throws {
+    let suite = try RetrievalEvalSuite.bundled()
+    let client = RetrievalEvalClient.fixture(suite: suite)
+    let question = try #require(suite.questions.first { $0.id == "q-hybrid-rrf" })
+
+    let hybridHits = try await client.search(.hybrid, question.question, 8)
+    let vectorHits = try await client.search(.vectorOnly, question.question, 8)
+    let keywordHits = try await client.search(.keywordOnly, question.question, 8)
+
+    #expect(RetrievalEvalMetrics.uniqueClipIDs(from: hybridHits).first == "clip-hybrid-rrf")
+    #expect(RetrievalEvalMetrics.uniqueClipIDs(from: vectorHits).contains("clip-hybrid-rrf"))
+    #expect(RetrievalEvalMetrics.uniqueClipIDs(from: keywordHits).contains("clip-hybrid-rrf"))
+}
+
+@Test func retrievalEvalRunnerReportsReadmeComparisonFromBundledFixture() async throws {
+    let runner = try RetrievalEvalRunner.bundledFixture(
+        idProvider: { "retrieval-run" },
+        dateProvider: { Date(timeIntervalSince1970: 0) }
+    )
+
+    let run = try await runner.run()
+    let hybrid = try #require(run.result(for: .hybrid))
+    let vector = try #require(run.result(for: .vectorOnly))
+    let keyword = try #require(run.result(for: .keywordOnly))
+    let markdown = MarkdownExporter.retrievalTable(for: run)
+
+    #expect(run.questionCount == 24)
+    #expect(hybrid.recallAt8 >= 0.8)
+    #expect(hybrid.recallAt8 >= vector.recallAt8)
+    #expect(hybrid.recallAt8 >= keyword.recallAt8)
+    #expect(hybrid.mrr >= vector.mrr)
+    #expect(hybrid.mrr >= keyword.mrr)
+    #expect(markdown.contains("| Strategy | Questions | Recall@8 | MRR |"))
+    #expect(markdown.contains("| Hybrid | 24 |"))
+}
+
+@MainActor
+@Test func benchViewModelRunsRetrievalEvalFromInjectedRunner() async throws {
+    let engine = FakeBenchEngine(outcomes: [.finished(metrics(ttft: 10, tokensPerSecond: 1, outputTokens: 4))])
+    let benchRunner = BenchRunner(
+        engine: engine,
+        model: testModel,
+        promptSuite: BenchPromptSuite(prompts: [BenchPrompt(id: "p", text: "Prompt")]),
+        rounds: 1,
+        memorySampler: MemorySampler(readPhysFootprintBytes: { 1 }),
+        thermalObserver: ThermalObserver()
+    )
+    let retrievalRunner = try RetrievalEvalRunner.bundledFixture(
+        idProvider: { "retrieval-run" },
+        dateProvider: { Date(timeIntervalSince1970: 0) }
+    )
+    let viewModel = BenchViewModel(
+        runner: benchRunner,
+        retrievalEvalRunner: retrievalRunner,
+        engineName: "Fake",
+        modelName: "Model"
+    )
+
+    let task = try #require(viewModel.runRetrievalEval())
+    await task.value
+
+    #expect(viewModel.latestRetrievalEval?.id == "retrieval-run")
+    #expect(viewModel.latestRetrievalEval?.questionCount == 24)
+    #expect(viewModel.retrievalEvalErrorMessage == nil)
+    #expect(viewModel.retrievalEvalMarkdown.contains("| Hybrid | 24 |"))
 }
 
 private let testModel = ModelIdentity(
