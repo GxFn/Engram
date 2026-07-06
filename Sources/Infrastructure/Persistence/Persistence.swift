@@ -1,3 +1,4 @@
+import AppGroupSupport
 import ClipCore
 import Foundation
 import SwiftData
@@ -34,10 +35,39 @@ public final class ClipRecord {
 }
 
 public enum PersistenceStack {
-    /// M1 uses the default app container; M2 moves storage into the App Group
-    /// container so the Share Extension writes the same store.
-    public static func makeContainer(inMemory: Bool = false) throws -> ModelContainer {
-        let configuration = ModelConfiguration(isStoredInMemoryOnly: inMemory)
+    public static func makeContainer(
+        inMemory: Bool = false,
+        appGroupContainerURL: ((String) -> URL?)? = nil,
+        fallbackBaseURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> ModelContainer {
+        let configuration: ModelConfiguration
+        if inMemory {
+            configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        } else {
+            let storeURL = try storeURL(
+                appGroupContainerURL: appGroupContainerURL,
+                fallbackBaseURL: fallbackBaseURL,
+                fileManager: fileManager
+            )
+            configuration = ModelConfiguration("Engram", url: storeURL)
+        }
+
         return try ModelContainer(for: ClipRecord.self, configurations: configuration)
+    }
+
+    public static func storeURL(
+        appGroupContainerURL: ((String) -> URL?)? = nil,
+        fallbackBaseURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let resolver = appGroupContainerURL ?? {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
+        }
+        return try EngramAppGroup.locations(
+            fileManager: fileManager,
+            containerURL: resolver,
+            fallbackBaseURL: fallbackBaseURL
+        ).storeURL
     }
 }

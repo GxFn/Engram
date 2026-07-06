@@ -1,7 +1,9 @@
 import AskFeature
 import BenchFeature
 import MemoryFeature
+import Persistence
 import SettingsFeature
+import SwiftData
 import SwiftUI
 
 /// App shell: three-tab layout per the requirement design (Memory / Ask /
@@ -9,15 +11,26 @@ import SwiftUI
 /// stores happens here and only here — features never see Infrastructure.
 public struct RootView: View {
     @State private var dependencies: AppDependencies
+    private let modelContainer: ModelContainer?
 
     @MainActor
-    public init(dependencies: AppDependencies = AppDependencies()) {
+    public init(
+        dependencies: AppDependencies = AppDependencies(),
+        modelContainer: ModelContainer? = try? PersistenceStack.makeContainer()
+    ) {
         _dependencies = State(initialValue: dependencies)
+        self.modelContainer = modelContainer
     }
 
     public var body: some View {
-        RootContent()
+        let content = RootContent()
             .environment(\.deps, Optional(dependencies))
+
+        if let modelContainer {
+            content.modelContainer(modelContainer)
+        } else {
+            content
+        }
     }
 }
 

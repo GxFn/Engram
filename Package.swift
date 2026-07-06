@@ -5,7 +5,7 @@ import PackageDescription
 // Features depend on Domain protocols only; Infrastructure implements Domain
 // protocols as leaf plugins; AppShell is the assembly layer consumed by the
 // Xcode app target. Extension targets (M2 ShareExtension) must only ever link
-// lightweight modules (ClipCore/Persistence) — engines stay out by structure,
+// lightweight modules (ClipCore/AppGroupSupport/ClipPipeline) — engines stay out by structure,
 // not by discipline.
 let package = Package(
     name: "Engram",
@@ -27,6 +27,7 @@ let package = Package(
         .library(name: "ClipPipeline", targets: ["ClipPipeline"]),
         .library(name: "ModelStore", targets: ["ModelStore"]),
         .library(name: "Persistence", targets: ["Persistence"]),
+        .library(name: "AppGroupSupport", targets: ["AppGroupSupport"]),
         .library(name: "EngramLogging", targets: ["EngramLogging"]),
     ],
     dependencies: [
@@ -42,6 +43,7 @@ let package = Package(
         .target(name: "MetricsKit", path: "Sources/Domain/MetricsKit"),
 
         // MARK: - Shared kits
+        .target(name: "AppGroupSupport", path: "Sources/Shared/AppGroupSupport"),
         .target(name: "EngramLogging", path: "Sources/Shared/EngramLogging"),
 
         // MARK: - Infrastructure (protocol implementations, leaf plugins)
@@ -84,7 +86,7 @@ let package = Package(
         ),
         .target(
             name: "Persistence",
-            dependencies: ["ClipCore", "EngramLogging"],
+            dependencies: ["ClipCore", "AppGroupSupport", "EngramLogging"],
             path: "Sources/Infrastructure/Persistence"
         ),
 
@@ -122,6 +124,7 @@ let package = Package(
                 "EngineKit",
                 "MLXEngine",
                 "ModelStore",
+                "Persistence",
             ],
             path: "Sources/AppShell"
         ),
@@ -134,6 +137,7 @@ let package = Package(
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
+        .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence"], path: "Tests/PersistenceTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
