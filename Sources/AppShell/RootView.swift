@@ -15,10 +15,10 @@ public struct RootView: View {
 
     @MainActor
     public init(
-        dependencies: AppDependencies = AppDependencies(),
+        dependencies: AppDependencies? = nil,
         modelContainer: ModelContainer? = try? PersistenceStack.makeContainer()
     ) {
-        _dependencies = State(initialValue: dependencies)
+        _dependencies = State(initialValue: dependencies ?? AppDependencies(modelContainer: modelContainer))
         self.modelContainer = modelContainer
     }
 
@@ -36,13 +36,19 @@ public struct RootView: View {
 
 private struct RootContent: View {
     @Environment(\.deps) private var dependencies
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarded") private var onboarded = false
 
     var body: some View {
         TabView {
             NavigationStack {
-                MemoryView()
-                    .toolbar { settingsToolbar }
+                if let dependencies {
+                    MemoryView(viewModel: dependencies.makeMemoryViewModel())
+                        .toolbar { settingsToolbar }
+                } else {
+                    ContentUnavailableView("Memory", systemImage: "tray.full")
+                        .toolbar { settingsToolbar }
+                }
             }
                 .tabItem { Label("Memory", systemImage: "tray.full") }
 
@@ -78,6 +84,22 @@ private struct RootContent: View {
                     viewModel: dependencies.makeSettingsViewModel(),
                     complete: { onboarded = true }
                 )
+            }
+        }
+        .task {
+            dependencies?.configureClipDigestTriggers()
+            await dependencies?.digestPendingClips()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                Task { await dependencies?.digestPendingClips() }
+            case .background:
+                dependencies?.scheduleClipDigest()
+            case .inactive:
+                break
+            @unknown default:
+                break
             }
         }
     }

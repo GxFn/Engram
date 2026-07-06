@@ -25,6 +25,7 @@ let package = Package(
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
         .library(name: "VectorStoreSQLite", targets: ["VectorStoreSQLite"]),
         .library(name: "ClipPipeline", targets: ["ClipPipeline"]),
+        .library(name: "ClipDigest", targets: ["ClipDigest"]),
         .library(name: "ModelStore", targets: ["ModelStore"]),
         .library(name: "Persistence", targets: ["Persistence"]),
         .library(name: "AppGroupSupport", targets: ["AppGroupSupport"]),
@@ -80,6 +81,11 @@ let package = Package(
             path: "Sources/Infrastructure/ClipPipeline"
         ),
         .target(
+            name: "ClipDigest",
+            dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline", "Persistence", "EngramLogging"],
+            path: "Sources/Infrastructure/ClipDigest"
+        ),
+        .target(
             name: "ModelStore",
             dependencies: ["EngineKit", "EngramLogging"],
             path: "Sources/Infrastructure/ModelStore"
@@ -122,6 +128,7 @@ let package = Package(
                 "BenchFeature",
                 "SettingsFeature",
                 "EngineKit",
+                "ClipDigest",
                 "MLXEngine",
                 "ModelStore",
                 "Persistence",
@@ -131,8 +138,13 @@ let package = Package(
 
         // MARK: - Tests
         .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit"], path: "Tests/AskFeatureTests"),
-        .testTarget(name: "AppShellTests", dependencies: ["AppShell", "EngineKit", "ModelStore"], path: "Tests/AppShellTests"),
+        .testTarget(
+            name: "AppShellTests",
+            dependencies: ["AppShell", "EngineKit", "ModelStore", "ClipCore", "ClipDigest", "ClipPipeline", "Persistence"],
+            path: "Tests/AppShellTests"
+        ),
         .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit"], path: "Tests/BenchFeatureTests"),
+        .testTarget(name: "ClipDigestTests", dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence"], path: "Tests/ClipDigestTests"),
         .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),

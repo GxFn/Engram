@@ -1,8 +1,13 @@
+import ClipDigest
+import EngramLogging
 import EngineKit
+import MemoryFeature
 import MLXEngine
 import ModelStore
 import Observation
+import Persistence
 import SettingsFeature
+import SwiftData
 import SwiftUI
 
 @MainActor
@@ -22,8 +27,11 @@ public final class AppDependencies {
     public var activeModel: ModelIdentity
     public var generationConfig: GenerationConfig
 
+    @ObservationIgnored public let clipDigestService: ClipDigestService?
     @ObservationIgnored private let deviceCapability: DeviceCapability
     @ObservationIgnored private let defaults: UserDefaults?
+    @ObservationIgnored private let clipDigestBackgroundScheduler: ClipDigestBackgroundScheduler
+    @ObservationIgnored private var clipNotificationObserver: ClipEnqueueNotificationObserver?
 
     public init(
         engines: [any LLMEngine] = [MLXEngine()],
@@ -32,7 +40,10 @@ public final class AppDependencies {
         activeModel: ModelIdentity? = nil,
         generationConfig: GenerationConfig? = nil,
         deviceCapability: DeviceCapability = DeviceCapability(),
-        defaults: UserDefaults? = .standard
+        defaults: UserDefaults? = .standard,
+        modelContainer: ModelContainer? = nil,
+        clipDigestService: ClipDigestService? = nil,
+        clipDigestBackgroundScheduler: ClipDigestBackgroundScheduler = ClipDigestBackgroundScheduler()
     ) {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
         let resolvedModel = activeModel
@@ -51,8 +62,11 @@ public final class AppDependencies {
                 ?? Self.storedGenerationConfig(defaults: defaults)
                 ?? .default
         )
+        self.clipDigestService = clipDigestService
+            ?? modelContainer.flatMap { try? ClipDigestService.live(modelContainer: $0) }
         self.deviceCapability = deviceCapability
         self.defaults = defaults
+        self.clipDigestBackgroundScheduler = clipDigestBackgroundScheduler
     }
 
     public func selectEngine(id: String) {
@@ -133,6 +147,70 @@ public final class AppDependencies {
         )
     }
 
+    public func makeMemoryViewModel() -> MemoryViewModel {
+        guard let clipDigestService else {
+            return MemoryViewModel()
+        }
+
+        return MemoryViewModel(client: MemoryClient(
+            loadItems: {
+                let snapshots = try await clipDigestService.memorySnapshots()
+                return snapshots.map(Self.memoryClip(from:))
+            },
+            digestPending: {
+                try await clipDigestService.digestPending()
+            },
+            retryClip: { id in
+                try await clipDigestService.retryFailedClip(id: id)
+            }
+        ))
+    }
+
+    public func configureClipDigestTriggers() {
+        guard let clipDigestService else {
+            return
+        }
+
+        if clipNotificationObserver == nil {
+            let observer = ClipEnqueueNotificationObserver {
+                Task {
+                    do {
+                        try await clipDigestService.digestPending()
+                    } catch {
+                        Log.clip.error("Notification-triggered digest failed: \(String(describing: error), privacy: .public)")
+                    }
+                }
+            }
+            observer.start()
+            clipNotificationObserver = observer
+        }
+
+        _ = clipDigestBackgroundScheduler.register {
+            do {
+                try await clipDigestService.digestPending()
+                return true
+            } catch {
+                Log.clip.error("BGProcessing digest failed: \(String(describing: error), privacy: .public)")
+                return false
+            }
+        }
+    }
+
+    public func digestPendingClips() async {
+        guard let clipDigestService else {
+            return
+        }
+        do {
+            try await clipDigestService.digestPending()
+        } catch {
+            Log.clip.error("Foreground digest failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    public func scheduleClipDigest() {
+        _ = clipDigestBackgroundScheduler.submit()
+    }
+
     private func persistGenerationConfig() {
         defaults?.set(generationConfig.temperature, forKey: DefaultsKey.temperature)
         defaults?.set(generationConfig.topP, forKey: DefaultsKey.topP)
@@ -184,6 +262,35 @@ public final class AppDependencies {
         }
 
         return uniqueModels
+    }
+
+    private nonisolated static func memoryClip(from snapshot: ClipRecordSnapshot) -> MemoryClip {
+        MemoryClip(
+            id: snapshot.id,
+            title: memoryTitle(from: snapshot),
+            sourceURL: snapshot.url,
+            note: snapshot.note,
+            bodyText: snapshot.bodyText,
+            createdAt: snapshot.createdAt,
+            updatedAt: snapshot.updatedAt,
+            state: snapshot.state,
+            failureReason: snapshot.failureReason,
+            failureRetryable: snapshot.failureRetryable,
+            indexPreview: snapshot.indexPreview
+        )
+    }
+
+    private nonisolated static func memoryTitle(from snapshot: ClipRecordSnapshot) -> String {
+        if let title = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        if let host = snapshot.url?.host(), !host.isEmpty {
+            return host
+        }
+        if let bodyText = snapshot.bodyText?.trimmingCharacters(in: .whitespacesAndNewlines), !bodyText.isEmpty {
+            return String(bodyText.prefix(48))
+        }
+        return "Untitled Clip"
     }
 }
 

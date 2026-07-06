@@ -1,7 +1,12 @@
 import AppShell
+import ClipCore
+import ClipDigest
+import ClipPipeline
 import EngineKit
 import Foundation
 import ModelStore
+import Persistence
+import SwiftData
 import Testing
 
 @MainActor
@@ -65,6 +70,39 @@ import Testing
     #expect(downloaded?.isDownloaded == true)
     #expect(downloaded?.storageBytes == 7)
     #expect(settings.recommendedModel?.id == ModelCatalog.qwen3_1_7B_4bit.id)
+}
+
+@MainActor
+@Test func appShellMemoryBridgeDigestsQueueIntoViewModelItems() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellMemoryTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let queueStore = ClipQueueStore(queueDirectory: root.appendingPathComponent("queue", isDirectory: true))
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let recordStore = ClipRecordStore(modelContainer: container)
+    let digestService = ClipDigestService(queueStore: queueStore, recordStore: recordStore)
+    try queueStore.enqueue(Clip(
+        id: "memory-bridge",
+        source: .text("Body from queue"),
+        title: "Queued Memory",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_100)
+    ))
+
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        defaults: nil,
+        clipDigestService: digestService
+    )
+    let memory = dependencies.makeMemoryViewModel()
+
+    await memory.digestAndRefresh()
+
+    #expect(memory.items.count == 1)
+    #expect(memory.items.first?.id == "memory-bridge")
+    #expect(memory.items.first?.state == .indexed)
+    #expect(memory.items.first?.bodyText == "Body from queue")
 }
 
 private func makeDefaults() -> UserDefaults {

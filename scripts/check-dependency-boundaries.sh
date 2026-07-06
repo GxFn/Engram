@@ -21,9 +21,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-FEATURE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(MLXEngine|FMEngine|ClipPipeline|VectorStoreSQLite|EmbeddingMLX|ModelStore|Persistence)([[:space:]]|$)'
-EXTENSION_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppGroupSupport|AppShell|AskFeature|BenchFeature|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|VectorStoreSQLite)([[:space:]]|$)'
-CLIPPIPELINE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppKit|AppShell|AskFeature|BenchFeature|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|SwiftUI|UIKit|VectorStoreSQLite)([[:space:]]|$)'
+FEATURE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(MLXEngine|FMEngine|ClipDigest|ClipPipeline|VectorStoreSQLite|EmbeddingMLX|ModelStore|Persistence)([[:space:]]|$)'
+EXTENSION_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppGroupSupport|AppShell|AskFeature|BenchFeature|ClipDigest|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|VectorStoreSQLite)([[:space:]]|$)'
+CLIPPIPELINE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppKit|AppShell|AskFeature|BenchFeature|ClipDigest|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|SwiftUI|UIKit|VectorStoreSQLite)([[:space:]]|$)'
 
 check_swift_imports() {
   local label="$1"

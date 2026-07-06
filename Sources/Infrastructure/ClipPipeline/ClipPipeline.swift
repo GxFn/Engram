@@ -237,14 +237,3 @@ public struct ClipQueueWriter: ClipQueuing {
         return ClipQueueStore(locations: locations)
     }
 }
-
-/// Main-app-side digester placeholder (M2). Queue file deletion is exposed on
-/// `ClipQueueStore` so future digestion can remove a file only after the caller
-/// has durably persisted the clip record.
-public actor ClipDigestService: ClipDigesting {
-    public init() {}
-
-    public func digestPending() async throws {
-        throw ClipError.notImplemented("M2")
-    }
-}

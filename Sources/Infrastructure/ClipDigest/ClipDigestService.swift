@@ -1,0 +1,331 @@
+import AppGroupSupport
+import ClipCore
+import ClipPipeline
+import EngramLogging
+import Foundation
+import Persistence
+import SwiftData
+
+public struct FetchedArticleHTML: Sendable {
+    public let url: URL
+    public let html: String
+    public let suggestedTitle: String?
+
+    public init(url: URL, html: String, suggestedTitle: String? = nil) {
+        self.url = url
+        self.html = html
+        self.suggestedTitle = suggestedTitle
+    }
+}
+
+public protocol ArticleFetching: Sendable {
+    func fetchHTML(from url: URL) async throws -> FetchedArticleHTML
+}
+
+public enum ArticleFetchError: Error, Equatable, Sendable {
+    case invalidResponse
+    case statusCode(Int)
+    case emptyBody
+}
+
+public struct URLSessionArticleFetcher: ArticleFetching {
+    private let timeout: TimeInterval
+    private let dataForRequest: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    public init(timeout: TimeInterval = 15) {
+        self.init(timeout: timeout) { request in
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = timeout
+            configuration.timeoutIntervalForResource = timeout
+            let session = URLSession(configuration: configuration)
+            return try await session.data(for: request)
+        }
+    }
+
+    public init(
+        timeout: TimeInterval = 15,
+        dataForRequest: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    ) {
+        self.timeout = timeout
+        self.dataForRequest = dataForRequest
+    }
+
+    public func fetchHTML(from url: URL) async throws -> FetchedArticleHTML {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await dataForRequest(request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ArticleFetchError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw ArticleFetchError.statusCode(httpResponse.statusCode)
+        }
+        guard !data.isEmpty else {
+            throw ArticleFetchError.emptyBody
+        }
+
+        let html = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+        guard let html, !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ArticleFetchError.emptyBody
+        }
+
+        return FetchedArticleHTML(url: httpResponse.url ?? url, html: html)
+    }
+}
+
+public struct ClipDigestIndexingPayload: Sendable {
+    public let clipID: String
+    public let title: String?
+    public let bodyText: String
+    public let sourceURL: URL?
+
+    public init(clipID: String, title: String?, bodyText: String, sourceURL: URL?) {
+        self.clipID = clipID
+        self.title = title
+        self.bodyText = bodyText
+        self.sourceURL = sourceURL
+    }
+}
+
+public struct ClipDigestIndexingResult: Equatable, Sendable {
+    public let preview: String?
+
+    public init(preview: String?) {
+        self.preview = preview
+    }
+}
+
+public protocol ClipDigestIndexing: Sendable {
+    func index(_ payload: ClipDigestIndexingPayload) async throws -> ClipDigestIndexingResult
+}
+
+/// W2.4's indexing handoff is intentionally not retrieval quality work. It
+/// records deterministic paragraph boundaries so the UI can show real digest
+/// progress while W2.5+ owns chunking, embedding, and vector indexes.
+public struct DigestPreviewIndexer: ClipDigestIndexing {
+    public init() {}
+
+    public func index(_ payload: ClipDigestIndexingPayload) async throws -> ClipDigestIndexingResult {
+        let paragraphs = payload.bodyText
+            .components(separatedBy: CharacterSet.newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(3)
+        let preview = paragraphs
+            .enumerated()
+            .map { index, paragraph in "\(index + 1). \(paragraph)" }
+            .joined(separator: "\n")
+        return ClipDigestIndexingResult(preview: preview.isEmpty ? nil : preview)
+    }
+}
+
+public enum ClipDigestServiceError: Error, Equatable, Sendable {
+    case unsupportedEmptyText(String)
+    case unsupportedURL(URL)
+    case extractionFailed(String)
+    case retryUnavailable(String)
+}
+
+public actor ClipDigestService: ClipDigesting {
+    private let queueStore: ClipQueueStore
+    private let recordStore: ClipRecordStore
+    private let fetcher: any ArticleFetching
+    private let extractor: ArticleExtractor
+    private let indexer: any ClipDigestIndexing
+    private let now: @Sendable () -> Date
+
+    public init(
+        queueStore: ClipQueueStore,
+        recordStore: ClipRecordStore,
+        fetcher: any ArticleFetching = URLSessionArticleFetcher(),
+        extractor: ArticleExtractor = ArticleExtractor(),
+        indexer: any ClipDigestIndexing = DigestPreviewIndexer(),
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.queueStore = queueStore
+        self.recordStore = recordStore
+        self.fetcher = fetcher
+        self.extractor = extractor
+        self.indexer = indexer
+        self.now = now
+    }
+
+    public static func live(modelContainer: ModelContainer) throws -> ClipDigestService {
+        let locations = try EngramAppGroup.locations()
+        return ClipDigestService(
+            queueStore: ClipQueueStore(locations: locations),
+            recordStore: ClipRecordStore(modelContainer: modelContainer)
+        )
+    }
+
+    public func digestPending() async throws {
+        let items = try queueStore.pendingItems(quarantineDate: now())
+        for item in items {
+            try await digest(item)
+        }
+    }
+
+    public func memorySnapshots() async throws -> [ClipRecordSnapshot] {
+        try await recordStore.snapshots()
+    }
+
+    public func retryFailedClip(id: String) async throws {
+        let clip = try await recordStore.clipForRetry(id: id)
+        do {
+            try queueStore.enqueue(clip)
+            _ = try await recordStore.markQueuedForRetry(id: id, now: now())
+        } catch {
+            Log.clip.error("Failed to requeue clip \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            throw error
+        }
+    }
+
+    private func digest(_ item: ClipQueueItem) async throws {
+        var clip = item.clip
+        _ = try await recordStore.upsertQueuedClip(clip, now: now())
+
+        do {
+            switch clip.source {
+            case let .text(text):
+                clip.bodyText = try normalizedRequired(text, fallback: clip.bodyText)
+                _ = try await recordStore.transition(id: clip.id, to: .indexing, now: now())
+
+            case let .url(url):
+                guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                    throw ClassifiedDigestFailure(
+                        reason: "Unsupported URL scheme for \(url.absoluteString)",
+                        retryable: false,
+                        underlyingDescription: String(describing: ClipDigestServiceError.unsupportedURL(url))
+                    )
+                }
+
+                _ = try await recordStore.transition(id: clip.id, to: .fetching, now: now())
+                let fetched = try await fetcher.fetchHTML(from: url)
+                let article = try extractor.extract(
+                    html: fetched.html,
+                    fallbackTitle: clip.title ?? fetched.suggestedTitle
+                )
+                clip.title = clip.title ?? article.title
+                clip.bodyText = article.bodyText
+                _ = try await recordStore.updateFetchedBody(
+                    id: clip.id,
+                    title: clip.title,
+                    bodyText: article.bodyText,
+                    now: now()
+                )
+                _ = try await recordStore.transition(id: clip.id, to: .indexing, now: now())
+            }
+
+            let bodyText = try normalizedRequired(clip.bodyText, fallback: nil)
+            let sourceURL: URL?
+            if case let .url(url) = clip.source {
+                sourceURL = url
+            } else {
+                sourceURL = nil
+            }
+            let indexingResult = try await indexer.index(ClipDigestIndexingPayload(
+                clipID: clip.id,
+                title: clip.title,
+                bodyText: bodyText,
+                sourceURL: sourceURL
+            ))
+            _ = try await recordStore.markIndexed(
+                id: clip.id,
+                title: clip.title,
+                bodyText: bodyText,
+                indexPreview: indexingResult.preview,
+                now: now()
+            )
+            try queueStore.delete(item)
+            Log.clip.info("Digested queued clip \(clip.id, privacy: .public)")
+        } catch {
+            try await recordFailure(for: item, error: classify(error))
+        }
+    }
+
+    private func recordFailure(for item: ClipQueueItem, error: ClassifiedDigestFailure) async throws {
+        _ = try await recordStore.markFailed(
+            id: item.clip.id,
+            reason: error.reason,
+            retryable: error.retryable,
+            now: now()
+        )
+        _ = try queueStore.moveToFailed(item, reason: error.reason, failedAt: now())
+        Log.clip.error("Failed to digest clip \(item.clip.id, privacy: .public): \(error.reason, privacy: .public)")
+    }
+
+    private func classify(_ error: Error) -> ClassifiedDigestFailure {
+        if let classified = error as? ClassifiedDigestFailure {
+            return classified
+        }
+        if let urlError = error as? URLError {
+            let retryable: Bool
+            switch urlError.code {
+            case .badURL, .unsupportedURL:
+                retryable = false
+            default:
+                retryable = true
+            }
+            return ClassifiedDigestFailure(
+                reason: "Network error \(urlError.code.rawValue): \(urlError.localizedDescription)",
+                retryable: retryable,
+                underlyingDescription: String(describing: error)
+            )
+        }
+        if let fetchError = error as? ArticleFetchError {
+            let retryable: Bool
+            switch fetchError {
+            case let .statusCode(code):
+                retryable = code >= 500 || code == 408 || code == 429
+            case .invalidResponse, .emptyBody:
+                retryable = false
+            }
+            return ClassifiedDigestFailure(
+                reason: "Fetch failed: \(fetchError)",
+                retryable: retryable,
+                underlyingDescription: String(describing: error)
+            )
+        }
+        if error is ArticleExtractionError {
+            return ClassifiedDigestFailure(
+                reason: "Article extraction failed: \(error)",
+                retryable: false,
+                underlyingDescription: String(describing: error)
+            )
+        }
+        return ClassifiedDigestFailure(
+            reason: String(describing: error),
+            retryable: false,
+            underlyingDescription: String(describing: error)
+        )
+    }
+
+    private func normalizedRequired(_ primary: String?, fallback: String?) throws -> String {
+        let value = primary ?? fallback
+        let normalized = value.map { text in
+            text.components(separatedBy: CharacterSet.newlines)
+                .map {
+                    $0.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+        }
+        guard let normalized, !normalized.isEmpty else {
+            throw ClassifiedDigestFailure(
+                reason: "Clip text is empty",
+                retryable: false,
+                underlyingDescription: String(describing: ClipDigestServiceError.unsupportedEmptyText(primary ?? ""))
+            )
+        }
+        return normalized
+    }
+}
+
+private struct ClassifiedDigestFailure: Error, Sendable {
+    let reason: String
+    let retryable: Bool
+    let underlyingDescription: String
+}
