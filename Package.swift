@@ -76,7 +76,7 @@ let package = Package(
         ),
         .target(
             name: "ClipPipeline",
-            dependencies: ["ClipCore", "RAGCore", "EngramLogging"],
+            dependencies: ["ClipCore", "AppGroupSupport"],
             path: "Sources/Infrastructure/ClipPipeline"
         ),
         .target(
@@ -133,6 +133,7 @@ let package = Package(
         .testTarget(name: "AskFeatureTests", dependencies: ["AskFeature", "EngineKit"], path: "Tests/AskFeatureTests"),
         .testTarget(name: "AppShellTests", dependencies: ["AppShell", "EngineKit", "ModelStore"], path: "Tests/AppShellTests"),
         .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit"], path: "Tests/BenchFeatureTests"),
+        .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
