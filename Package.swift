@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "FMEngine", targets: ["FMEngine"]),
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
         .library(name: "VectorStoreSQLite", targets: ["VectorStoreSQLite"]),
+        .library(name: "CSQLiteVec", targets: ["CSQLiteVec"]),
         .library(name: "ClipPipeline", targets: ["ClipPipeline"]),
         .library(name: "ClipDigest", targets: ["ClipDigest"]),
         .library(name: "ModelStore", targets: ["ModelStore"]),
@@ -46,6 +47,21 @@ let package = Package(
         // MARK: - Shared kits
         .target(name: "AppGroupSupport", path: "Sources/Shared/AppGroupSupport"),
         .target(name: "EngramLogging", path: "Sources/Shared/EngramLogging"),
+        .target(
+            name: "CSQLiteVec",
+            path: "Sources/Vendor/CSQLiteVec",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include"),
+                .define("SQLITE_CORE", to: "1"),
+                .define("SQLITE_VEC_STATIC", to: "1"),
+                .define("SQLITE_ENABLE_FTS5", to: "1"),
+                .define("SQLITE_OMIT_LOAD_EXTENSION", to: "1"),
+                .define("SQLITE_THREADSAFE", to: "1"),
+                .define("SQLITE_VEC_ENABLE_DISKANN", to: "0"),
+                .define("SQLITE_VEC_ENABLE_RESCORE", to: "0"),
+            ]
+        ),
 
         // MARK: - Infrastructure (protocol implementations, leaf plugins)
         .target(
@@ -79,7 +95,7 @@ let package = Package(
         ),
         .target(
             name: "VectorStoreSQLite",
-            dependencies: ["RAGCore", "EngramLogging"],
+            dependencies: ["RAGCore", "EngramLogging", "CSQLiteVec"],
             path: "Sources/Infrastructure/VectorStoreSQLite"
         ),
         .target(
@@ -162,5 +178,6 @@ let package = Package(
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
+        .testTarget(name: "VectorStoreSQLiteTests", dependencies: ["VectorStoreSQLite", "RAGCore"], path: "Tests/VectorStoreSQLiteTests"),
     ]
 )
