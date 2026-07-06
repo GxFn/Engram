@@ -105,6 +105,30 @@ import Testing
     #expect(memory.items.first?.bodyText == "Body from queue")
 }
 
+@MainActor
+@Test func appLaunchContextRegistersClipDigestTriggersDuringInitialization() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellLaunchTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let queueStore = ClipQueueStore(queueDirectory: root.appendingPathComponent("queue", isDirectory: true))
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let recordStore = ClipRecordStore(modelContainer: container)
+    let digestService = ClipDigestService(queueStore: queueStore, recordStore: recordStore)
+    let scheduler = FakeBackgroundScheduler()
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        defaults: nil,
+        clipDigestService: digestService,
+        clipDigestBackgroundScheduler: scheduler
+    )
+
+    _ = AppLaunchContext(dependencies: dependencies, modelContainer: nil)
+
+    #expect(scheduler.registerCallCount == 1)
+    #expect(scheduler.hasRegisteredHandler)
+}
+
 private func makeDefaults() -> UserDefaults {
     let suiteName = "EngramAppShellTests-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
@@ -136,5 +160,26 @@ private actor FakeEngine: LLMEngine {
 
     func countTokens(in text: String) async throws -> Int {
         text.count
+    }
+}
+
+private final class FakeBackgroundScheduler: ClipDigestBackgroundScheduling, @unchecked Sendable {
+    private(set) var registerCallCount = 0
+    private(set) var submitCallCount = 0
+    private var registeredHandler: (@Sendable () async -> Bool)?
+
+    var hasRegisteredHandler: Bool {
+        registeredHandler != nil
+    }
+
+    func register(handler: @escaping @Sendable () async -> Bool) -> Bool {
+        registerCallCount += 1
+        registeredHandler = handler
+        return true
+    }
+
+    func submit() -> Bool {
+        submitCallCount += 1
+        return true
     }
 }

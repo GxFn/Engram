@@ -30,7 +30,7 @@ public final class AppDependencies {
     @ObservationIgnored public let clipDigestService: ClipDigestService?
     @ObservationIgnored private let deviceCapability: DeviceCapability
     @ObservationIgnored private let defaults: UserDefaults?
-    @ObservationIgnored private let clipDigestBackgroundScheduler: ClipDigestBackgroundScheduler
+    @ObservationIgnored private let clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling
     @ObservationIgnored private var clipNotificationObserver: ClipEnqueueNotificationObserver?
 
     public init(
@@ -43,7 +43,7 @@ public final class AppDependencies {
         defaults: UserDefaults? = .standard,
         modelContainer: ModelContainer? = nil,
         clipDigestService: ClipDigestService? = nil,
-        clipDigestBackgroundScheduler: ClipDigestBackgroundScheduler = ClipDigestBackgroundScheduler()
+        clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler()
     ) {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
         let resolvedModel = activeModel

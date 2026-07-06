@@ -98,7 +98,15 @@ public final class ClipEnqueueNotificationObserver: @unchecked Sendable {
     }
 }
 
-public final class ClipDigestBackgroundScheduler: @unchecked Sendable {
+public protocol ClipDigestBackgroundScheduling: Sendable {
+    @discardableResult
+    func register(handler: @escaping @Sendable () async -> Bool) -> Bool
+
+    @discardableResult
+    func submit() -> Bool
+}
+
+public final class ClipDigestBackgroundScheduler: ClipDigestBackgroundScheduling, @unchecked Sendable {
     public static let identifier = "com.gxfn.engram.digest"
 
     private let lock = NSLock()

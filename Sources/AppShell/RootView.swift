@@ -87,7 +87,6 @@ private struct RootContent: View {
             }
         }
         .task {
-            dependencies?.configureClipDigestTriggers()
             await dependencies?.digestPendingClips()
         }
         .onChange(of: scenePhase) { _, phase in
