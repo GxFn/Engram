@@ -22,7 +22,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 FEATURE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(MLXEngine|FMEngine|ClipPipeline|VectorStoreSQLite|EmbeddingMLX|ModelStore|Persistence)([[:space:]]|$)'
-EXTENSION_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(MLX|MLXLLM|MLXLMCommon|MLXEngine|FMEngine|EmbeddingMLX|VectorStoreSQLite|ModelStore)([[:space:]]|$)'
+EXTENSION_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppGroupSupport|AppShell|AskFeature|BenchFeature|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|VectorStoreSQLite)([[:space:]]|$)'
+CLIPPIPELINE_IMPORT_PATTERN='^[[:space:]]*import[[:space:]]+(AppKit|AppShell|AskFeature|BenchFeature|EmbeddingMLX|EngineKit|FMEngine|FoundationNetworking|MemoryFeature|MLX|MLXEngine|MLXLLM|MLXLMCommon|ModelStore|Network|Persistence|RAGCore|SettingsFeature|SwiftData|SwiftUI|UIKit|VectorStoreSQLite)([[:space:]]|$)'
 
 check_swift_imports() {
   local label="$1"
@@ -63,6 +64,7 @@ discover_extension_roots() {
 }
 
 check_swift_imports "Feature modules" "$ROOT_DIR/Sources/Features" "$FEATURE_IMPORT_PATTERN"
+check_swift_imports "ClipPipeline module" "$ROOT_DIR/Sources/Infrastructure/ClipPipeline" "$CLIPPIPELINE_IMPORT_PATTERN"
 
 extension_root_count=0
 while IFS= read -r extension_root; do
