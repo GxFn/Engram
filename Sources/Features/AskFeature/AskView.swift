@@ -9,8 +9,16 @@ public struct AskView: View {
     @State private var draft = ""
     @FocusState private var composerFocused: Bool
 
-    public init(engine: any LLMEngine, model: ModelIdentity) {
-        _viewModel = State(initialValue: AskViewModel(engine: engine, model: model))
+    public init(
+        engine: any LLMEngine,
+        model: ModelIdentity,
+        generationConfig: GenerationConfig = .default
+    ) {
+        _viewModel = State(initialValue: AskViewModel(
+            engine: engine,
+            model: model,
+            generationConfig: generationConfig
+        ))
     }
 
     public init(viewModel: AskViewModel) {

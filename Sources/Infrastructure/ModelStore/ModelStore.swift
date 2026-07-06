@@ -67,20 +67,23 @@ public actor ModelStore {
     }
 
     public func delete(_ model: ModelIdentity) throws {
-        let url = directoryURL(for: model)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return
+        for url in try directories(for: model) where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
-
-        try FileManager.default.removeItem(at: url)
     }
 
     public func storageBytes(for model: ModelIdentity) throws -> Int64 {
-        try regularFileBytes(in: directoryURL(for: model))
+        try directories(for: model).reduce(0) { total, directory in
+            try total + regularFileBytes(in: directory)
+        }
     }
 
     public func isDownloaded(_ model: ModelIdentity) throws -> Bool {
-        try containsPayloadFile(in: directoryURL(for: model))
+        for directory in try directories(for: model) where try containsPayloadFile(in: directory) {
+            return true
+        }
+
+        return false
     }
 
     public func download(_ model: ModelIdentity) throws {
@@ -115,6 +118,29 @@ public actor ModelStore {
         model.id.split(separator: "/").reduce(modelsDirectory) { url, pathComponent in
             url.appendingPathComponent(String(pathComponent), isDirectory: true)
         }
+    }
+
+    private func directories(for model: ModelIdentity) throws -> [URL] {
+        var seenPaths = Set<String>()
+        var directories: [URL] = []
+
+        func append(_ directory: URL) {
+            let path = directory.standardizedFileURL.path
+            guard !seenPaths.contains(path) else {
+                return
+            }
+
+            seenPaths.insert(path)
+            directories.append(directory)
+        }
+
+        append(directoryURL(for: model))
+
+        for manifest in try manifests() where manifest.model == model {
+            append(manifest.directory)
+        }
+
+        return directories
     }
 
     private struct ManifestRecord {

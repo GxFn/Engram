@@ -65,9 +65,11 @@ import Testing
         .finished(metrics(ttft: 30, tokensPerSecond: 3, outputTokens: 8)),
         .finished(metrics(ttft: 20, tokensPerSecond: 2, outputTokens: 6)),
     ])
+    let config = GenerationConfig(temperature: 0.1, topP: 0.8, maxTokens: 32)
     let runner = BenchRunner(
         engine: engine,
         model: testModel,
+        config: config,
         promptSuite: BenchPromptSuite(prompts: [BenchPrompt(id: "p", text: "Prompt")]),
         rounds: 3,
         memorySampler: MemorySampler(readPhysFootprintBytes: { 2_097_152 }),
@@ -95,6 +97,7 @@ import Testing
     #expect(run.sampleValue(.peakMemoryBytes) == 2_097_152)
     #expect(progressEvents.map(\.completedIterations) == [1, 2, 3])
     #expect(await engine.loadedModelIDs() == [testModel.id])
+    #expect(await engine.capturedConfigs() == [config, config, config])
 }
 
 @Test func benchRunnerTreatsCancelledGenerationAsCancellation() async throws {
@@ -165,6 +168,7 @@ private actor FakeBenchEngine: LLMEngine {
     private let outcomes: [Outcome]
     private var nextOutcomeIndex = 0
     private var loadedModels: [ModelIdentity] = []
+    private var requestConfigs: [GenerationConfig] = []
 
     init(outcomes: [Outcome]) {
         self.outcomes = outcomes
@@ -177,6 +181,7 @@ private actor FakeBenchEngine: LLMEngine {
     func unload() async {}
 
     func generate(_ request: GenerationRequest) async -> AsyncThrowingStream<GenerationEvent, Error> {
+        requestConfigs.append(request.config)
         let outcome = outcomes[min(nextOutcomeIndex, outcomes.count - 1)]
         nextOutcomeIndex += 1
 
@@ -210,6 +215,10 @@ private actor FakeBenchEngine: LLMEngine {
 
     func loadedModelIDs() -> [String] {
         loadedModels.map(\.id)
+    }
+
+    func capturedConfigs() -> [GenerationConfig] {
+        requestConfigs
     }
 }
 

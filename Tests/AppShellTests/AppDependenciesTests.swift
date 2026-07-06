@@ -1,0 +1,102 @@
+import AppShell
+import EngineKit
+import Foundation
+import ModelStore
+import Testing
+
+@MainActor
+@Test func settingsSelectionAndConfigUpdateSharedDependenciesAndPersist() {
+    let defaults = makeDefaults()
+    let engineA = FakeEngine(id: "engine-a", displayName: "Engine A")
+    let engineB = FakeEngine(id: "engine-b", displayName: "Engine B")
+    let dependencies = AppDependencies(
+        engines: [engineA, engineB],
+        activeEngine: engineA,
+        activeModel: ModelCatalog.qwen3_1_7B_4bit,
+        generationConfig: GenerationConfig(temperature: 0.3, topP: 0.8, maxTokens: 256),
+        defaults: defaults
+    )
+    let settings = dependencies.makeSettingsViewModel()
+
+    settings.selectEngine(id: "engine-b")
+    settings.selectModel(ModelCatalog.qwen3_4B_4bit)
+    settings.setTemperature(1.4)
+    settings.setTopP(0.6)
+    settings.setMaxTokens(512)
+
+    #expect(dependencies.activeEngine.descriptor.id == "engine-b")
+    #expect(dependencies.activeModel == ModelCatalog.qwen3_4B_4bit)
+    #expect(dependencies.generationConfig == GenerationConfig(temperature: 1.4, topP: 0.6, maxTokens: 512))
+
+    let restored = AppDependencies(
+        engines: [engineA, engineB],
+        deviceCapability: DeviceCapability(physicalMemoryBytes: 8 * DeviceCapability.gibibyte),
+        defaults: defaults
+    )
+    #expect(restored.activeEngine.descriptor.id == "engine-b")
+    #expect(restored.activeModel == ModelCatalog.qwen3_4B_4bit)
+    #expect(restored.generationConfig == GenerationConfig(temperature: 1.4, topP: 0.6, maxTokens: 512))
+}
+
+@MainActor
+@Test func appShellSettingsBridgeReadsModelStoreDownloadState() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let modelsDirectory = root.appendingPathComponent("Models", isDirectory: true)
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let modelDirectory = try await store.localURL(for: ModelCatalog.qwen3_1_7B_4bit)
+    try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+    try Data(repeating: 0x41, count: 7).write(to: modelDirectory.appendingPathComponent("weights.safetensors"))
+
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        modelStore: store,
+        activeModel: ModelCatalog.qwen3_1_7B_4bit,
+        deviceCapability: DeviceCapability(physicalMemoryBytes: 4 * DeviceCapability.gibibyte),
+        defaults: nil
+    )
+    let settings = dependencies.makeSettingsViewModel()
+
+    await settings.refresh()
+
+    let downloaded = settings.models.first { $0.id == ModelCatalog.qwen3_1_7B_4bit.id }
+    #expect(downloaded?.isDownloaded == true)
+    #expect(downloaded?.storageBytes == 7)
+    #expect(settings.recommendedModel?.id == ModelCatalog.qwen3_1_7B_4bit.id)
+}
+
+private func makeDefaults() -> UserDefaults {
+    let suiteName = "EngramAppShellTests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    return defaults
+}
+
+private actor FakeEngine: LLMEngine {
+    nonisolated let descriptor: EngineDescriptor
+
+    init(id: String, displayName: String) {
+        self.descriptor = EngineDescriptor(id: id, displayName: displayName, kind: .mlx)
+    }
+
+    func load(_ model: ModelIdentity) async throws {}
+
+    func unload() async {}
+
+    func generate(_ request: GenerationRequest) async -> AsyncThrowingStream<GenerationEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.finished(.stop, GenerationMetrics(
+                firstTokenLatencyMillis: nil,
+                tokensPerSecond: nil,
+                outputTokenCount: 0
+            )))
+            continuation.finish()
+        }
+    }
+
+    func countTokens(in text: String) async throws -> Int {
+        text.count
+    }
+}

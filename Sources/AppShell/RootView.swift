@@ -23,18 +23,25 @@ public struct RootView: View {
 
 private struct RootContent: View {
     @Environment(\.deps) private var dependencies
+    @AppStorage("onboarded") private var onboarded = false
 
     var body: some View {
         TabView {
-            NavigationStack { MemoryView() }
+            NavigationStack {
+                MemoryView()
+                    .toolbar { settingsToolbar }
+            }
                 .tabItem { Label("Memory", systemImage: "tray.full") }
 
             NavigationStack {
                 if let dependencies {
                     AskView(
                         engine: dependencies.activeEngine,
-                        model: dependencies.activeModel
+                        model: dependencies.activeModel,
+                        generationConfig: dependencies.generationConfig
                     )
+                    .id(consumerIdentity(for: dependencies))
+                    .toolbar { settingsToolbar }
                 }
             }
                 .tabItem { Label("Ask", systemImage: "questionmark.bubble") }
@@ -43,11 +50,63 @@ private struct RootContent: View {
                 if let dependencies {
                     BenchView(
                         engine: dependencies.activeEngine,
-                        model: dependencies.activeModel
+                        model: dependencies.activeModel,
+                        generationConfig: dependencies.generationConfig
                     )
+                    .id(consumerIdentity(for: dependencies))
+                    .toolbar { settingsToolbar }
                 }
             }
                 .tabItem { Label("Bench", systemImage: "gauge.with.dots.needle.67percent") }
         }
+        .sheet(isPresented: onboardingPresented) {
+            if let dependencies {
+                OnboardingView(
+                    viewModel: dependencies.makeSettingsViewModel(),
+                    complete: { onboarded = true }
+                )
+            }
+        }
+    }
+
+    private var settingsToolbar: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            NavigationLink {
+                settingsDestination
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
+        }
+    }
+
+    @ViewBuilder
+    private var settingsDestination: some View {
+        if let dependencies {
+            SettingsView(viewModel: dependencies.makeSettingsViewModel())
+        } else {
+            ContentUnavailableView("Settings", systemImage: "gearshape")
+        }
+    }
+
+    private var onboardingPresented: Binding<Bool> {
+        Binding(
+            get: { !onboarded && dependencies != nil },
+            set: { presented in
+                if !presented {
+                    onboarded = true
+                }
+            }
+        )
+    }
+
+    private func consumerIdentity(for dependencies: AppDependencies) -> String {
+        [
+            dependencies.activeEngine.descriptor.id,
+            dependencies.activeModel.id,
+            String(format: "%.3f", dependencies.generationConfig.temperature),
+            String(format: "%.3f", dependencies.generationConfig.topP),
+            "\(dependencies.generationConfig.maxTokens)",
+        ].joined(separator: "|")
     }
 }

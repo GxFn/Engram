@@ -18,8 +18,12 @@ public final class BenchViewModel {
     @ObservationIgnored private let runner: BenchRunner
     @ObservationIgnored private var runTask: Task<Void, Never>?
 
-    public init(engine: any LLMEngine, model: ModelIdentity) {
-        self.runner = BenchRunner(engine: engine, model: model)
+    public init(
+        engine: any LLMEngine,
+        model: ModelIdentity,
+        generationConfig: GenerationConfig = GenerationConfig(temperature: 0.2, topP: 0.9, maxTokens: 128)
+    ) {
+        self.runner = BenchRunner(engine: engine, model: model, config: generationConfig)
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
     }

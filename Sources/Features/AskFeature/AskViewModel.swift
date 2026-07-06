@@ -43,6 +43,7 @@ public final class AskViewModel {
 
     public let engineName: String
     public let modelName: String
+    public let generationConfig: GenerationConfig
 
     @ObservationIgnored private let engine: any LLMEngine
     @ObservationIgnored private let model: ModelIdentity
@@ -52,10 +53,12 @@ public final class AskViewModel {
     public init(
         engine: any LLMEngine,
         model: ModelIdentity,
+        generationConfig: GenerationConfig = .default,
         messages: [DisplayMessage] = []
     ) {
         self.engine = engine
         self.model = model
+        self.generationConfig = generationConfig
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
         self.messages = messages
@@ -101,7 +104,10 @@ public final class AskViewModel {
             try await ensureModelLoaded()
             try Task.checkCancellation()
 
-            let stream = await engine.generate(GenerationRequest(messages: requestMessages))
+            let stream = await engine.generate(GenerationRequest(
+                messages: requestMessages,
+                config: generationConfig
+            ))
             for try await event in stream {
                 switch event {
                 case .token(let text):

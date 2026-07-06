@@ -54,6 +54,33 @@ import Foundation
     #expect(downloaded == [model])
 }
 
+@Test func manifestBackedModelsReportDownloadedStorageAndDeleteFromActualDirectory() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let model = ModelIdentity(
+        id: "custom/local-model",
+        family: "custom",
+        quantization: "4bit",
+        contextLength: 4_096,
+        estimatedMemoryBytes: 256_000_000
+    )
+    let manifestDirectory = modelsDirectory.appendingPathComponent("Imported/custom-model", isDirectory: true)
+    try FileManager.default.createDirectory(at: manifestDirectory, withIntermediateDirectories: true)
+    try writeManifest(for: model, in: manifestDirectory)
+    try writeFile(named: "weights.safetensors", bytes: 9, in: manifestDirectory)
+
+    #expect(try await store.isDownloaded(model))
+    #expect(try await store.storageBytes(for: model) > 9)
+
+    try await store.delete(model)
+
+    #expect(try await store.isDownloaded(model) == false)
+    #expect(try await store.storageBytes(for: model) == 0)
+    #expect(FileManager.default.fileExists(atPath: manifestDirectory.path) == false)
+}
+
 @Test func downloadedModelsIgnoreManifestDirectoriesWithoutPayload() async throws {
     let modelsDirectory = try makeTemporaryModelsDirectory()
     defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }

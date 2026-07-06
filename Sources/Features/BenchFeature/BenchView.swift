@@ -8,8 +8,16 @@ import SwiftUI
 public struct BenchView: View {
     @State private var viewModel: BenchViewModel
 
-    public init(engine: any LLMEngine, model: ModelIdentity) {
-        _viewModel = State(initialValue: BenchViewModel(engine: engine, model: model))
+    public init(
+        engine: any LLMEngine,
+        model: ModelIdentity,
+        generationConfig: GenerationConfig = GenerationConfig(temperature: 0.2, topP: 0.9, maxTokens: 128)
+    ) {
+        _viewModel = State(initialValue: BenchViewModel(
+            engine: engine,
+            model: model,
+            generationConfig: generationConfig
+        ))
     }
 
     public init(viewModel: BenchViewModel) {

@@ -78,6 +78,26 @@ import Testing
     #expect(viewModel.messages.map(\.text) == ["One", "No response."])
 }
 
+@MainActor
+@Test func askViewModelUsesInjectedGenerationConfig() async {
+    let config = GenerationConfig(temperature: 0.2, topP: 0.75, maxTokens: 64)
+    let engine = FakeEngine(events: [.finished(.stop, GenerationMetrics(
+        firstTokenLatencyMillis: nil,
+        tokensPerSecond: nil,
+        outputTokenCount: 0
+    ))])
+    let viewModel = AskViewModel(engine: engine, model: testModel, generationConfig: config)
+
+    guard let task = viewModel.send("Config?") else {
+        Issue.record("Expected send to start")
+        return
+    }
+
+    await task.value
+
+    #expect(await engine.lastConfig() == config)
+}
+
 private let testModel = ModelIdentity(
     id: "mlx-community/Qwen3-1.7B-4bit",
     family: "qwen3",
@@ -134,5 +154,9 @@ private actor FakeEngine: LLMEngine {
 
     func lastPrompt() -> [String] {
         capturedRequest?.messages.map(\.content) ?? []
+    }
+
+    func lastConfig() -> GenerationConfig? {
+        capturedRequest?.config
     }
 }
