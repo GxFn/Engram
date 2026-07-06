@@ -1,6 +1,7 @@
 import EngineKit
 import EngramLogging
 import Foundation
+import Hub
 
 public struct DownloadState: Sendable, Equatable {
     public let completedBytes: Int64
@@ -52,19 +53,83 @@ public enum ModelInstallationError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
+public enum ModelDownloadError: Error, Equatable, LocalizedError, Sendable {
+    case repositoryUnavailable(String)
+    case incompleteSnapshot(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .repositoryUnavailable(let modelID):
+            return "Public model download is unavailable for \(modelID)."
+        case .incompleteSnapshot(let modelID):
+            return "Downloaded model files for \(modelID) did not pass validation."
+        }
+    }
+}
+
+public protocol ModelSnapshotDownloading: Sendable {
+    func downloadSnapshot(
+        for model: ModelIdentity,
+        into downloadBase: URL,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL
+}
+
+public struct HuggingFaceModelSnapshotDownloader: ModelSnapshotDownloading {
+    public init() {}
+
+    public func downloadSnapshot(
+        for model: ModelIdentity,
+        into downloadBase: URL,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        let hub = HubApi(
+            downloadBase: downloadBase,
+            hfToken: "",
+            useBackgroundSession: false
+        )
+        return try await hub.snapshot(
+            from: Hub.Repo(id: model.id),
+            matching: Self.modelSnapshotPatterns,
+            progressHandler: progressHandler
+        )
+    }
+
+    public static let modelSnapshotPatterns: [String] = [
+        "README.md",
+        "added_tokens.json",
+        "chat_template.jinja",
+        "chat_template.json",
+        "config.json",
+        "merges.txt",
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "*.safetensors",
+    ]
+}
+
 /// Manages local model artifacts under Application Support/Models.
 ///
-/// Remote hub integration is intentionally bounded. The store resolves, imports,
-/// scans, accounts, and deletes verified local MLX assets; a missing remote
-/// model fails explicitly until large-file network prompts and resumable
-/// background behavior are designed.
+/// The store resolves, downloads, imports, scans, measures, and deletes verified
+/// local MLX assets. Public downloads use the Hugging Face Hub without app
+/// credentials, then materialize the same canonical model directory used by
+/// MLXEngine and local Files imports.
 public actor ModelStore {
     private static let manifestFileName = ".engram-model.json"
 
     private let modelsDirectory: URL
+    private let snapshotDownloader: any ModelSnapshotDownloading
 
-    public init(modelsDirectory: URL? = nil) {
+    public init(
+        modelsDirectory: URL? = nil,
+        snapshotDownloader: any ModelSnapshotDownloading = HuggingFaceModelSnapshotDownloader()
+    ) {
         self.modelsDirectory = modelsDirectory ?? Self.defaultModelsDirectory()
+        self.snapshotDownloader = snapshotDownloader
     }
 
     public func localURL(for model: ModelIdentity) throws -> URL {
@@ -107,15 +172,54 @@ public actor ModelStore {
         return false
     }
 
-    public func download(_ model: ModelIdentity) throws {
+    @discardableResult
+    public func download(
+        _ model: ModelIdentity,
+        progressHandler: @Sendable @escaping (DownloadState) -> Void = { _ in }
+    ) async throws -> DownloadResult {
         if try isDownloaded(model) {
-            return
+            let url = try localURL(for: model)
+            let storageBytes = try storageBytes(for: model)
+            progressHandler(DownloadState(completedBytes: storageBytes, totalBytes: storageBytes))
+            return DownloadResult(model: model, localURL: url, storageBytes: storageBytes)
         }
 
-        let url = try localURL(for: model)
-        throw EngineError.notImplemented(
-            "remote model download deferred; place verified model artifacts at \(url.path)"
+        try ensureModelsDirectory()
+        progressHandler(DownloadState(completedBytes: 0, totalBytes: nil))
+
+        let snapshotURL = try await snapshotDownloader.downloadSnapshot(
+            for: model,
+            into: downloadStagingDirectory()
+        ) { progress in
+            progressHandler(DownloadState(
+                completedBytes: progress.completedUnitCount,
+                totalBytes: progress.totalUnitCount > 0 ? progress.totalUnitCount : nil
+            ))
+        }
+
+        try Task.checkCancellation()
+        guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
+            throw ModelDownloadError.repositoryUnavailable(model.id)
+        }
+
+        do {
+            let result = try installLocalModel(model, from: snapshotURL)
+            progressHandler(DownloadState(completedBytes: result.storageBytes, totalBytes: result.storageBytes))
+            return result
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ModelDownloadError.incompleteSnapshot(model.id)
+        }
+    }
+
+    private func downloadStagingDirectory() throws -> URL {
+        let directory = modelsDirectory.appendingPathComponent(".downloads", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
         )
+        return directory
     }
 
     @discardableResult

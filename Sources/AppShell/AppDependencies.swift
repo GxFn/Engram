@@ -119,8 +119,13 @@ public final class AppDependencies {
 
                 return rows
             },
-            downloadModel: { model in
-                try await store.download(model)
+            downloadModel: { model, progressHandler in
+                try await store.download(model) { progress in
+                    progressHandler(ModelDownloadProgress(
+                        completedUnitCount: progress.completedBytes,
+                        totalUnitCount: progress.totalBytes
+                    ))
+                }
             },
             installLocalModel: { model, sourceURL in
                 try await store.installLocalModel(model, from: sourceURL)

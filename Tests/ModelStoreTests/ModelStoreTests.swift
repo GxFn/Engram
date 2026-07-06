@@ -133,25 +133,132 @@ import Foundation
     #expect(FileManager.default.fileExists(atPath: modelDirectory.path) == false)
 }
 
-@Test func downloadReturnsForLocalPayloadAndDefersRemoteFetch() async throws {
+@Test func downloadReturnsForExistingLocalPayloadWithoutRemoteFetch() async throws {
     let modelsDirectory = try makeTemporaryModelsDirectory()
     defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
 
-    let store = ModelStore(modelsDirectory: modelsDirectory)
+    let downloader = ScriptedSnapshotDownloader(steps: [.success])
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
     let downloadedModel = ModelCatalog.qwen3_1_7B_4bit
     let downloadedDirectory = try makeModelDirectory(for: downloadedModel, in: modelsDirectory)
     try writeFile(named: "weights.safetensors", bytes: 3, in: downloadedDirectory)
 
-    try await store.download(downloadedModel)
+    let result = try await store.download(downloadedModel)
+
+    #expect(result.localURL == downloadedDirectory)
+    #expect(await downloader.callCount == 0)
+}
+
+@Test func downloadFetchesPublicSnapshotRegistersCanonicalModelAndReportsProgress() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let downloader = ScriptedSnapshotDownloader(steps: [.success])
+    let recorder = DownloadStateRecorder()
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+
+    let result = try await store.download(model) { recorder.record($0) }
+    let expectedDirectory = modelsDirectory
+        .appendingPathComponent("mlx-community", isDirectory: true)
+        .appendingPathComponent("Qwen3-1.7B-4bit", isDirectory: true)
+
+    #expect(result.model == model)
+    #expect(result.localURL == expectedDirectory)
+    #expect(try await store.isDownloaded(model))
+    #expect(try await store.downloadedModels() == [model])
+    #expect(FileManager.default.fileExists(
+        atPath: expectedDirectory.appendingPathComponent(".engram-model.json").path
+    ))
+    #expect(FileManager.default.fileExists(
+        atPath: expectedDirectory.appendingPathComponent("model.safetensors").path
+    ))
+    #expect(recorder.states.contains { $0.fractionCompleted == 0.25 })
+    #expect(recorder.states.last?.fractionCompleted == 1)
+    #expect(await downloader.callCount == 1)
+}
+
+@Test func downloadFailureDoesNotCreateDownloadedState() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let downloader = ScriptedSnapshotDownloader(steps: [.failure])
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
 
     do {
-        try await store.download(ModelCatalog.qwen3_4B_4bit)
-        Issue.record("Expected missing remote download to fail explicitly")
-    } catch EngineError.notImplemented(let message) {
-        #expect(message.contains("remote model download deferred"))
+        try await store.download(model)
+        Issue.record("Expected public snapshot failure")
+    } catch TestDownloadError.networkUnavailable {
     } catch {
         Issue.record("Unexpected error: \(error)")
     }
+
+    #expect(try await store.isDownloaded(model) == false)
+    #expect(try await store.storageBytes(for: model) == 0)
+}
+
+@Test func downloadRejectsIncompleteSnapshotWithoutDownloadedState() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let downloader = ScriptedSnapshotDownloader(steps: [.invalidSnapshot])
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+
+    do {
+        try await store.download(model)
+        Issue.record("Expected incomplete snapshot failure")
+    } catch ModelDownloadError.incompleteSnapshot(let modelID) {
+        #expect(modelID == model.id)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try await store.isDownloaded(model) == false)
+    #expect(try await store.storageBytes(for: model) == 0)
+}
+
+@Test func downloadCancellationDoesNotInstallPartialSnapshot() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let downloader = ScriptedSnapshotDownloader(steps: [.cancelled])
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+
+    do {
+        try await store.download(model)
+        Issue.record("Expected cancellation")
+    } catch is CancellationError {
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try await store.isDownloaded(model) == false)
+}
+
+@Test func downloadCanRetryAfterNetworkFailure() async throws {
+    let modelsDirectory = try makeTemporaryModelsDirectory()
+    defer { try? FileManager.default.removeItem(at: modelsDirectory.deletingLastPathComponent()) }
+
+    let downloader = ScriptedSnapshotDownloader(steps: [.failure, .success])
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+
+    do {
+        try await store.download(model)
+        Issue.record("Expected first download attempt to fail")
+    } catch TestDownloadError.networkUnavailable {
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    let result = try await store.download(model)
+
+    #expect(result.model == model)
+    #expect(try await store.isDownloaded(model))
+    #expect(await downloader.callCount == 2)
 }
 
 @Test func installLocalModelCopiesVerifiedFolderAndWritesManifest() async throws {
@@ -271,4 +378,91 @@ private func makeModelFixture(at directory: URL) throws {
 private func writeManifest(for model: ModelIdentity, in directory: URL) throws {
     let data = try JSONEncoder().encode(model)
     try data.write(to: directory.appendingPathComponent(".engram-model.json", isDirectory: false))
+}
+
+private enum SnapshotStep: Sendable {
+    case success
+    case invalidSnapshot
+    case failure
+    case cancelled
+}
+
+private enum TestDownloadError: Error, LocalizedError {
+    case networkUnavailable
+
+    var errorDescription: String? {
+        "Network unavailable."
+    }
+}
+
+private actor ScriptedSnapshotDownloader: ModelSnapshotDownloading {
+    private var steps: [SnapshotStep]
+    private var calls = 0
+
+    init(steps: [SnapshotStep]) {
+        self.steps = steps
+    }
+
+    var callCount: Int {
+        calls
+    }
+
+    func downloadSnapshot(
+        for model: ModelIdentity,
+        into downloadBase: URL,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        let step: SnapshotStep
+        calls += 1
+        step = steps.isEmpty ? .success : steps.removeFirst()
+
+        let snapshot = snapshotDirectory(for: model, in: downloadBase)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+
+        let firstProgress = Progress(totalUnitCount: 100)
+        firstProgress.completedUnitCount = 25
+        progressHandler(firstProgress)
+
+        switch step {
+        case .success:
+            try makeModelFixture(at: snapshot)
+        case .invalidSnapshot:
+            try writeFile(named: "config.json", bytes: 2, in: snapshot)
+        case .failure:
+            throw TestDownloadError.networkUnavailable
+        case .cancelled:
+            try writeFile(named: "config.json", bytes: 2, in: snapshot)
+            throw CancellationError()
+        }
+
+        let finalProgress = Progress(totalUnitCount: 100)
+        finalProgress.completedUnitCount = 100
+        progressHandler(finalProgress)
+        return snapshot
+    }
+
+    private func snapshotDirectory(for model: ModelIdentity, in downloadBase: URL) -> URL {
+        model.id.split(separator: "/").reduce(
+            downloadBase.appendingPathComponent("models", isDirectory: true)
+        ) { url, component in
+            url.appendingPathComponent(String(component), isDirectory: true)
+        }
+    }
+}
+
+private final class DownloadStateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedStates: [DownloadState] = []
+
+    var states: [DownloadState] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedStates
+    }
+
+    func record(_ state: DownloadState) {
+        lock.lock()
+        recordedStates.append(state)
+        lock.unlock()
+    }
 }

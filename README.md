@@ -83,15 +83,15 @@ Reproduce: `swift test --filter retrievalEvalRunnerReportsReadmeComparisonFromBu
 
 ## Model Setup
 
-Engram runs local MLX model folders. For M2 validation, place a verified
-MLX-compatible folder such as `mlx-community/Qwen3-1.7B-4bit` in Files, then
-open Engram Settings or Welcome and choose `Import Model Folder`/`Import`.
+Engram downloads public MLX Qwen model snapshots from Hugging Face in Settings
+or Welcome. Choose `Download` for the recommended model; Engram fetches the
+required `config.json`, tokenizer files, and `.safetensors` weights, then
+materializes them under `Application Support/Models/<org>/<model>` with
+`.engram-model.json`.
 
-The selected folder must contain `config.json`, a tokenizer file such as
-`tokenizer.json` or `tokenizer.model`, and model weights such as
-`.safetensors`, `.gguf`, `.npz`, or `.bin`. Engram copies the folder into app
-storage, writes `.engram-model.json`, and the model row changes to Ready with
-its local storage size. No API key, backend, or remote inference is used.
+`Import Model Folder` remains available for debugging or offline transfer of an
+already prepared MLX folder. The app uses no credentials, login, sync server, or
+server-side inference.
 
 ## Building
 

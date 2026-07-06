@@ -56,7 +56,7 @@ import Testing
     let row = managedModel(recommendedModel, isDownloaded: false, isRecommended: true)
     let registry = FakeModelRegistry(
         models: [row],
-        downloadError: EngineError.notImplemented("remote model download deferred; place verified model artifacts")
+        downloadError: TestDownloadError.networkUnavailable
     )
     let viewModel = SettingsViewModel(
         engines: [fakeEngine],
@@ -77,8 +77,66 @@ import Testing
     await viewModel.download(model)
 
     #expect(viewModel.operationModelID == nil)
-    #expect(viewModel.errorMessage == "Remote model download is unavailable. Import a verified local model folder.")
+    #expect(viewModel.errorMessage == "Network unavailable.")
     #expect(viewModel.models.first?.isDownloaded == false)
+}
+
+@MainActor
+@Test func settingsDownloadProgressRefreshesStateAndSelectsModel() async {
+    let registry = FakeModelRegistry(models: [
+        managedModel(otherModel, isDownloaded: true, isRecommended: false),
+        managedModel(recommendedModel, isDownloaded: false, isRecommended: true),
+    ])
+    var appliedModelIDs: [String] = []
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: otherModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client,
+        applyActiveModel: { appliedModelIDs.append($0.id) }
+    )
+    await viewModel.refresh()
+
+    let model = try! #require(viewModel.models.first { $0.id == recommendedModel.id })
+
+    await viewModel.download(model)
+    await Task.yield()
+
+    #expect(await registry.downloadedModelIDs == [recommendedModel.id])
+    #expect(viewModel.downloadProgress?.fractionCompleted == 1)
+    #expect(viewModel.models.first(where: { $0.id == recommendedModel.id })?.isDownloaded == true)
+    #expect(viewModel.selectedModelID == recommendedModel.id)
+    #expect(appliedModelIDs == [recommendedModel.id])
+    #expect(viewModel.errorMessage == nil)
+}
+
+@MainActor
+@Test func settingsCancelledDownloadDoesNotFakeDownloadedState() async {
+    let registry = FakeModelRegistry(
+        models: [managedModel(recommendedModel, isDownloaded: false, isRecommended: true)],
+        downloadError: CancellationError()
+    )
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: recommendedModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client
+    )
+    await viewModel.refresh()
+
+    let model = try! #require(viewModel.models.first)
+
+    await viewModel.download(model)
+
+    #expect(viewModel.errorMessage == "Stopped.")
+    #expect(viewModel.models.first?.isDownloaded == false)
+    #expect(viewModel.operationModelID == nil)
 }
 
 @MainActor
@@ -237,6 +295,7 @@ private actor FakeModelRegistry {
     private let installError: Error?
     private var deletedIDs: [String] = []
     private var importedIDs: [String] = []
+    private var downloadedIDs: [String] = []
 
     init(
         models: [ManagedModel],
@@ -253,7 +312,7 @@ private actor FakeModelRegistry {
     nonisolated var client: ModelManagementClient {
         ModelManagementClient(
             refreshModels: { await self.refresh() },
-            downloadModel: { try await self.download($0) },
+            downloadModel: { try await self.download($0, progressHandler: $1) },
             installLocalModel: { try await self.install($0, from: $1) },
             deleteModel: { await self.delete($0) }
         )
@@ -267,15 +326,24 @@ private actor FakeModelRegistry {
         importedIDs
     }
 
+    var downloadedModelIDs: [String] {
+        downloadedIDs
+    }
+
     private func refresh() -> [ManagedModel] {
         models
     }
 
-    private func download(_ model: ModelIdentity) throws {
+    private func download(
+        _ model: ModelIdentity,
+        progressHandler: @escaping @Sendable (ModelDownloadProgress) -> Void
+    ) throws {
+        progressHandler(ModelDownloadProgress(completedUnitCount: 25, totalUnitCount: 100))
         if let downloadError {
             throw downloadError
         }
 
+        downloadedIDs.append(model.id)
         models = models.map { row in
             guard row.id == model.id else { return row }
             return ManagedModel(
@@ -286,6 +354,7 @@ private actor FakeModelRegistry {
                 isRecommended: row.isRecommended
             )
         }
+        progressHandler(ModelDownloadProgress(completedUnitCount: 100, totalUnitCount: 100))
     }
 
     private func install(_ model: ModelIdentity, from _: URL) throws {
@@ -317,5 +386,13 @@ private actor FakeModelRegistry {
 private struct TestInstallError: Error, LocalizedError {
     var errorDescription: String? {
         "Selected folder is missing MLX model files: tokenizer, weights."
+    }
+}
+
+private enum TestDownloadError: Error, LocalizedError {
+    case networkUnavailable
+
+    var errorDescription: String? {
+        "Network unavailable."
     }
 }

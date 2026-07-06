@@ -11,6 +11,7 @@ public final class SettingsViewModel {
     public private(set) var generationConfig: GenerationConfig
     public private(set) var isRefreshing: Bool
     public private(set) var operationModelID: String?
+    public private(set) var downloadProgress: ModelDownloadProgress?
     public var errorMessage: String?
 
     public let engines: [SettingsEngineOption]
@@ -21,6 +22,7 @@ public final class SettingsViewModel {
     @ObservationIgnored private let applyActiveModel: (ModelIdentity) -> Void
     @ObservationIgnored private let applyActiveEngine: (String) -> Void
     @ObservationIgnored private let applyGenerationConfig: (GenerationConfig) -> Void
+    @ObservationIgnored private var operationTask: Task<Void, Never>?
 
     public init(
         engines: [SettingsEngineOption],
@@ -105,16 +107,47 @@ public final class SettingsViewModel {
             return
         }
 
+        let modelID = model.id
         operationModelID = model.id
         errorMessage = nil
+        downloadProgress = ModelDownloadProgress(completedUnitCount: 0, totalUnitCount: nil)
         defer { operationModelID = nil }
 
         do {
-            try await client.downloadModel(model.model)
+            try await client.downloadModel(model.model) { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    guard let self, self.operationModelID == modelID else {
+                        return
+                    }
+
+                    self.downloadProgress = progress
+                }
+            }
             await refresh()
+            if models.first(where: { $0.id == model.id })?.isDownloaded == true {
+                selectModel(model.model)
+            }
         } catch {
             errorMessage = Self.userFacingMessage(for: error)
         }
+    }
+
+    public func beginDownload(_ model: ManagedModel) {
+        guard operationTask == nil else {
+            return
+        }
+
+        operationTask = Task { [weak self] in
+            await self?.download(model)
+            await MainActor.run { [weak self] in
+                self?.operationTask = nil
+            }
+        }
+    }
+
+    public func cancelOperation() {
+        operationTask?.cancel()
+        operationTask = nil
     }
 
     public func installLocalModel(_ model: ManagedModel, from sourceURL: URL) async {
@@ -190,8 +223,6 @@ public final class SettingsViewModel {
     public static func userFacingMessage(for error: Error) -> String {
         if let engineError = error as? EngineError {
             switch engineError {
-            case .notImplemented(let message) where message.contains("remote model download deferred"):
-                return "Remote model download is unavailable. Import a verified local model folder."
             case .notImplemented:
                 return "Model management is not ready yet."
             case .modelNotLoaded:
@@ -201,6 +232,10 @@ public final class SettingsViewModel {
             case .cancelled:
                 return "Stopped."
             }
+        }
+
+        if error is CancellationError {
+            return "Stopped."
         }
 
         if let localizedError = error as? LocalizedError,

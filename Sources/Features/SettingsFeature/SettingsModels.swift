@@ -41,15 +41,39 @@ public struct ManagedModel: Identifiable, Sendable, Hashable {
     }
 }
 
+public struct ModelDownloadProgress: Sendable, Equatable {
+    public let completedUnitCount: Int64
+    public let totalUnitCount: Int64?
+    public let fractionCompleted: Double?
+
+    public init(completedUnitCount: Int64, totalUnitCount: Int64?) {
+        self.completedUnitCount = completedUnitCount
+        self.totalUnitCount = totalUnitCount
+
+        guard let totalUnitCount, totalUnitCount > 0 else {
+            self.fractionCompleted = nil
+            return
+        }
+
+        self.fractionCompleted = min(1, max(0, Double(completedUnitCount) / Double(totalUnitCount)))
+    }
+}
+
 public struct ModelManagementClient: Sendable {
     public var refreshModels: @Sendable () async throws -> [ManagedModel]
-    public var downloadModel: @Sendable (ModelIdentity) async throws -> Void
+    public var downloadModel: @Sendable (
+        ModelIdentity,
+        @escaping @Sendable (ModelDownloadProgress) -> Void
+    ) async throws -> Void
     public var installLocalModel: @Sendable (ModelIdentity, URL) async throws -> Void
     public var deleteModel: @Sendable (ModelIdentity) async throws -> Void
 
     public init(
         refreshModels: @escaping @Sendable () async throws -> [ManagedModel],
-        downloadModel: @escaping @Sendable (ModelIdentity) async throws -> Void,
+        downloadModel: @escaping @Sendable (
+            ModelIdentity,
+            @escaping @Sendable (ModelDownloadProgress) -> Void
+        ) async throws -> Void,
         installLocalModel: @escaping @Sendable (ModelIdentity, URL) async throws -> Void,
         deleteModel: @escaping @Sendable (ModelIdentity) async throws -> Void
     ) {
@@ -61,7 +85,7 @@ public struct ModelManagementClient: Sendable {
 
     public static let empty = ModelManagementClient(
         refreshModels: { [] },
-        downloadModel: { _ in },
+        downloadModel: { _, _ in },
         installLocalModel: { _, _ in },
         deleteModel: { _ in }
     )

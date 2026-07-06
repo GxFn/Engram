@@ -109,6 +109,38 @@ import Testing
 }
 
 @MainActor
+@Test func appShellSettingsBridgeDownloadsPublicModelIntoModelStore() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellDownloadTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let modelsDirectory = root.appendingPathComponent("Models", isDirectory: true)
+    let downloader = AppShellFixtureSnapshotDownloader()
+    let store = ModelStore(modelsDirectory: modelsDirectory, snapshotDownloader: downloader)
+    let model = ModelCatalog.qwen3_1_7B_4bit
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        modelStore: store,
+        activeModel: ModelCatalog.qwen3_4B_4bit,
+        deviceCapability: DeviceCapability(physicalMemoryBytes: 4 * DeviceCapability.gibibyte),
+        defaults: nil
+    )
+    let settings = dependencies.makeSettingsViewModel()
+    await settings.refresh()
+
+    let row = try #require(settings.models.first { $0.id == model.id })
+
+    await settings.download(row)
+
+    #expect(settings.errorMessage == nil)
+    #expect(settings.downloadProgress?.fractionCompleted == 1)
+    #expect(settings.models.first { $0.id == model.id }?.isDownloaded == true)
+    #expect(try await store.isDownloaded(model))
+    #expect(dependencies.activeModel == model)
+    #expect(await downloader.callCount == 1)
+}
+
+@MainActor
 @Test func appShellMemoryBridgeDigestsQueueIntoViewModelItems() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramAppShellMemoryTests-\(UUID().uuidString)", isDirectory: true)
@@ -235,6 +267,34 @@ private func makeLocalModelFixture(at directory: URL) throws {
     try Data(repeating: 0x41, count: 2).write(to: directory.appendingPathComponent("config.json"))
     try Data(repeating: 0x42, count: 3).write(to: directory.appendingPathComponent("tokenizer.json"))
     try Data(repeating: 0x43, count: 5).write(to: directory.appendingPathComponent("model.safetensors"))
+}
+
+private actor AppShellFixtureSnapshotDownloader: ModelSnapshotDownloading {
+    private var calls = 0
+
+    var callCount: Int {
+        calls
+    }
+
+    func downloadSnapshot(
+        for model: ModelIdentity,
+        into downloadBase: URL,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        calls += 1
+
+        let directory = model.id.split(separator: "/").reduce(
+            downloadBase.appendingPathComponent("models", isDirectory: true)
+        ) { url, component in
+            url.appendingPathComponent(String(component), isDirectory: true)
+        }
+        try makeLocalModelFixture(at: directory)
+
+        let progress = Progress(totalUnitCount: 100)
+        progress.completedUnitCount = 100
+        progressHandler(progress)
+        return directory
+    }
 }
 
 private actor FakeEngine: LLMEngine {

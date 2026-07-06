@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 public struct OnboardingView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
+    @State private var downloadTarget: ManagedModel?
     @State private var isShowingModelImporter = false
+    @State private var isShowingDownloadConfirmation = false
     private let complete: () -> Void
 
     public init(viewModel: SettingsViewModel, complete: @escaping () -> Void) {
@@ -27,10 +29,18 @@ public struct OnboardingView: View {
                         ModelSetupRow(
                             model: recommendedModel,
                             isOperating: recommendedModel.id == viewModel.operationModelID,
+                            downloadProgress: recommendedModel.id == viewModel.operationModelID
+                                ? viewModel.downloadProgress
+                                : nil,
+                            downloadModel: {
+                                downloadTarget = recommendedModel
+                                isShowingDownloadConfirmation = true
+                            },
                             importModel: {
                                 importTarget = recommendedModel
                                 isShowingModelImporter = true
-                            }
+                            },
+                            cancelOperation: { viewModel.cancelOperation() }
                         )
                     } else if viewModel.isRefreshing {
                         ProgressView()
@@ -64,6 +74,18 @@ public struct OnboardingView: View {
                     await viewModel.installLocalModel(target, from: url)
                 }
             }
+            .confirmationDialog(
+                "Download Model",
+                isPresented: $isShowingDownloadConfirmation,
+                titleVisibility: .visible,
+                presenting: downloadTarget
+            ) { model in
+                Button("Download") {
+                    viewModel.beginDownload(model)
+                }
+            } message: { _ in
+                Text("Large public model download. Use Wi-Fi or a stable connection.")
+            }
             .navigationTitle("Welcome")
         }
     }
@@ -72,7 +94,10 @@ public struct OnboardingView: View {
 private struct ModelSetupRow: View {
     let model: ManagedModel
     let isOperating: Bool
+    let downloadProgress: ModelDownloadProgress?
+    let downloadModel: () -> Void
     let importModel: () -> Void
+    let cancelOperation: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -86,14 +111,27 @@ private struct ModelSetupRow: View {
                 .foregroundStyle(.secondary)
 
             if isOperating {
-                ProgressView()
+                if let fractionCompleted = downloadProgress?.fractionCompleted {
+                    ProgressView(value: fractionCompleted)
+                } else {
+                    ProgressView()
+                }
             }
 
             if !model.isDownloaded {
-                Button(action: importModel) {
-                    Label("Import Model Folder", systemImage: "folder.badge.plus")
+                if isOperating {
+                    Button("Cancel", role: .cancel, action: cancelOperation)
+                } else {
+                    Button(action: downloadModel) {
+                        Label("Download", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(!model.canRunOnDevice)
+
+                    Button(action: importModel) {
+                        Label("Import Model Folder", systemImage: "folder.badge.plus")
+                    }
+                    .disabled(!model.canRunOnDevice)
                 }
-                .disabled(!model.canRunOnDevice || isOperating)
             }
         }
         .padding(.vertical, 4)

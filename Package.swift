@@ -110,7 +110,11 @@ let package = Package(
         ),
         .target(
             name: "ModelStore",
-            dependencies: ["EngineKit", "EngramLogging"],
+            dependencies: [
+                "EngineKit",
+                "EngramLogging",
+                .product(name: "Hub", package: "swift-transformers"),
+            ],
             path: "Sources/Infrastructure/ModelStore"
         ),
         .target(

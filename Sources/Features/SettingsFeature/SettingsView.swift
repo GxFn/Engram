@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
+    @State private var downloadTarget: ManagedModel?
     @State private var isShowingModelImporter = false
+    @State private var isShowingDownloadConfirmation = false
 
     public init(viewModel: SettingsViewModel) {
         _viewModel = State(initialValue: viewModel)
@@ -41,6 +43,18 @@ public struct SettingsView: View {
                 await viewModel.installLocalModel(target, from: url)
             }
         }
+        .confirmationDialog(
+            "Download Model",
+            isPresented: $isShowingDownloadConfirmation,
+            titleVisibility: .visible,
+            presenting: downloadTarget
+        ) { model in
+            Button("Download") {
+                viewModel.beginDownload(model)
+            }
+        } message: { _ in
+            Text("Large public model download. Use Wi-Fi or a stable connection.")
+        }
         .navigationTitle("Settings")
     }
 
@@ -74,11 +88,17 @@ public struct SettingsView: View {
                     model: model,
                     isActive: model.id == viewModel.selectedModelID,
                     isOperating: model.id == viewModel.operationModelID,
+                    downloadProgress: model.id == viewModel.operationModelID ? viewModel.downloadProgress : nil,
                     select: { viewModel.selectModel(model.model) },
+                    downloadModel: {
+                        downloadTarget = model
+                        isShowingDownloadConfirmation = true
+                    },
                     importModel: {
                         importTarget = model
                         isShowingModelImporter = true
                     },
+                    cancelOperation: { viewModel.cancelOperation() },
                     delete: { Task { await viewModel.delete(model) } }
                 )
             }
@@ -139,8 +159,11 @@ private struct ModelManagementRow: View {
     let model: ManagedModel
     let isActive: Bool
     let isOperating: Bool
+    let downloadProgress: ModelDownloadProgress?
     let select: () -> Void
+    let downloadModel: () -> Void
     let importModel: () -> Void
+    let cancelOperation: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -167,20 +190,31 @@ private struct ModelManagementRow: View {
             }
 
             if isOperating {
-                ProgressView()
+                if let fractionCompleted = downloadProgress?.fractionCompleted {
+                    ProgressView(value: fractionCompleted)
+                } else {
+                    ProgressView()
+                }
             }
 
             HStack {
                 Button("Use", action: select)
                     .disabled(isActive)
 
-                if model.isDownloaded {
+                if isOperating {
+                    Button("Cancel", role: .cancel, action: cancelOperation)
+                } else if model.isDownloaded {
                     Button("Delete", role: .destructive, action: delete)
                 } else {
+                    Button(action: downloadModel) {
+                        Label("Download", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(!model.canRunOnDevice)
+
                     Button(action: importModel) {
                         Label("Import", systemImage: "folder.badge.plus")
                     }
-                        .disabled(!model.canRunOnDevice)
+                    .disabled(!model.canRunOnDevice)
                 }
             }
             .buttonStyle(.borderless)
