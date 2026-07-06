@@ -7,12 +7,29 @@ public struct Chunk: Sendable, Hashable, Codable {
     public let text: String
     /// Position within the clip, used to rebuild citation context in order.
     public let indexInClip: Int
+    /// Character offset into the source clip body for the first included character.
+    public let startOffset: Int?
+    /// Character offset just after the last included source character.
+    public let endOffset: Int?
+    /// Compact display text for future indexing/debug surfaces.
+    public let preview: String?
 
-    public init(id: String, clipID: String, text: String, indexInClip: Int) {
+    public init(
+        id: String,
+        clipID: String,
+        text: String,
+        indexInClip: Int,
+        startOffset: Int? = nil,
+        endOffset: Int? = nil,
+        preview: String? = nil
+    ) {
         self.id = id
         self.clipID = clipID
         self.text = text
         self.indexInClip = indexInClip
+        self.startOffset = startOffset
+        self.endOffset = endOffset
+        self.preview = preview
     }
 }
 
