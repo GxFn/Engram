@@ -11,4 +11,5 @@ public enum Log {
     public static let clip = Logger(subsystem: subsystem, category: "clip")
     public static let store = Logger(subsystem: subsystem, category: "store")
     public static let bench = Logger(subsystem: subsystem, category: "bench")
+    public static let speech = Logger(subsystem: subsystem, category: "speech")
 }

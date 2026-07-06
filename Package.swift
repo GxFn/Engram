@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "MetricsKit", targets: ["MetricsKit"]),
         .library(name: "VideoUnderstanding", targets: ["VideoUnderstanding"]),
         .library(name: "ScriptCore", targets: ["ScriptCore"]),
+        .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "MLXEngine", targets: ["MLXEngine"]),
         .library(name: "FMEngine", targets: ["FMEngine"]),
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
@@ -105,6 +106,11 @@ let package = Package(
             name: "VectorStoreSQLite",
             dependencies: ["RAGCore", "EngramLogging", "CSQLiteVec"],
             path: "Sources/Infrastructure/VectorStoreSQLite"
+        ),
+        .target(
+            name: "SpeechTranscription",
+            dependencies: ["VideoUnderstanding", "EngramLogging"],
+            path: "Sources/Infrastructure/SpeechTranscription"
         ),
         .target(
             name: "ClipPipeline",
@@ -205,6 +211,7 @@ let package = Package(
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "VideoUnderstandingTests", dependencies: ["VideoUnderstanding"], path: "Tests/VideoUnderstandingTests"),
         .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),
+        .testTarget(name: "SpeechTranscriptionTests", dependencies: ["SpeechTranscription", "VideoUnderstanding"], path: "Tests/SpeechTranscriptionTests"),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
         .testTarget(name: "VectorStoreSQLiteTests", dependencies: ["VectorStoreSQLite", "RAGCore"], path: "Tests/VectorStoreSQLiteTests"),
