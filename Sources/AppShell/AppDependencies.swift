@@ -1,3 +1,4 @@
+import AppGroupSupport
 import AskFeature
 import BenchFeature
 import ClipDigest
@@ -46,6 +47,9 @@ public final class AppDependencies {
         deviceCapability: DeviceCapability = DeviceCapability(),
         defaults: UserDefaults? = .standard,
         modelContainer: ModelContainer? = nil,
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
+        appGroupLocations: AppGroupLocations? = nil,
+        retrievalEmbeddingEngine: (any EmbeddingEngine)? = nil,
         clipDigestService: ClipDigestService? = nil,
         retriever: (any Retriever)? = nil,
         clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler()
@@ -57,17 +61,29 @@ public final class AppDependencies {
         let resolvedEngine = activeEngine
             ?? Self.storedEngine(defaults: defaults, engines: resolvedEngines)
             ?? resolvedEngines[0]
-
-        self.engines = resolvedEngines
-        self.activeEngine = resolvedEngine
-        self.modelStore = modelStore
-        self.activeModel = resolvedModel
-        self.generationConfig = GenerationConfigBounds.clamped(
+        let resolvedModelStore = modelStore
+        let resolvedGenerationConfig = GenerationConfigBounds.clamped(
             generationConfig
                 ?? Self.storedGenerationConfig(defaults: defaults)
                 ?? .default
         )
-        let retrievalServices = modelContainer.flatMap { try? RetrievalAssembly.makeServices(modelContainer: $0) }
+        let retrievalServices = modelContainer.flatMap {
+            try? RetrievalAssembly.makeServices(
+                modelContainer: $0,
+                modelStore: resolvedModelStore,
+                activeEngine: resolvedEngine,
+                generationConfig: resolvedGenerationConfig,
+                videoAnalyzer: videoAnalyzer,
+                appGroupLocations: appGroupLocations,
+                embeddingEngine: retrievalEmbeddingEngine
+            )
+        }
+
+        self.engines = resolvedEngines
+        self.activeEngine = resolvedEngine
+        self.modelStore = resolvedModelStore
+        self.activeModel = resolvedModel
+        self.generationConfig = resolvedGenerationConfig
         self.clipDigestService = clipDigestService ?? retrievalServices?.clipDigestService
         self.retriever = retriever ?? retrievalServices?.retriever
         self.deviceCapability = deviceCapability

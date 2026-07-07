@@ -1,8 +1,13 @@
 import AppGroupSupport
 import ClipDigest
 import EmbeddingMLX
+import EngineKit
 import Foundation
+import FrameVision
+import ModelStore
 import RAGCore
+import ScriptComposer
+import SpeechTranscription
 import SwiftData
 import VectorStoreSQLite
 
@@ -12,10 +17,26 @@ struct RetrievalServices: Sendable {
 }
 
 enum RetrievalAssembly {
+    private static let videoAnalyzerMaxFrames = 6
+
     @MainActor
-    static func makeServices(modelContainer: ModelContainer) throws -> RetrievalServices {
-        let locations = try EngramAppGroup.locations()
-        let embeddingEngine = AppleContextualEmbedding()
+    static func makeServices(
+        modelContainer: ModelContainer,
+        modelStore: ModelStore,
+        activeEngine: any LLMEngine,
+        generationConfig: GenerationConfig,
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
+        appGroupLocations: AppGroupLocations? = nil,
+        embeddingEngine: (any EmbeddingEngine)? = nil
+    ) throws -> RetrievalServices {
+        let locations: AppGroupLocations
+        if let appGroupLocations {
+            locations = appGroupLocations
+        } else {
+            locations = try EngramAppGroup.locations()
+        }
+
+        let embeddingEngine: any EmbeddingEngine = embeddingEngine ?? AppleContextualEmbedding()
         let configuration = SQLiteIndexConfiguration.file(
             locations.retrievalIndexURL,
             embeddingEngineID: embeddingEngine.metadata.id,
@@ -35,13 +56,52 @@ enum RetrievalAssembly {
             keywordIndex: keywordIndex,
             chunkResolver: vectorStore
         )
+        let videoAnalyzer = videoAnalyzer ?? makeVideoAnalyzer(
+            modelStore: modelStore,
+            activeEngine: activeEngine,
+            generationConfig: generationConfig
+        )
         let digestService = try ClipDigestService.live(
             modelContainer: modelContainer,
-            indexer: indexer
+            indexer: indexer,
+            videoAnalyzer: videoAnalyzer,
+            locations: locations
         )
         return RetrievalServices(
             clipDigestService: digestService,
             retriever: retriever
+        )
+    }
+
+    private static func makeVideoAnalyzer(
+        modelStore: ModelStore,
+        activeEngine: any LLMEngine,
+        generationConfig: GenerationConfig
+    ) -> any VideoAnalyzing {
+        let textConfiguration = ScriptComposerConfiguration(
+            maxKeyframeCount: 0,
+            generationConfig: generationConfig
+        )
+        let textComposer = TextScriptComposer(
+            engine: activeEngine,
+            configuration: textConfiguration
+        )
+        let visionConfiguration = ScriptComposerConfiguration(
+            maxKeyframeCount: videoAnalyzerMaxFrames,
+            generationConfig: generationConfig
+        )
+        let visionComposer = Qwen3VLScriptComposer(
+            modelDirectoryRoot: modelStore.modelDirectoryRoot,
+            configuration: visionConfiguration,
+            textFallback: textComposer
+        )
+
+        return VideoAnalyzer(
+            transcriber: SpeechAnalyzerTranscriber(locale: .current),
+            sampler: AVFoundationFrameSampler(),
+            visionComposer: visionComposer,
+            textComposer: textComposer,
+            maxFrames: videoAnalyzerMaxFrames
         )
     }
 }

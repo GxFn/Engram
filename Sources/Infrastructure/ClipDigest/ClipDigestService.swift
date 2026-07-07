@@ -170,9 +170,16 @@ public actor ClipDigestService: ClipDigesting {
     public static func live(
         modelContainer: ModelContainer,
         indexer: (any ClipDigestIndexing)? = nil,
-        videoAnalyzer: (any VideoAnalyzing)? = nil
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
+        locations appGroupLocations: AppGroupLocations? = nil
     ) throws -> ClipDigestService {
-        let locations = try EngramAppGroup.locations()
+        let locations: AppGroupLocations
+        if let appGroupLocations {
+            locations = appGroupLocations
+        } else {
+            locations = try EngramAppGroup.locations()
+        }
+
         return ClipDigestService(
             queueStore: ClipQueueStore(locations: locations),
             recordStore: ClipRecordStore(modelContainer: modelContainer),

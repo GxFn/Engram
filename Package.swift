@@ -213,6 +213,9 @@ let package = Package(
                 "RAGCore",
                 "ClipDigest",
                 "EmbeddingMLX",
+                "SpeechTranscription",
+                "FrameVision",
+                "ScriptComposer",
                 "MLXEngine",
                 "ModelStore",
                 "Persistence",
@@ -229,6 +232,7 @@ let package = Package(
             dependencies: [
                 "AppShell",
                 "AskFeature",
+                "BenchFeature",
                 "EngineKit",
                 "RAGCore",
                 "MemoryFeature",
@@ -237,6 +241,9 @@ let package = Package(
                 "ClipDigest",
                 "ClipPipeline",
                 "Persistence",
+                "AppGroupSupport",
+                "ScriptCore",
+                "VideoUnderstanding",
             ],
             path: "Tests/AppShellTests"
         ),

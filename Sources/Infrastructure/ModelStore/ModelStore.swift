@@ -488,14 +488,14 @@ private extension Substring {
 public actor ModelStore {
     private static let manifestFileName = ".engram-model.json"
 
-    private let modelsDirectory: URL
+    public nonisolated let modelDirectoryRoot: URL
     private let snapshotDownloader: any ModelSnapshotDownloading
 
     public init(
         modelsDirectory: URL? = nil,
         snapshotDownloader: any ModelSnapshotDownloading = HuggingFaceModelSnapshotDownloader()
     ) {
-        self.modelsDirectory = modelsDirectory ?? Self.defaultModelsDirectory()
+        self.modelDirectoryRoot = modelsDirectory ?? Self.defaultModelsDirectory()
         self.snapshotDownloader = snapshotDownloader
     }
 
@@ -590,7 +590,7 @@ public actor ModelStore {
     }
 
     private func downloadStagingDirectory() throws -> URL {
-        let directory = modelsDirectory.appendingPathComponent(".downloads", isDirectory: true)
+        let directory = modelDirectoryRoot.appendingPathComponent(".downloads", isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -669,13 +669,13 @@ public actor ModelStore {
 
     private func ensureModelsDirectory() throws {
         try FileManager.default.createDirectory(
-            at: modelsDirectory,
+            at: modelDirectoryRoot,
             withIntermediateDirectories: true
         )
     }
 
     private func directoryURL(for model: ModelIdentity) -> URL {
-        model.id.split(separator: "/").reduce(modelsDirectory) { url, pathComponent in
+        model.id.split(separator: "/").reduce(modelDirectoryRoot) { url, pathComponent in
             url.appendingPathComponent(String(pathComponent), isDirectory: true)
         }
     }
@@ -805,12 +805,12 @@ public actor ModelStore {
     }
 
     private func manifests() throws -> [ManifestRecord] {
-        guard FileManager.default.fileExists(atPath: modelsDirectory.path) else {
+        guard FileManager.default.fileExists(atPath: modelDirectoryRoot.path) else {
             return []
         }
 
         var records: [ManifestRecord] = []
-        try visitDirectories(under: modelsDirectory) { directory in
+        try visitDirectories(under: modelDirectoryRoot) { directory in
             let manifestURL = directory.appendingPathComponent(Self.manifestFileName)
             guard FileManager.default.fileExists(atPath: manifestURL.path) else {
                 return

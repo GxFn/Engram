@@ -1,3 +1,4 @@
+import AppGroupSupport
 import AppShell
 import AskFeature
 import BenchFeature
@@ -10,8 +11,10 @@ import MemoryFeature
 import ModelStore
 import Persistence
 import RAGCore
+import ScriptCore
 import SwiftData
 import Testing
+import VideoUnderstanding
 
 @MainActor
 @Test func settingsSelectionAndConfigUpdateSharedDependenciesAndPersist() {
@@ -213,6 +216,69 @@ import Testing
 }
 
 @MainActor
+@Test func appShellLiveAssemblyDigestsImportedVideoIntoRetrievalCitations() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellVideoAssemblyTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let locations = try makeAppShellLocations(root: root)
+    let modelStore = ModelStore(modelsDirectory: locations.modelsDirectory)
+    let qwenVLDirectory = try await modelStore.localURL(for: ModelCatalog.qwen3VL_4B_4bit)
+    let engine = FakeEngine(id: "fake", displayName: "Fake")
+    let analyzer = AppShellRecordingVideoAnalyzer()
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let dependencies = AppDependencies(
+        engines: [engine],
+        activeEngine: engine,
+        modelStore: modelStore,
+        activeModel: ModelCatalog.qwen3_1_7B_4bit,
+        generationConfig: GenerationConfig(temperature: 0.2, topP: 0.9, maxTokens: 256),
+        defaults: nil,
+        modelContainer: container,
+        videoAnalyzer: analyzer,
+        appGroupLocations: locations,
+        retrievalEmbeddingEngine: AppShellTestEmbeddingEngine()
+    )
+    let memory = dependencies.makeMemoryViewModel()
+    let pickedURL = root.appendingPathComponent("picked-video.mov", isDirectory: false)
+    try Data([0x20, 0x21, 0x22, 0x23]).write(to: pickedURL)
+
+    #expect(modelStore.modelDirectoryRoot == locations.modelsDirectory)
+    #expect(qwenVLDirectory.path.hasPrefix(locations.modelsDirectory.path))
+    #expect(dependencies.clipDigestService != nil)
+    #expect(dependencies.retriever != nil)
+
+    await memory.importVideo(.file(pickedURL))
+
+    let queued = try #require(memory.items.first)
+    let copiedVideoURL = try #require(queued.sourceURL)
+    #expect(queued.state == .queued)
+    #expect(copiedVideoURL.deletingLastPathComponent() == locations.videosDirectory)
+
+    await memory.digestAndRefresh()
+
+    #expect(memory.errorMessage == nil)
+    let indexed = try #require(memory.items.first { $0.id == queued.id })
+    #expect(indexed.state == .indexed)
+    #expect(indexed.title == "picked-video")
+    #expect(indexed.bodyText?.contains("Raincoat Closeup") == true)
+    #expect(indexed.bodyText?.contains("红色雨衣") == true)
+    #expect(indexed.indexPreview?.contains("红色雨衣") == true)
+
+    let retriever = try #require(dependencies.retriever)
+    let results = try await retriever.retrieve(question: "红色雨衣 特写", topK: 4)
+    #expect(results.contains { result in
+        result.citation.clipID == queued.id
+            && result.chunk.text.contains("红色雨衣")
+            && result.citation.snippet.contains("红色雨衣")
+    })
+
+    #expect(await analyzer.sources.map(\.id) == [queued.id])
+    #expect(await analyzer.sources.map(\.localFileURL) == [copiedVideoURL])
+    #expect(await analyzer.stageCalls == [.transcribing, .scripting])
+}
+
+@MainActor
 @Test func appLaunchContextRegistersClipDigestTriggersDuringInitialization() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramAppShellLaunchTests-\(UUID().uuidString)", isDirectory: true)
@@ -306,6 +372,89 @@ private func makeLocalModelFixture(at directory: URL) throws {
     try Data(repeating: 0x41, count: 2).write(to: directory.appendingPathComponent("config.json"))
     try Data(repeating: 0x42, count: 3).write(to: directory.appendingPathComponent("tokenizer.json"))
     try Data(repeating: 0x43, count: 5).write(to: directory.appendingPathComponent("model.safetensors"))
+}
+
+private func makeAppShellLocations(root: URL) throws -> AppGroupLocations {
+    let locations = AppGroupLocations(
+        groupIdentifier: "group.com.gxfn.engram.tests",
+        rootDirectory: root,
+        storeURL: root.appendingPathComponent("Engram.store", isDirectory: false),
+        queueDirectory: root.appendingPathComponent("queue", isDirectory: true),
+        modelsDirectory: root.appendingPathComponent("Models", isDirectory: true),
+        videosDirectory: root.appendingPathComponent("videos", isDirectory: true),
+        retrievalIndexURL: root.appendingPathComponent("EngramRetrieval.sqlite", isDirectory: false),
+        usesAppGroupContainer: false
+    )
+    try FileManager.default.createDirectory(at: locations.rootDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: locations.queueDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: locations.modelsDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: locations.videosDirectory, withIntermediateDirectories: true)
+    return locations
+}
+
+private actor AppShellRecordingVideoAnalyzer: VideoAnalyzing {
+    private(set) var sources: [VideoSource] = []
+    private(set) var stageCalls: [ClipState] = []
+
+    func analyze(
+        _ source: VideoSource,
+        onStage: @Sendable (ClipState) async -> Void
+    ) async throws -> Script {
+        sources.append(source)
+        for stage in [ClipState.transcribing, .scripting] {
+            await onStage(stage)
+            stageCalls.append(stage)
+        }
+        return appShellVideoScript(sourceID: source.id)
+    }
+}
+
+private actor AppShellTestEmbeddingEngine: EmbeddingEngine {
+    nonisolated let metadata = EmbeddingEngineMetadata(
+        id: "app-shell-test-embedding",
+        displayName: "AppShell Test Embedding",
+        dimension: 8
+    )
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map(Self.vector)
+    }
+
+    private nonisolated static func vector(for text: String) -> [Float] {
+        var vector = Array(repeating: Float(0), count: 8)
+        for scalar in text.lowercased().unicodeScalars where !scalar.properties.isWhitespace {
+            let bucket = Int(scalar.value % UInt32(vector.count))
+            vector[bucket] += 1
+        }
+
+        let magnitude = sqrt(vector.reduce(Double(0)) { total, value in
+            total + Double(value * value)
+        })
+        guard magnitude > 0 else {
+            return vector
+        }
+        return vector.map { Float(Double($0) / magnitude) }
+    }
+}
+
+private func appShellVideoScript(sourceID: String) -> Script {
+    Script(
+        id: "script-\(sourceID)",
+        videoSourceID: sourceID,
+        title: "Raincoat Closeup",
+        summary: "红色雨衣在夜市摊位前完成特写展示。",
+        shots: [
+            StoryboardShot(
+                index: 0,
+                startSeconds: 0,
+                endSeconds: 4,
+                narration: "旁白强调红色雨衣的防水细节。",
+                visualDescription: "红色雨衣的袖口和拉链特写，雨滴在表面滚落。",
+                pacingNote: "快慢结合"
+            )
+        ],
+        createdAt: Date(timeIntervalSince1970: 1_800_000_600)
+    )
 }
 
 private actor AppShellFixtureSnapshotDownloader: ModelSnapshotDownloading {
