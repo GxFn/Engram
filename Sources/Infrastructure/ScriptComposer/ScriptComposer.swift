@@ -395,10 +395,31 @@ private enum FramePreparer {
 private enum ScriptPromptBuilder {
     static func visionPrompt(transcript: [TranscriptSegment], keyframes: [SampledFrame]) -> String {
         """
-        你是 Engram 的端侧中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成分镜。
+        你是 Engram 的端侧中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成爆款拆解分镜。
         只输出一个合法 JSON 对象，不要 Markdown，不要解释。字段严格如下：
-        {"title":"中文标题","summary":"一句中文摘要","shots":[{"start":0.0,"end":1.0,"narration":"台词或旁白，可为空","visualDescription":"画面、人物、动作、场景","pacingNote":"节奏建议，可为空"}]}
+        {
+          "title": "中文标题",
+          "summary": "一句中文摘要",
+          "visualElements": ["人物/场景/道具/风格标签，3-8 个；信息不足时返回空数组"],
+          "hookStructure": {
+            "openingHook": "前 3 秒钩子",
+            "retentionDevices": ["留人手法"],
+            "payoff": "爆点/反转/信息增量，可为空",
+            "callToAction": "CTA，可为空",
+            "whyItWorks": "为什么可能爆、为什么成立"
+          },
+          "shots": [
+            {
+              "start": 0.0,
+              "end": 1.0,
+              "narration": "台词或旁白，可为空",
+              "visualDescription": "画面、人物、动作、场景",
+              "pacingNote": "节奏建议，可为空"
+            }
+          ]
+        }
         要求：shots 按时间递增；visualDescription 必须描述画面，不要只复述转写；不确定的人名不要编造。
+        请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立，并列出关键视觉元素。
 
         转写：
         \(transcriptLines(transcript))
@@ -410,12 +431,20 @@ private enum ScriptPromptBuilder {
 
     static func textPrompt(transcript: [TranscriptSegment]) -> String {
         """
-        你是 Engram 的端侧中文短视频脚本编辑。VLM 当前不可用，请只根据转写生成 transcript-only 结构化分镜剧本。
+        你是 Engram 的端侧中文短视频脚本编辑。VLM 当前不可用，请只根据转写生成 transcript-only 爆款拆解分镜剧本。
 
         只输出一个合法 JSON 对象，不要 Markdown，不要解释。JSON 结构必须是：
         {
           "title": "中文标题",
           "summary": "一句中文摘要",
+          "visualElements": [],
+          "hookStructure": {
+            "openingHook": "基于转写判断的前 3 秒钩子",
+            "retentionDevices": ["基于转写判断的留人手法"],
+            "payoff": "爆点/反转/信息增量，可为空",
+            "callToAction": "CTA，可为空",
+            "whyItWorks": "基于转写判断为什么可能爆、为什么成立"
+          },
           "shots": [
             {
               "start": 0.0,
@@ -427,7 +456,8 @@ private enum ScriptPromptBuilder {
           ]
         }
 
-        要求 visualDescription 留空，因为没有画面输入。shots 必须按时间递增。
+        要求 visualDescription 留空，因为没有画面输入。visualElements 可以为空数组，hookStructure 必须基于转写文本谨慎生成，不要编造画面细节。
+        请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立。shots 必须按时间递增。
 
         转写：
         \(transcriptLines(transcript))

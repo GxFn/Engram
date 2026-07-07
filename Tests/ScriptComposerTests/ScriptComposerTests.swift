@@ -75,9 +75,19 @@ import VideoUnderstanding
     let requests = await generator.requests
     #expect(requests.count == 1)
     #expect(requests[0].frames.map(\.timestampSeconds) == [1, 2, 4])
-    #expect(requests[0].prompt.contains("\"visualDescription\""))
-    #expect(requests[0].prompt.contains("[0.0s-2.4s] 今天我们做一道快手菜。"))
-    #expect(requests[0].prompt.contains("frame_1: timestamp=1.0s"))
+    let visionPrompt = requests[0].prompt
+    #expect(visionPrompt.contains("\"visualDescription\""))
+    #expect(visionPrompt.contains("\"visualElements\""))
+    #expect(visionPrompt.contains("\"hookStructure\""))
+    #expect(visionPrompt.contains("\"openingHook\""))
+    #expect(visionPrompt.contains("\"retentionDevices\""))
+    #expect(visionPrompt.contains("\"whyItWorks\""))
+    #expect(visionPrompt.contains("3-8"))
+    #expect(visionPrompt.contains("前 3 秒钩子"))
+    #expect(visionPrompt.contains("为什么可能爆"))
+    #expect(visionPrompt.contains("关键视觉元素"))
+    #expect(visionPrompt.contains("[0.0s-2.4s] 今天我们做一道快手菜。"))
+    #expect(visionPrompt.contains("frame_1: timestamp=1.0s"))
     #expect(ScriptRendering.indexableText(script).contains("画面: 近景展示刀切蔬菜的动作。"))
 }
 
@@ -187,8 +197,18 @@ import VideoUnderstanding
     #expect(script.title == "转写版脚本")
     #expect(script.shots[0].visualDescription == "")
     #expect(await visionGenerator.requests.count == 1)
-    #expect(await textGenerator.requests.count == 1)
-    #expect((await textGenerator.requests[0]).prompt.contains("visualDescription 留空"))
+    let textRequests = await textGenerator.requests
+    #expect(textRequests.count == 1)
+    let textPrompt = textRequests[0].prompt
+    #expect(textPrompt.contains("visualDescription 留空"))
+    #expect(textPrompt.contains("\"visualElements\": []"))
+    #expect(textPrompt.contains("\"hookStructure\""))
+    #expect(textPrompt.contains("\"openingHook\""))
+    #expect(textPrompt.contains("\"retentionDevices\""))
+    #expect(textPrompt.contains("\"whyItWorks\""))
+    #expect(textPrompt.contains("visualElements 可以为空数组"))
+    #expect(textPrompt.contains("基于转写文本谨慎生成"))
+    #expect(textPrompt.contains("为什么可能爆"))
 }
 
 @Test func composerLimitsFramesAndHandlesEmptyInputsWithoutThrowing() async throws {
