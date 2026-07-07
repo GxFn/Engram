@@ -39,8 +39,8 @@ public enum ClipSource: Sendable, Hashable, Codable {
 
 /// Digestion lifecycle. Text clips skip `fetching` because their body arrived
 /// with the share; URL clips pass through it for the one-time article fetch.
-/// Video clips enter the M3 pipeline through transcription, frame analysis,
-/// script composition, and finally the shared indexed terminal state.
+/// Video clips enter the M3 pipeline through transcription, optional frame
+/// analysis, script composition, and finally the shared indexed terminal state.
 public enum ClipState: String, Sendable, Codable, CaseIterable {
     case queued
     case fetching
@@ -61,6 +61,7 @@ public enum ClipState: String, Sendable, Codable, CaseIterable {
              (.indexing, .indexed),
              (.indexing, .failed),
              (.transcribing, .analyzing),
+             (.transcribing, .scripting),
              (.transcribing, .failed),
              (.analyzing, .scripting),
              (.analyzing, .failed),

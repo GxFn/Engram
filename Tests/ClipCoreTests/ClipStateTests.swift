@@ -18,6 +18,12 @@ import Testing
     #expect(ClipState.scripting.canTransition(to: .indexed))
 }
 
+@Test func videoClipCanSkipAnalyzingForUnifiedVisionScriptPath() {
+    #expect(ClipState.queued.canTransition(to: .transcribing))
+    #expect(ClipState.transcribing.canTransition(to: .scripting))
+    #expect(ClipState.scripting.canTransition(to: .indexed))
+}
+
 @Test func videoProcessingStatesCanFail() {
     #expect(ClipState.transcribing.canTransition(to: .failed))
     #expect(ClipState.analyzing.canTransition(to: .failed))
@@ -27,10 +33,10 @@ import Testing
 @Test func videoStateMachineRejectsShortcuts() {
     #expect(!ClipState.queued.canTransition(to: .analyzing))
     #expect(!ClipState.queued.canTransition(to: .scripting))
-    #expect(!ClipState.transcribing.canTransition(to: .scripting))
     #expect(!ClipState.transcribing.canTransition(to: .indexed))
     #expect(!ClipState.analyzing.canTransition(to: .indexed))
     #expect(!ClipState.scripting.canTransition(to: .transcribing))
+    #expect(!ClipState.scripting.canTransition(to: .analyzing))
 }
 
 @Test func allowedTransitionMatrixStaysIntentional() {
@@ -43,6 +49,7 @@ import Testing
         Transition(.indexing, .indexed),
         Transition(.indexing, .failed),
         Transition(.transcribing, .analyzing),
+        Transition(.transcribing, .scripting),
         Transition(.transcribing, .failed),
         Transition(.analyzing, .scripting),
         Transition(.analyzing, .failed),
