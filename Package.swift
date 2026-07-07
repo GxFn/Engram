@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "ScriptCore", targets: ["ScriptCore"]),
         .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "FrameVision", targets: ["FrameVision"]),
+        .library(name: "QwenVLRuntime", targets: ["QwenVLRuntime"]),
         .library(name: "MLXEngine", targets: ["MLXEngine"]),
         .library(name: "FMEngine", targets: ["FMEngine"]),
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
@@ -117,6 +118,20 @@ let package = Package(
             name: "FrameVision",
             dependencies: ["VideoUnderstanding", "EngramLogging"],
             path: "Sources/Infrastructure/FrameVision"
+        ),
+        .target(
+            name: "QwenVLRuntime",
+            dependencies: [
+                "EngineKit",
+                "VideoUnderstanding",
+                "EngramLogging",
+                "ModelStore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ],
+            path: "Sources/Infrastructure/QwenVLRuntime"
         ),
         .target(
             name: "ClipPipeline",
@@ -219,6 +234,11 @@ let package = Package(
         .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),
         .testTarget(name: "SpeechTranscriptionTests", dependencies: ["SpeechTranscription", "VideoUnderstanding"], path: "Tests/SpeechTranscriptionTests"),
         .testTarget(name: "FrameVisionTests", dependencies: ["FrameVision", "VideoUnderstanding"], path: "Tests/FrameVisionTests"),
+        .testTarget(
+            name: "QwenVLRuntimeTests",
+            dependencies: ["QwenVLRuntime", "VideoUnderstanding", "ModelStore", "EngineKit"],
+            path: "Tests/QwenVLRuntimeTests"
+        ),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),
         .testTarget(name: "VectorStoreSQLiteTests", dependencies: ["VectorStoreSQLite", "RAGCore"], path: "Tests/VectorStoreSQLiteTests"),

@@ -4,6 +4,7 @@ import Foundation
 public struct DeviceCapability: Sendable, Equatable {
     public static let gibibyte: Int64 = 1_024 * 1_024 * 1_024
     public static let qwen3FourBRecommendedMemoryBytes: Int64 = 7 * gibibyte
+    public static let qwen3VLFourBRequiredMemoryBytes: Int64 = 8 * gibibyte
 
     public let physicalMemoryBytes: Int64
     public let safetyFactor: Double
@@ -29,6 +30,10 @@ public struct DeviceCapability: Sendable, Equatable {
     }
 
     public func requiredMemoryBytes(for model: ModelIdentity) -> Int64 {
+        if model == ModelCatalog.qwen3VL_4B_4bit {
+            return Self.qwen3VLFourBRequiredMemoryBytes
+        }
+
         let estimatedBytes = max(0, model.estimatedMemoryBytes)
         let required = (Double(estimatedBytes) * safetyFactor).rounded(.up)
 

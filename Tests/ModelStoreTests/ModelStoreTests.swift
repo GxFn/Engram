@@ -340,6 +340,28 @@ import Foundation
     #expect(DeviceCapability(physicalMemoryBytes: 2_000).requiredMemoryBytes(for: model) == 1_400)
 }
 
+@Test func modelCatalogIncludesDefaultQwen3VLModel() {
+    #expect(ModelCatalog.qwen3VL_4B_4bit.id == "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit")
+    #expect(ModelCatalog.qwen3VL_4B_4bit.family == "qwen3-vl")
+    #expect(ModelCatalog.launchLineup.contains(ModelCatalog.qwen3VL_4B_4bit))
+}
+
+@Test func deviceCapabilityRequiresEightGiBForQwen3VL() {
+    let belowThreshold = DeviceCapability(
+        physicalMemoryBytes: DeviceCapability.qwen3VLFourBRequiredMemoryBytes - 1
+    )
+    let atThreshold = DeviceCapability(
+        physicalMemoryBytes: DeviceCapability.qwen3VLFourBRequiredMemoryBytes
+    )
+
+    #expect(belowThreshold.canRun(ModelCatalog.qwen3VL_4B_4bit) == false)
+    #expect(atThreshold.canRun(ModelCatalog.qwen3VL_4B_4bit))
+    #expect(
+        atThreshold.requiredMemoryBytes(for: ModelCatalog.qwen3VL_4B_4bit)
+            == DeviceCapability.qwen3VLFourBRequiredMemoryBytes
+    )
+}
+
 @Test func downloadStateReportsBoundedFractions() {
     #expect(DownloadState(completedBytes: 25, totalBytes: 100).fractionCompleted == 0.25)
     #expect(DownloadState(completedBytes: 125, totalBytes: 100).fractionCompleted == 1)
@@ -363,6 +385,36 @@ import Foundation
         "model.safetensors",
         "tokenizer.json",
         "vocab.json",
+    ])
+}
+
+@Test func huggingFaceSnapshotSelectionKeepsVLMProcessorFiles() {
+    let selected = HuggingFaceModelSnapshotDownloader.selectedSnapshotFilenames(from: [
+        ".gitattributes",
+        "README.md",
+        "chat_template.jinja",
+        "config.json",
+        "generation_config.json",
+        "model-00001-of-00002.safetensors",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "unused.bin",
+    ])
+
+    #expect(selected == [
+        "README.md",
+        "chat_template.jinja",
+        "config.json",
+        "generation_config.json",
+        "model-00001-of-00002.safetensors",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
     ])
 }
 

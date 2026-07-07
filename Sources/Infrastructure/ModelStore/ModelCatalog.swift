@@ -30,9 +30,18 @@ public enum ModelCatalog {
         estimatedMemoryBytes: 650_000_000
     )
 
+    public static let qwen3VL_4B_4bit = ModelIdentity(
+        id: "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit",
+        family: "qwen3-vl",
+        quantization: "4bit",
+        contextLength: 32_768,
+        estimatedMemoryBytes: 2_500_000_000
+    )
+
     public static let launchLineup: [ModelIdentity] = [
         qwen3_4B_4bit,
         qwen3_1_7B_4bit,
         qwen3Embedding_0_6B,
+        qwen3VL_4B_4bit,
     ]
 }
