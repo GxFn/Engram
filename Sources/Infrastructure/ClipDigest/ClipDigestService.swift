@@ -4,7 +4,9 @@ import ClipPipeline
 import EngramLogging
 import Foundation
 import Persistence
+import ScriptCore
 import SwiftData
+import VideoUnderstanding
 
 public struct FetchedArticleHTML: Sendable {
     public let url: URL
@@ -124,7 +126,7 @@ public struct DigestPreviewIndexer: ClipDigestIndexing {
 public enum ClipDigestServiceError: Error, Equatable, Sendable {
     case unsupportedEmptyText(String)
     case unsupportedURL(URL)
-    case videoDigestionNotWired(URL)
+    case videoAnalyzerUnavailable(URL)
     case extractionFailed(String)
     case retryUnavailable(String)
 }
@@ -135,6 +137,7 @@ public actor ClipDigestService: ClipDigesting {
     private let fetcher: any ArticleFetching
     private let extractor: ArticleExtractor
     private let indexer: any ClipDigestIndexing
+    private let videoAnalyzer: (any VideoAnalyzing)?
     private let now: @Sendable () -> Date
 
     public init(
@@ -143,6 +146,7 @@ public actor ClipDigestService: ClipDigesting {
         fetcher: any ArticleFetching = URLSessionArticleFetcher(),
         extractor: ArticleExtractor = ArticleExtractor(),
         indexer: any ClipDigestIndexing = DigestPreviewIndexer(),
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.queueStore = queueStore
@@ -150,18 +154,21 @@ public actor ClipDigestService: ClipDigesting {
         self.fetcher = fetcher
         self.extractor = extractor
         self.indexer = indexer
+        self.videoAnalyzer = videoAnalyzer
         self.now = now
     }
 
     public static func live(
         modelContainer: ModelContainer,
-        indexer: (any ClipDigestIndexing)? = nil
+        indexer: (any ClipDigestIndexing)? = nil,
+        videoAnalyzer: (any VideoAnalyzing)? = nil
     ) throws -> ClipDigestService {
         let locations = try EngramAppGroup.locations()
         return ClipDigestService(
             queueStore: ClipQueueStore(locations: locations),
             recordStore: ClipRecordStore(modelContainer: modelContainer),
-            indexer: indexer ?? DigestPreviewIndexer()
+            indexer: indexer ?? DigestPreviewIndexer(),
+            videoAnalyzer: videoAnalyzer
         )
     }
 
@@ -224,19 +231,46 @@ public actor ClipDigestService: ClipDigesting {
 
             case let .videoFile(url):
                 _ = try await recordStore.transition(id: clip.id, to: .transcribing, now: now())
-                throw ClassifiedDigestFailure(
-                    reason: "Video digestion is not wired until W-M3.6 for \(url.lastPathComponent)",
-                    retryable: false,
-                    underlyingDescription: String(describing: ClipDigestServiceError.videoDigestionNotWired(url))
+                guard let videoAnalyzer else {
+                    throw ClassifiedDigestFailure(
+                        reason: "Video analyzer is not configured for \(url.lastPathComponent)",
+                        retryable: false,
+                        underlyingDescription: String(describing: ClipDigestServiceError.videoAnalyzerUnavailable(url))
+                    )
+                }
+
+                let source = VideoSource(id: clip.id, localFileURL: url, importedAt: clip.createdAt)
+                let clipID = clip.id
+                let script = try await videoAnalyzer.analyze(source) { [recordStore, now, clipID] stage in
+                    do {
+                        _ = try await recordStore.transition(id: clipID, to: stage, now: now())
+                    } catch {
+                        Log.clip.error(
+                            "Failed to record video stage \(stage.rawValue, privacy: .public) for clip \(clipID, privacy: .public): \(String(describing: error), privacy: .public)"
+                        )
+                    }
+                }
+                clip.title = clip.title ?? script.title
+                clip.bodyText = ScriptRendering.indexableText(script)
+                _ = try await recordStore.updateFetchedBody(
+                    id: clip.id,
+                    title: clip.title,
+                    bodyText: clip.bodyText ?? "",
+                    now: now()
                 )
             }
 
-            let bodyText = try normalizedRequired(clip.bodyText, fallback: nil)
             let sourceURL: URL?
+            let bodyText: String
             if case let .url(url) = clip.source {
                 sourceURL = url
+                bodyText = try normalizedRequired(clip.bodyText, fallback: nil)
+            } else if case .videoFile = clip.source {
+                sourceURL = nil
+                bodyText = try renderedScriptRequired(clip.bodyText)
             } else {
                 sourceURL = nil
+                bodyText = try normalizedRequired(clip.bodyText, fallback: nil)
             }
             let indexingResult = try await indexer.index(ClipDigestIndexingPayload(
                 clipID: clip.id,
@@ -308,11 +342,43 @@ public actor ClipDigestService: ClipDigesting {
                 underlyingDescription: String(describing: error)
             )
         }
+        if let videoError = error as? VideoUnderstandingError {
+            return classify(videoError)
+        }
         return ClassifiedDigestFailure(
             reason: String(describing: error),
             retryable: false,
             underlyingDescription: String(describing: error)
         )
+    }
+
+    private func classify(_ error: VideoUnderstandingError) -> ClassifiedDigestFailure {
+        switch error {
+        case .noAudioTrack:
+            return ClassifiedDigestFailure(
+                reason: "Video has no audio track.",
+                retryable: false,
+                underlyingDescription: String(describing: error)
+            )
+        case let .transcriptionUnavailable(message):
+            return ClassifiedDigestFailure(
+                reason: "Video transcription unavailable: \(message)",
+                retryable: true,
+                underlyingDescription: String(describing: error)
+            )
+        case let .visionUnavailable(message):
+            return ClassifiedDigestFailure(
+                reason: "Video vision unavailable after fallback boundary: \(message)",
+                retryable: true,
+                underlyingDescription: String(describing: error)
+            )
+        case let .unreadableAsset(message):
+            return ClassifiedDigestFailure(
+                reason: "Video asset unreadable: \(message)",
+                retryable: false,
+                underlyingDescription: String(describing: error)
+            )
+        }
     }
 
     private func normalizedRequired(_ primary: String?, fallback: String?) throws -> String {
@@ -334,6 +400,17 @@ public actor ClipDigestService: ClipDigesting {
             )
         }
         return normalized
+    }
+
+    private func renderedScriptRequired(_ bodyText: String?) throws -> String {
+        guard let bodyText, !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClassifiedDigestFailure(
+                reason: "Video script text is empty",
+                retryable: false,
+                underlyingDescription: String(describing: ClipDigestServiceError.unsupportedEmptyText(bodyText ?? ""))
+            )
+        }
+        return bodyText
     }
 }
 

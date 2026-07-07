@@ -152,7 +152,15 @@ let package = Package(
         ),
         .target(
             name: "ClipDigest",
-            dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline", "Persistence", "EngramLogging"],
+            dependencies: [
+                "AppGroupSupport",
+                "ClipCore",
+                "ClipPipeline",
+                "Persistence",
+                "VideoUnderstanding",
+                "ScriptCore",
+                "EngramLogging",
+            ],
             path: "Sources/Infrastructure/ClipDigest"
         ),
         .target(
@@ -233,7 +241,11 @@ let package = Package(
             path: "Tests/AppShellTests"
         ),
         .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit", "RAGCore"], path: "Tests/BenchFeatureTests"),
-        .testTarget(name: "ClipDigestTests", dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence"], path: "Tests/ClipDigestTests"),
+        .testTarget(
+            name: "ClipDigestTests",
+            dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence", "ScriptCore", "VideoUnderstanding"],
+            path: "Tests/ClipDigestTests"
+        ),
         .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
         .testTarget(name: "EmbeddingMLXTests", dependencies: ["EmbeddingMLX", "RAGCore"], path: "Tests/EmbeddingMLXTests"),
