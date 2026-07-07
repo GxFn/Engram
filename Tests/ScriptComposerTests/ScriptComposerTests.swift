@@ -368,6 +368,83 @@ import VideoUnderstanding
     #expect(script.visualElements == [])
 }
 
+@Test func qwenComposerKeepsShotsWhenHookStructureIsPartial() async throws {
+    // hookStructure is present but missing the required `whyItWorks` field. The lenient
+    // HookPayload decode must keep the good shots (partial hook), not drop everything to a
+    // single-shot fallback.
+    let generator = RecordingVLMGenerator(responses: [
+        """
+        {
+          "title": "只有部分爆点",
+          "summary": "钩子字段不完整。",
+          "visualElements": ["主角"],
+          "hookStructure": {
+            "openingHook": "开场一句钩子。",
+            "retentionDevices": ["悬念"]
+          },
+          "shots": [
+            {"start": 0.0, "end": 1.5, "narration": "第一句", "visualDescription": "画面一", "pacingNote": "快"},
+            {"start": 1.5, "end": 3.0, "narration": "第二句", "visualDescription": "画面二", "pacingNote": "慢"}
+          ]
+        }
+        """
+    ])
+    let composer = Qwen3VLScriptComposer(
+        generator: generator,
+        configuration: .init(maxKeyframeCount: 2),
+        dateProvider: { Date(timeIntervalSince1970: 10) },
+        idProvider: { "script-partial-hook" }
+    )
+
+    let script = try await composer.compose(
+        sourceID: "video-partial",
+        transcript: fixtureTranscript,
+        keyframes: [jpegFrame(timestamp: 1), jpegFrame(timestamp: 2)]
+    )
+
+    // Shots survived (not a single-shot fallback).
+    #expect(script.shots.count == 2)
+    #expect(script.title == "只有部分爆点")
+    // Partial hook preserved with an empty whyItWorks rather than dropped entirely.
+    #expect(script.hookStructure?.openingHook == "开场一句钩子。")
+    #expect(script.hookStructure?.retentionDevices == ["悬念"])
+    #expect(script.hookStructure?.whyItWorks == "")
+}
+
+@Test func qwenComposerDropsHookWhenNotAnObject() async throws {
+    // hookStructure is the wrong type (a string). It must degrade to nil without failing the
+    // whole decode, keeping the shots.
+    let generator = RecordingVLMGenerator(responses: [
+        """
+        {
+          "title": "错误类型钩子",
+          "summary": "hookStructure 不是对象。",
+          "visualElements": [],
+          "hookStructure": "这是一段字符串而不是对象",
+          "shots": [
+            {"start": 0.0, "end": 2.0, "narration": "台词", "visualDescription": "画面", "pacingNote": null}
+          ]
+        }
+        """
+    ])
+    let composer = Qwen3VLScriptComposer(
+        generator: generator,
+        configuration: .init(maxKeyframeCount: 1),
+        dateProvider: { Date(timeIntervalSince1970: 10) },
+        idProvider: { "script-badhook" }
+    )
+
+    let script = try await composer.compose(
+        sourceID: "video-badhook",
+        transcript: fixtureTranscript,
+        keyframes: [jpegFrame(timestamp: 1)]
+    )
+
+    #expect(script.shots.count == 1)
+    #expect(script.title == "错误类型钩子")
+    #expect(script.hookStructure == nil)
+}
+
 private actor RecordingVLMGenerator: QwenVLGenerating {
     struct Request: Sendable {
         let prompt: String

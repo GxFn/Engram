@@ -586,8 +586,59 @@ private struct ScriptPayload: Decodable {
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
         visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
-        hookStructure = try container.decodeIfPresent(HookAnalysis.self, forKey: .hookStructure)
+        // Lenient: a malformed or partial hookStructure degrades to nil/partial instead of
+        // failing the whole script decode and dropping otherwise-good shots.
+        let hookPayload = (try? container.decodeIfPresent(HookPayload.self, forKey: .hookStructure)) ?? nil
+        hookStructure = hookPayload?.hookAnalysis()
         shots = try container.decodeIfPresent([ShotPayload].self, forKey: .shots) ?? []
+    }
+}
+
+private struct HookPayload: Decodable {
+    let openingHook: String
+    let retentionDevices: [String]
+    let payoff: String?
+    let callToAction: String?
+    let whyItWorks: String
+
+    enum CodingKeys: String, CodingKey {
+        case openingHook
+        case retentionDevices
+        case payoff
+        case callToAction
+        case whyItWorks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        openingHook = try container.decodeIfPresent(String.self, forKey: .openingHook) ?? ""
+        retentionDevices = try container.decodeIfPresent([String].self, forKey: .retentionDevices) ?? []
+        payoff = try container.decodeIfPresent(String.self, forKey: .payoff)
+        callToAction = try container.decodeIfPresent(String.self, forKey: .callToAction)
+        whyItWorks = try container.decodeIfPresent(String.self, forKey: .whyItWorks) ?? ""
+    }
+
+    func hookAnalysis() -> HookAnalysis? {
+        let devices = retentionDevices
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let hook = openingHook.trimmingCharacters(in: .whitespacesAndNewlines)
+        let why = whyItWorks.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pay = payoff?.trimmedNilIfEmpty
+        let cta = callToAction?.trimmedNilIfEmpty
+
+        // Drop an entirely empty hook so ScriptRendering/UI can treat it as "no analysis".
+        guard !hook.isEmpty || !why.isEmpty || !devices.isEmpty || pay != nil || cta != nil else {
+            return nil
+        }
+
+        return HookAnalysis(
+            openingHook: hook,
+            retentionDevices: devices,
+            payoff: pay,
+            callToAction: cta,
+            whyItWorks: why
+        )
     }
 }
 
