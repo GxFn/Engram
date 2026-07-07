@@ -71,6 +71,48 @@ import VideoUnderstanding
     }
 }
 
+@Test func sceneSelectionKeepsOneFramePerDistinctCluster() {
+    // Two near-duplicate pairs; farthest-point selection should keep one from each cluster.
+    let signatures: [[Float]] = [
+        [0.0, 0.0],   // cluster A
+        [0.0, 0.01],  // ~dup of A
+        [1.0, 1.0],   // cluster B
+        [1.0, 0.99],  // ~dup of B
+    ]
+
+    let selected = SceneAwareFrameSelection.select(signatures: signatures, maxFrames: 2).sorted()
+
+    #expect(selected == [0, 2])
+}
+
+@Test func sceneSelectionReturnsAllWhenNotMoreThanMax() {
+    let signatures: [[Float]] = [[0], [1], [2]]
+    #expect(SceneAwareFrameSelection.select(signatures: signatures, maxFrames: 3) == [0, 1, 2])
+    #expect(SceneAwareFrameSelection.select(signatures: signatures, maxFrames: 5) == [0, 1, 2])
+    #expect(SceneAwareFrameSelection.select(signatures: [[Float]](), maxFrames: 3).isEmpty)
+}
+
+@Test func sceneSelectionPicksThreeSpreadClusters() {
+    let signatures: [[Float]] = [
+        [0.0], [0.02],        // A
+        [0.5], [0.51],        // B
+        [1.0], [0.99],        // C
+    ]
+    let selected = SceneAwareFrameSelection.select(signatures: signatures, maxFrames: 3).sorted()
+    // One representative from each of the three clusters (first index of each pair region).
+    #expect(selected.count == 3)
+    #expect(selected.contains(where: { $0 <= 1 }))       // from A
+    #expect(selected.contains(where: { (2...3).contains($0) }))  // from B
+    #expect(selected.contains(where: { $0 >= 4 }))       // from C
+}
+
+@Test func evenlySubsampledFallbackReturnsRequestedCount() {
+    let frames = (0..<10).map { SampledFrame(timestampSeconds: Double($0), jpegData: Data([UInt8($0)])) }
+    let picked = AVFoundationFrameSampler.evenlySubsampled(frames, count: 4)
+    #expect(picked.count == 4)
+    #expect(picked.map(\.timestampSeconds) == picked.map(\.timestampSeconds).sorted())
+}
+
 private func videoSource(url: URL = URL(fileURLWithPath: "/tmp/source.mov")) -> VideoSource {
     VideoSource(
         id: "video-1",

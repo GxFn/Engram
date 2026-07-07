@@ -8,13 +8,21 @@ import VideoUnderstanding
 
 public struct AVFoundationFrameSampler: FrameSampler {
     private let assetService: any FrameAssetServicing
+    private let candidateMultiplier: Int
+    private let candidateCap: Int
 
     public init() {
         self.init(assetService: AVFoundationFrameAssetService())
     }
 
-    init(assetService: any FrameAssetServicing) {
+    init(
+        assetService: any FrameAssetServicing,
+        candidateMultiplier: Int = 5,
+        candidateCap: Int = 40
+    ) {
         self.assetService = assetService
+        self.candidateMultiplier = max(1, candidateMultiplier)
+        self.candidateCap = max(1, candidateCap)
     }
 
     public func sampleKeyFrames(_ source: VideoSource, maxFrames: Int) async throws -> [SampledFrame] {
@@ -37,16 +45,21 @@ public struct AVFoundationFrameSampler: FrameSampler {
                 )
             }
 
-            let requestedTimestamps = Self.evenlySpacedTimestamps(
+            // Scene-aware sampling: over-sample a denser candidate set, then keep the maxFrames
+            // most visually distinct (farthest-point selection over cheap thumbnail signatures).
+            // Evenly-spaced snapshots miss scene cuts; distinct-frame selection covers the actual
+            // shots. Falls back to even subsampling when signatures cannot be computed.
+            let candidateCount = min(max(maxFrames * candidateMultiplier, maxFrames), candidateCap)
+            let candidateTimestamps = Self.evenlySpacedTimestamps(
                 durationSeconds: durationSeconds,
-                maxFrames: maxFrames
+                maxFrames: candidateCount
             )
             let generatedFrames = try await assetService.sampleFrames(
-                at: requestedTimestamps,
+                at: candidateTimestamps,
                 from: source.localFileURL
             )
 
-            return try generatedFrames
+            let candidates = try generatedFrames
                 .map { frame in
                     guard frame.timestampSeconds.isFinite, frame.timestampSeconds >= 0 else {
                         throw VideoUnderstandingError.unreadableAsset(
@@ -61,6 +74,12 @@ public struct AVFoundationFrameSampler: FrameSampler {
                     return SampledFrame(timestampSeconds: frame.timestampSeconds, jpegData: frame.jpegData)
                 }
                 .sorted { lhs, rhs in lhs.timestampSeconds < rhs.timestampSeconds }
+
+            guard candidates.count > maxFrames else {
+                return candidates
+            }
+
+            return Self.selectSceneAware(candidates, maxFrames: maxFrames)
         } catch let error as VideoUnderstandingError {
             throw error
         } catch {
@@ -80,6 +99,112 @@ public struct AVFoundationFrameSampler: FrameSampler {
         return (0..<maxFrames).map { index in
             (Double(index) + 0.5) * interval
         }
+    }
+
+    /// Keeps the `maxFrames` most visually distinct candidates (assumed sorted by time),
+    /// preserving chronological order in the result.
+    static func selectSceneAware(_ frames: [SampledFrame], maxFrames: Int) -> [SampledFrame] {
+        guard frames.count > maxFrames, maxFrames > 0 else {
+            return frames
+        }
+
+        let signatures = frames.map { FrameSignatureExtractor.signature(fromJPEG: $0.jpegData) }
+        guard signatures.allSatisfy({ $0 != nil }) else {
+            // Undecodable frames (e.g. non-image data): fall back to deterministic even subsampling.
+            return evenlySubsampled(frames, count: maxFrames)
+        }
+
+        let vectors = signatures.compactMap { $0 }
+        let selected = SceneAwareFrameSelection.select(signatures: vectors, maxFrames: maxFrames)
+        return selected.sorted().map { frames[$0] }
+    }
+
+    static func evenlySubsampled(_ frames: [SampledFrame], count: Int) -> [SampledFrame] {
+        guard count > 0, frames.count > count else {
+            return frames
+        }
+        let step = Double(frames.count) / Double(count)
+        return (0..<count).map { index in
+            frames[min(frames.count - 1, Int((Double(index) + 0.5) * step))]
+        }
+    }
+}
+
+/// Farthest-point selection over frame signatures: greedily keeps the frames that are most
+/// mutually distinct, approximating one representative frame per visually distinct scene.
+enum SceneAwareFrameSelection {
+    static func select(signatures: [[Float]], maxFrames: Int) -> [Int] {
+        let count = signatures.count
+        guard maxFrames > 0 else { return [] }
+        guard count > maxFrames else { return Array(0..<count) }
+
+        var selected = [0]
+        var minDistance = signatures.map { distanceSquared($0, signatures[0]) }
+        minDistance[0] = -1
+
+        while selected.count < maxFrames {
+            var bestIndex = -1
+            var bestDistance = -Double.greatestFiniteMagnitude
+            for index in 0..<count where minDistance[index] >= 0 {
+                if minDistance[index] > bestDistance {
+                    bestDistance = minDistance[index]
+                    bestIndex = index
+                }
+            }
+            guard bestIndex >= 0 else { break }
+            selected.append(bestIndex)
+            minDistance[bestIndex] = -1
+            for index in 0..<count where minDistance[index] >= 0 {
+                minDistance[index] = min(minDistance[index], distanceSquared(signatures[index], signatures[bestIndex]))
+            }
+        }
+
+        return selected
+    }
+
+    static func distanceSquared(_ lhs: [Float], _ rhs: [Float]) -> Double {
+        guard lhs.count == rhs.count else { return 0 }
+        var sum = 0.0
+        for index in 0..<lhs.count {
+            let delta = Double(lhs[index] - rhs[index])
+            sum += delta * delta
+        }
+        return sum
+    }
+}
+
+/// Cheap perceptual signature: a 16×16 grayscale thumbnail flattened to normalized luma.
+/// Enough to tell scenes apart for farthest-point selection; not a precise fingerprint.
+enum FrameSignatureExtractor {
+    static func signature(fromJPEG data: Data, side: Int = 16) -> [Float]? {
+        guard !data.isEmpty,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: side,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+
+        var pixels = [UInt8](repeating: 0, count: side * side)
+        guard let context = CGContext(
+            data: &pixels,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: side,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            return nil
+        }
+
+        context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: side, height: side))
+        return pixels.map { Float($0) / 255.0 }
     }
 }
 
