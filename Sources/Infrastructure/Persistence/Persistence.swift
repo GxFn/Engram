@@ -1,6 +1,7 @@
 import AppGroupSupport
 import ClipCore
 import Foundation
+import ScriptCore
 import SwiftData
 
 /// SwiftData projection of a Clip. Kept deliberately close to the domain type;
@@ -19,6 +20,8 @@ public final class ClipRecord {
     public var failureReason: String?
     public var failureRetryable: Bool
     public var indexPreview: String?
+    public var scriptJSON: String?
+    public var videoFileName: String?
 
     public init(
         id: String,
@@ -32,7 +35,9 @@ public final class ClipRecord {
         stateRaw: String,
         failureReason: String? = nil,
         failureRetryable: Bool = false,
-        indexPreview: String? = nil
+        indexPreview: String? = nil,
+        scriptJSON: String? = nil,
+        videoFileName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -46,6 +51,8 @@ public final class ClipRecord {
         self.failureReason = failureReason
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
+        self.scriptJSON = scriptJSON
+        self.videoFileName = videoFileName
     }
 }
 
@@ -61,6 +68,8 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
     public let failureReason: String?
     public let failureRetryable: Bool
     public let indexPreview: String?
+    public let scriptJSON: String?
+    public let videoFileName: String?
 
     public init(
         id: String,
@@ -73,7 +82,9 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         state: ClipState,
         failureReason: String?,
         failureRetryable: Bool,
-        indexPreview: String?
+        indexPreview: String?,
+        scriptJSON: String? = nil,
+        videoFileName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -86,6 +97,21 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         self.failureReason = failureReason
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
+        self.scriptJSON = scriptJSON
+        self.videoFileName = videoFileName
+    }
+}
+
+public enum ClipRecordScriptJSON {
+    public static func encode(_ script: Script) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(script)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    public static func decode(_ json: String) throws -> Script {
+        try JSONDecoder().decode(Script.self, from: Data(json.utf8))
     }
 }
 
@@ -110,6 +136,7 @@ public actor ClipRecordStore {
             record.failureReason = nil
             record.failureRetryable = false
             record.indexPreview = nil
+            record.scriptJSON = nil
         } else {
             let newRecord = ClipRecord(
                 id: clip.id,
@@ -120,7 +147,8 @@ public actor ClipRecordStore {
                 sourceKindRaw: sourceKindRaw(from: clip),
                 createdAt: clip.createdAt,
                 updatedAt: now,
-                stateRaw: ClipState.queued.rawValue
+                stateRaw: ClipState.queued.rawValue,
+                videoFileName: videoFileName(from: clip)
             )
             modelContext.insert(newRecord)
         }
@@ -161,6 +189,7 @@ public actor ClipRecordStore {
         title: String?,
         bodyText: String?,
         indexPreview: String?,
+        scriptJSON: String? = nil,
         now: Date = Date()
     ) throws -> ClipRecordSnapshot {
         let record = try requiredRecord(for: id)
@@ -176,6 +205,7 @@ public actor ClipRecordStore {
             record.bodyText = bodyText
         }
         record.indexPreview = indexPreview
+        record.scriptJSON = scriptJSON
         record.failureReason = nil
         record.failureRetryable = false
         record.updatedAt = now
@@ -202,7 +232,7 @@ public actor ClipRecordStore {
         return makeSnapshot(record)
     }
 
-    public func clipForRetry(id: String) throws -> Clip {
+    public func clipForRetry(id: String, videoDirectoryURL: URL? = nil) throws -> Clip {
         let record = try requiredRecord(for: id)
         let current = state(of: record)
         guard current == .failed, record.failureRetryable else {
@@ -211,8 +241,7 @@ public actor ClipRecordStore {
 
         let source: ClipSource
         if sourceKind(of: record) == .videoFile,
-           let urlString = record.urlString,
-           let url = URL(string: urlString) {
+           let url = retryVideoURL(from: record, videoDirectoryURL: videoDirectoryURL) {
             source = .videoFile(url)
         } else if let urlString = record.urlString, let url = URL(string: urlString) {
             source = .url(url)
@@ -286,6 +315,7 @@ public actor ClipRecordStore {
         record.bodyText = bodyText(from: clip)
         record.urlString = urlString(from: clip)
         record.sourceKindRaw = sourceKindRaw(from: clip)
+        record.videoFileName = videoFileName(from: clip)
     }
 
     private func ensureTransition(id: String, from current: ClipState, to next: ClipState) throws {
@@ -310,7 +340,9 @@ public actor ClipRecordStore {
             state: state(of: record),
             failureReason: record.failureReason,
             failureRetryable: record.failureRetryable,
-            indexPreview: record.indexPreview
+            indexPreview: record.indexPreview,
+            scriptJSON: record.scriptJSON,
+            videoFileName: record.videoFileName
         )
     }
 }
@@ -342,6 +374,33 @@ private func urlString(from clip: Clip) -> String? {
     case .text:
         return nil
     }
+}
+
+private func videoFileName(from clip: Clip) -> String? {
+    guard case let .videoFile(url) = clip.source else {
+        return nil
+    }
+    let fileName = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+    return fileName.isEmpty ? nil : fileName
+}
+
+private func retryVideoURL(from record: ClipRecord, videoDirectoryURL: URL?) -> URL? {
+    if let videoDirectoryURL,
+       let fileName = normalizedVideoFileName(record.videoFileName) {
+        return videoDirectoryURL.appendingPathComponent(fileName, isDirectory: false)
+    }
+    return record.urlString.flatMap(URL.init(string:))
+}
+
+private func normalizedVideoFileName(_ fileName: String?) -> String? {
+    guard let fileName else {
+        return nil
+    }
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return nil
+    }
+    return URL(fileURLWithPath: trimmed).lastPathComponent
 }
 
 private func sourceKindRaw(from clip: Clip) -> String {

@@ -138,6 +138,7 @@ public actor ClipDigestService: ClipDigesting {
     private let extractor: ArticleExtractor
     private let indexer: any ClipDigestIndexing
     private let videoAnalyzer: (any VideoAnalyzing)?
+    private let videoDirectoryURL: URL?
     private let now: @Sendable () -> Date
 
     public init(
@@ -147,6 +148,7 @@ public actor ClipDigestService: ClipDigesting {
         extractor: ArticleExtractor = ArticleExtractor(),
         indexer: any ClipDigestIndexing = DigestPreviewIndexer(),
         videoAnalyzer: (any VideoAnalyzing)? = nil,
+        videoDirectoryURL: URL? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.queueStore = queueStore
@@ -155,6 +157,7 @@ public actor ClipDigestService: ClipDigesting {
         self.extractor = extractor
         self.indexer = indexer
         self.videoAnalyzer = videoAnalyzer
+        self.videoDirectoryURL = videoDirectoryURL
         self.now = now
     }
 
@@ -168,7 +171,8 @@ public actor ClipDigestService: ClipDigesting {
             queueStore: ClipQueueStore(locations: locations),
             recordStore: ClipRecordStore(modelContainer: modelContainer),
             indexer: indexer ?? DigestPreviewIndexer(),
-            videoAnalyzer: videoAnalyzer
+            videoAnalyzer: videoAnalyzer,
+            videoDirectoryURL: locations.rootDirectory.appendingPathComponent("videos", isDirectory: true)
         )
     }
 
@@ -184,7 +188,7 @@ public actor ClipDigestService: ClipDigesting {
     }
 
     public func retryFailedClip(id: String) async throws {
-        let clip = try await recordStore.clipForRetry(id: id)
+        let clip = try await recordStore.clipForRetry(id: id, videoDirectoryURL: videoDirectoryURL)
         do {
             try queueStore.enqueue(clip)
             _ = try await recordStore.markQueuedForRetry(id: id, now: now())
@@ -196,6 +200,7 @@ public actor ClipDigestService: ClipDigesting {
 
     private func digest(_ item: ClipQueueItem) async throws {
         var clip = item.clip
+        var scriptJSON: String?
         _ = try await recordStore.upsertQueuedClip(clip, now: now())
 
         do {
@@ -252,6 +257,7 @@ public actor ClipDigestService: ClipDigesting {
                 }
                 clip.title = clip.title ?? script.title
                 clip.bodyText = ScriptRendering.indexableText(script)
+                scriptJSON = try ClipRecordScriptJSON.encode(script)
                 _ = try await recordStore.updateFetchedBody(
                     id: clip.id,
                     title: clip.title,
@@ -283,6 +289,7 @@ public actor ClipDigestService: ClipDigesting {
                 title: clip.title,
                 bodyText: bodyText,
                 indexPreview: indexingResult.preview,
+                scriptJSON: scriptJSON,
                 now: now()
             )
             try queueStore.delete(item)

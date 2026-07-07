@@ -174,7 +174,7 @@ let package = Package(
         ),
         .target(
             name: "Persistence",
-            dependencies: ["ClipCore", "AppGroupSupport", "EngramLogging"],
+            dependencies: ["ClipCore", "ScriptCore", "AppGroupSupport", "EngramLogging"],
             path: "Sources/Infrastructure/Persistence"
         ),
 
@@ -252,7 +252,7 @@ let package = Package(
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
-        .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence"], path: "Tests/PersistenceTests"),
+        .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence", "ScriptCore"], path: "Tests/PersistenceTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "VideoUnderstandingTests", dependencies: ["VideoUnderstanding"], path: "Tests/VideoUnderstandingTests"),
         .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),

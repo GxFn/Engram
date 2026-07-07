@@ -160,6 +160,8 @@ import VideoUnderstanding
     #expect(snapshot.state == .indexed)
     #expect(snapshot.title == "Scripted Video")
     #expect(snapshot.bodyText == ScriptRendering.indexableText(script))
+    #expect(try ClipRecordScriptJSON.decode(try #require(snapshot.scriptJSON)) == script)
+    #expect(snapshot.videoFileName == "local-video.mov")
     #expect(snapshot.indexPreview?.contains("1. Scripted Video") == true)
     #expect(snapshot.failureReason == nil)
 
@@ -278,6 +280,46 @@ import VideoUnderstanding
     #expect(snapshot.failureReason?.contains("not configured") == true)
 }
 
+@Test func retryFailedVideoClipRequeuesRecoverableVideoSourceFromVideosDirectory() async throws {
+    let fixture = try DigestFixture()
+    let originalURL = URL(fileURLWithPath: "/private/tmp/import-session/retry-video.mov")
+    let videosDirectory = fixture.rootURL.appendingPathComponent("videos", isDirectory: true)
+    let clip = Clip(
+        id: "video-retry-source",
+        source: .videoFile(originalURL),
+        title: "Retry video",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_043)
+    )
+    try fixture.store.enqueue(clip)
+    let analyzer = RecordingVideoAnalyzer(
+        error: VideoUnderstandingError.transcriptionUnavailable("Speech service unavailable"),
+        stages: [.transcribing]
+    )
+    let service = try fixture.makeService(
+        fetcher: FailingFetcher(),
+        videoAnalyzer: analyzer,
+        videoDirectoryURL: videosDirectory
+    )
+
+    try await service.digestPending()
+
+    var snapshot = try await fixture.records.snapshot(id: "video-retry-source")
+    #expect(snapshot.url == originalURL)
+    #expect(snapshot.videoFileName == "retry-video.mov")
+    #expect(snapshot.state == .failed)
+    #expect(snapshot.failureRetryable)
+    #expect(snapshot.failureReason?.contains("transcription unavailable") == true)
+
+    try await service.retryFailedClip(id: "video-retry-source")
+
+    let retryItem = try #require(try fixture.store.pendingItems().first)
+    #expect(retryItem.clip.source == .videoFile(videosDirectory.appendingPathComponent("retry-video.mov")))
+    snapshot = try await fixture.records.snapshot(id: "video-retry-source")
+    #expect(snapshot.state == .queued)
+    #expect(snapshot.failureReason == nil)
+}
+
 private final class DigestFixture {
     let rootURL: URL
     let store: ClipQueueStore
@@ -299,7 +341,8 @@ private final class DigestFixture {
     func makeService(
         fetcher: any ArticleFetching,
         indexer: any ClipDigestIndexing = DigestPreviewIndexer(),
-        videoAnalyzer: (any VideoAnalyzing)? = nil
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
+        videoDirectoryURL: URL? = nil
     ) throws -> ClipDigestService {
         ClipDigestService(
             queueStore: store,
@@ -307,6 +350,7 @@ private final class DigestFixture {
             fetcher: fetcher,
             indexer: indexer,
             videoAnalyzer: videoAnalyzer,
+            videoDirectoryURL: videoDirectoryURL,
             now: { Date(timeIntervalSince1970: 1_800_100_000) }
         )
     }
