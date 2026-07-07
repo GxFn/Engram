@@ -223,7 +223,7 @@ public actor ClipDigestService: ClipDigesting {
     private func digest(_ item: ClipQueueItem) async throws {
         var clip = item.clip
         var scriptJSON: String?
-        _ = try await recordStore.upsertQueuedClip(clip, now: now())
+        _ = try await recordStore.prepareQueuedClipForDigest(clip, now: now())
 
         do {
             switch clip.source {

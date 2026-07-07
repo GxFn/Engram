@@ -237,6 +237,44 @@ import VideoUnderstanding
     #expect(await emptyGenerator.requests.isEmpty)
 }
 
+@Test func textScriptComposerLoadsConfiguredModelBeforeGeneration() async throws {
+    let engine = LoadingScriptEngine(response: """
+    {
+      "title": "模型润色脚本",
+      "summary": "文本模型根据转写生成结构化脚本。",
+      "shots": [
+        {
+          "start": 0,
+          "end": 5,
+          "narration": "今天我们做一道快手菜。",
+          "visualDescription": "",
+          "pacingNote": "自然剪辑"
+        }
+      ]
+    }
+    """)
+    let model = ModelIdentity(
+        id: "test/qwen3-text",
+        family: "qwen3",
+        quantization: "4bit",
+        contextLength: 32_768,
+        estimatedMemoryBytes: 1_000
+    )
+    let composer = TextScriptComposer(
+        engine: engine,
+        model: model,
+        dateProvider: { Date(timeIntervalSince1970: 60) },
+        idProvider: { "script-loaded-text" }
+    )
+
+    let script = try await composer.compose(sourceID: "video-text", transcript: fixtureTranscript)
+
+    #expect(script.id == "script-loaded-text")
+    #expect(script.title == "模型润色脚本")
+    #expect(await engine.loadedModelIDs() == [model.id])
+    #expect(await engine.generateCallCount() == 1)
+}
+
 private actor RecordingVLMGenerator: QwenVLGenerating {
     struct Request: Sendable {
         let prompt: String
@@ -287,6 +325,57 @@ private actor RecordingTextGenerator: ScriptTextGenerating {
             throw error
         }
         return responses.isEmpty ? "{}" : responses.removeFirst()
+    }
+}
+
+private actor LoadingScriptEngine: LLMEngine {
+    nonisolated let descriptor = EngineDescriptor(id: "loading-script-engine", displayName: "Loading Script Engine", kind: .mlx)
+
+    private let response: String
+    private var loadedIDs: [String] = []
+    private var generationCount = 0
+
+    init(response: String) {
+        self.response = response
+    }
+
+    func load(_ model: ModelIdentity) async throws {
+        loadedIDs.append(model.id)
+    }
+
+    func unload() async {}
+
+    func generate(_ request: GenerationRequest) async -> AsyncThrowingStream<GenerationEvent, Error> {
+        generationCount += 1
+        let loaded = !loadedIDs.isEmpty
+        let response = self.response
+
+        return AsyncThrowingStream { continuation in
+            guard loaded else {
+                continuation.finish(throwing: EngineError.modelNotLoaded)
+                return
+            }
+
+            continuation.yield(.token(response))
+            continuation.yield(.finished(.stop, GenerationMetrics(
+                firstTokenLatencyMillis: nil,
+                tokensPerSecond: nil,
+                outputTokenCount: 1
+            )))
+            continuation.finish()
+        }
+    }
+
+    func countTokens(in text: String) async throws -> Int {
+        text.count
+    }
+
+    func loadedModelIDs() -> [String] {
+        loadedIDs
+    }
+
+    func generateCallCount() -> Int {
+        generationCount
     }
 }
 

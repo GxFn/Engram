@@ -108,12 +108,6 @@ protocol SpeechRecognitionRunning: Sendable {
 }
 
 struct AVFoundationVideoAudioExtractor: VideoAudioExtracting {
-    private let temporaryDirectory: URL
-
-    init(temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
-        self.temporaryDirectory = temporaryDirectory
-    }
-
     func audioFileURL(for videoURL: URL) async throws -> URL {
         let asset = AVURLAsset(url: videoURL)
 
@@ -130,29 +124,7 @@ struct AVFoundationVideoAudioExtractor: VideoAudioExtracting {
             throw VideoUnderstandingError.noAudioTrack
         }
 
-        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw VideoUnderstandingError.unreadableAsset(
-                "Unable to create Apple M4A export session for \(videoURL.lastPathComponent)"
-            )
-        }
-
-        let outputURL = temporaryDirectory
-            .appendingPathComponent("engram-transcription-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
-
-        do {
-            try await session.export(to: outputURL, as: .m4a)
-            return outputURL
-        } catch {
-            try? FileManager.default.removeItem(at: outputURL)
-            throw VideoUnderstandingError.unreadableAsset(
-                "Unable to export audio track for \(videoURL.lastPathComponent): \(error.localizedDescription)"
-            )
-        }
-    }
-
-    func removeTemporaryAudioFile(at audioFileURL: URL) throws {
-        try FileManager.default.removeItem(at: audioFileURL)
+        return videoURL
     }
 }
 
@@ -184,12 +156,8 @@ struct SystemSpeechAnalyzerRuntime: SpeechRecognitionRunning {
         }
 
         let transcriber = SpeechTranscriber(locale: supportedLocale, preset: .timeIndexedTranscriptionWithAlternatives)
-        let assetStatus = await AssetInventory.status(forModules: [transcriber])
-        guard assetStatus == .installed else {
-            throw VideoUnderstandingError.transcriptionUnavailable(
-                "SpeechTranscriber asset status for \(supportedLocale.identifier) is \(describe(assetStatus)); installed assets are required before transcription."
-            )
-        }
+        try await ensureAssetsInstalled(for: supportedLocale, modules: [transcriber])
+        try await reserveAssets(for: supportedLocale)
 
         let compatibleFormats = await transcriber.availableCompatibleAudioFormats
         guard !compatibleFormats.isEmpty else {
@@ -197,13 +165,11 @@ struct SystemSpeechAnalyzerRuntime: SpeechRecognitionRunning {
                 "SpeechTranscriber reported no compatible audio formats for \(supportedLocale.identifier)."
             )
         }
-
-        let audioFile: AVAudioFile
-        do {
-            audioFile = try AVAudioFile(forReading: audioFileURL)
-        } catch {
-            throw VideoUnderstandingError.unreadableAsset(
-                "Unable to open exported audio for SpeechAnalyzer: \(error.localizedDescription)"
+        guard let analysisFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+            compatibleWith: [transcriber]
+        ) ?? compatibleFormats.first else {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechAnalyzer could not select a compatible audio format for \(supportedLocale.identifier)."
             )
         }
 
@@ -214,7 +180,12 @@ struct SystemSpeechAnalyzerRuntime: SpeechRecognitionRunning {
         async let collectedResults = collectFinalResults(from: transcriber)
 
         do {
-            _ = try await analyzer.analyzeSequence(from: audioFile)
+            try await analyzer.prepareToAnalyze(in: analysisFormat)
+            let inputSequence = SpeechAnalyzerAssetAudioInputSequence(
+                mediaURL: audioFileURL,
+                analysisFormat: analysisFormat
+            )
+            _ = try await analyzer.analyzeSequence(inputSequence)
             try await analyzer.finalizeAndFinishThroughEndOfInput()
             return try await collectedResults
         } catch let error as VideoUnderstandingError {
@@ -225,6 +196,241 @@ struct SystemSpeechAnalyzerRuntime: SpeechRecognitionRunning {
             throw VideoUnderstandingError.transcriptionUnavailable(
                 "SpeechAnalyzer failed for \(audioFileURL.lastPathComponent): \(error.localizedDescription)"
             )
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
+    private struct SpeechAnalyzerAssetAudioInputSequence: AsyncSequence, @unchecked Sendable {
+        typealias Element = AnalyzerInput
+
+        private let mediaURL: URL
+        private let analysisFormat: AVAudioFormat
+
+        init(
+            mediaURL: URL,
+            analysisFormat: AVAudioFormat
+        ) {
+            self.mediaURL = mediaURL
+            self.analysisFormat = analysisFormat
+        }
+
+        func makeAsyncIterator() -> Iterator {
+            Iterator(
+                mediaURL: mediaURL,
+                analysisFormat: analysisFormat
+            )
+        }
+
+        struct Iterator: AsyncIteratorProtocol {
+            private let mediaURL: URL
+            private let analysisFormat: AVAudioFormat
+            private var reader: SpeechAnalyzerAssetAudioReader?
+
+            init(
+                mediaURL: URL,
+                analysisFormat: AVAudioFormat
+            ) {
+                self.mediaURL = mediaURL
+                self.analysisFormat = analysisFormat
+            }
+
+            mutating func next() async throws -> AnalyzerInput? {
+                if reader == nil {
+                    reader = try await SpeechAnalyzerAssetAudioReader(
+                        mediaURL: mediaURL,
+                        analysisFormat: analysisFormat
+                    )
+                }
+                return try reader?.next()
+            }
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
+    private final class SpeechAnalyzerAssetAudioReader {
+        private let mediaURL: URL
+        private let analysisFormat: AVAudioFormat
+        private let reader: AVAssetReader
+        private let readerOutput: AVAssetReaderAudioMixOutput
+        private var outputStartFrame: AVAudioFramePosition = 0
+        private var finished = false
+
+        init(
+            mediaURL: URL,
+            analysisFormat: AVAudioFormat
+        ) async throws {
+            self.mediaURL = mediaURL
+            self.analysisFormat = analysisFormat
+
+            let asset = AVURLAsset(url: mediaURL)
+            let audioTracks: [AVAssetTrack]
+            do {
+                audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            } catch {
+                throw VideoUnderstandingError.unreadableAsset(
+                    "Unable to inspect audio tracks for SpeechAnalyzer input: \(error.localizedDescription)"
+                )
+            }
+            guard !audioTracks.isEmpty else {
+                throw VideoUnderstandingError.noAudioTrack
+            }
+
+            let audioSettings = try Self.linearPCMSettings(for: analysisFormat)
+            let reader = try AVAssetReader(asset: asset)
+            let readerOutput = AVAssetReaderAudioMixOutput(
+                audioTracks: audioTracks,
+                audioSettings: audioSettings
+            )
+            readerOutput.alwaysCopiesSampleData = true
+            guard reader.canAdd(readerOutput) else {
+                throw VideoUnderstandingError.unreadableAsset(
+                    "Unable to add SpeechAnalyzer audio reader output for \(mediaURL.lastPathComponent)."
+                )
+            }
+            reader.add(readerOutput)
+            guard reader.startReading() else {
+                throw VideoUnderstandingError.unreadableAsset(
+                    "Unable to start SpeechAnalyzer audio reader for \(mediaURL.lastPathComponent): \(reader.error?.localizedDescription ?? "unknown error")"
+                )
+            }
+            self.reader = reader
+            self.readerOutput = readerOutput
+        }
+
+        deinit {
+            if reader.status == .reading {
+                reader.cancelReading()
+            }
+        }
+
+        func next() throws -> AnalyzerInput? {
+            guard !finished else {
+                return nil
+            }
+
+            while true {
+                switch reader.status {
+                case .reading:
+                    break
+                case .completed:
+                    finished = true
+                    return nil
+                case .failed:
+                    finished = true
+                    throw VideoUnderstandingError.unreadableAsset(
+                        "SpeechAnalyzer audio reader failed for \(mediaURL.lastPathComponent): \(reader.error?.localizedDescription ?? "unknown error")"
+                    )
+                case .cancelled:
+                    finished = true
+                    throw VideoUnderstandingError.unreadableAsset(
+                        "SpeechAnalyzer audio reader was cancelled for \(mediaURL.lastPathComponent)."
+                    )
+                case .unknown:
+                    break
+                @unknown default:
+                    finished = true
+                    throw VideoUnderstandingError.unreadableAsset("SpeechAnalyzer audio reader returned an unknown status.")
+                }
+
+                guard let sampleBuffer = readerOutput.copyNextSampleBuffer() else {
+                    switch reader.status {
+                    case .reading, .completed:
+                        finished = true
+                        return nil
+                    case .failed:
+                        finished = true
+                        throw VideoUnderstandingError.unreadableAsset(
+                            "SpeechAnalyzer audio reader failed for \(mediaURL.lastPathComponent): \(reader.error?.localizedDescription ?? "unknown error")"
+                        )
+                    case .cancelled:
+                        finished = true
+                        throw VideoUnderstandingError.unreadableAsset(
+                            "SpeechAnalyzer audio reader was cancelled for \(mediaURL.lastPathComponent)."
+                        )
+                    default:
+                        finished = true
+                        return nil
+                    }
+                }
+
+                let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+                guard sampleCount > 0 else {
+                    continue
+                }
+                guard sampleCount <= Int(Int32.max) else {
+                    throw VideoUnderstandingError.unreadableAsset(
+                        "SpeechAnalyzer audio sample buffer is too large: \(sampleCount) frames."
+                    )
+                }
+
+                let frameCount = AVAudioFrameCount(sampleCount)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: analysisFormat, frameCapacity: frameCount) else {
+                    throw VideoUnderstandingError.transcriptionUnavailable(
+                        "Unable to allocate SpeechAnalyzer audio buffer for \(Self.describe(analysisFormat))."
+                    )
+                }
+                buffer.frameLength = frameCount
+
+                let copyStatus = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+                    sampleBuffer,
+                    at: 0,
+                    frameCount: Int32(sampleCount),
+                    into: buffer.mutableAudioBufferList
+                )
+                guard copyStatus == noErr else {
+                    throw VideoUnderstandingError.unreadableAsset(
+                        "Unable to copy PCM audio for SpeechAnalyzer: status \(copyStatus)."
+                    )
+                }
+
+                return input(from: buffer)
+            }
+        }
+
+        private func input(from buffer: AVAudioPCMBuffer) -> AnalyzerInput {
+            let startTime = CMTime(
+                value: CMTimeValue(outputStartFrame),
+                timescale: CMTimeScale(max(1, Int32(analysisFormat.sampleRate.rounded())))
+            )
+            outputStartFrame += AVAudioFramePosition(buffer.frameLength)
+            return AnalyzerInput(buffer: buffer, bufferStartTime: startTime)
+        }
+
+        private static func describe(_ format: AVAudioFormat) -> String {
+            "\(format.commonFormat), \(format.sampleRate) Hz, \(format.channelCount) ch, interleaved=\(format.isInterleaved)"
+        }
+
+        private static func linearPCMSettings(for format: AVAudioFormat) throws -> [String: Any] {
+            let bitDepth: Int
+            let isFloat: Bool
+            switch format.commonFormat {
+            case .pcmFormatFloat32:
+                bitDepth = 32
+                isFloat = true
+            case .pcmFormatFloat64:
+                bitDepth = 64
+                isFloat = true
+            case .pcmFormatInt16:
+                bitDepth = 16
+                isFloat = false
+            case .pcmFormatInt32:
+                bitDepth = 32
+                isFloat = false
+            default:
+                throw VideoUnderstandingError.transcriptionUnavailable(
+                    "Unsupported SpeechAnalyzer audio format \(Self.describe(format))."
+                )
+            }
+
+            return [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: Int(format.channelCount),
+                AVLinearPCMBitDepthKey: bitDepth,
+                AVLinearPCMIsFloatKey: isFloat,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: !format.isInterleaved
+            ]
         }
     }
 
@@ -247,6 +453,85 @@ struct SystemSpeechAnalyzerRuntime: SpeechRecognitionRunning {
         }
 
         return segments
+    }
+
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
+    private static func ensureAssetsInstalled(
+        for locale: Locale,
+        modules: [any SpeechModule]
+    ) async throws {
+        let initialStatus = await AssetInventory.status(forModules: modules)
+        guard initialStatus != .installed else {
+            return
+        }
+        guard initialStatus == .supported else {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber asset status for \(locale.identifier) is \(describe(initialStatus)); installed assets are required before transcription."
+            )
+        }
+
+        Log.speech.info("Installing SpeechTranscriber assets for \(locale.identifier, privacy: .public)")
+        let request: AssetInstallationRequest?
+        do {
+            request = try await AssetInventory.assetInstallationRequest(supporting: modules)
+        } catch {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber asset installation request failed for \(locale.identifier): \(error.localizedDescription)"
+            )
+        }
+
+        guard let request else {
+            let status = await AssetInventory.status(forModules: modules)
+            if status == .installed {
+                return
+            }
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber asset installation request was unavailable for \(locale.identifier); status is \(describe(status))."
+            )
+        }
+
+        do {
+            try await request.downloadAndInstall()
+        } catch {
+            let status = await AssetInventory.status(forModules: modules)
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber asset installation failed for \(locale.identifier); status is \(describe(status)): \(error.localizedDescription)"
+            )
+        }
+
+        let finalStatus = await AssetInventory.status(forModules: modules)
+        guard finalStatus == .installed else {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber asset status for \(locale.identifier) is \(describe(finalStatus)) after installation."
+            )
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
+    private static func reserveAssets(for locale: Locale) async throws {
+        let reservedLocales = await AssetInventory.reservedLocales
+        if reservedLocales.contains(where: { $0.identifier == locale.identifier }) {
+            return
+        }
+
+        Log.speech.info("Reserving SpeechTranscriber locale \(locale.identifier, privacy: .public)")
+        do {
+            let reserved = try await AssetInventory.reserve(locale: locale)
+            if reserved {
+                return
+            }
+        } catch {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber locale reservation failed for \(locale.identifier): \(error.localizedDescription)"
+            )
+        }
+
+        let refreshedLocales = await AssetInventory.reservedLocales
+        guard refreshedLocales.contains(where: { $0.identifier == locale.identifier }) else {
+            throw VideoUnderstandingError.transcriptionUnavailable(
+                "SpeechTranscriber locale reservation did not activate \(locale.identifier)."
+            )
+        }
     }
 
     @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)

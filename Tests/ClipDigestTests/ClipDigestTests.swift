@@ -172,6 +172,35 @@ import VideoUnderstanding
     #expect(await analyzer.stageCalls == [.transcribing, .scripting])
 }
 
+@Test func digestPendingRestartsInFlightVideoRecordFromQueueReplay() async throws {
+    let fixture = try DigestFixture()
+    let videoURL = URL(fileURLWithPath: "/tmp/interrupted-video.mov")
+    let clip = Clip(
+        id: "video-interrupted",
+        source: .videoFile(videoURL),
+        title: "Interrupted",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_040.5)
+    )
+    let fileURL = try fixture.store.enqueue(clip)
+    _ = try await fixture.records.upsertQueuedClip(clip)
+    _ = try await fixture.records.transition(id: clip.id, to: .transcribing)
+
+    let script = fixtureScript(sourceID: clip.id, title: "Recovered Script")
+    let analyzer = RecordingVideoAnalyzer(result: script)
+    let service = try fixture.makeService(fetcher: FailingFetcher(), videoAnalyzer: analyzer)
+
+    try await service.digestPending()
+
+    #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+    let snapshot = try await fixture.records.snapshot(id: clip.id)
+    #expect(snapshot.state == .indexed)
+    #expect(snapshot.title == "Interrupted")
+    #expect(snapshot.bodyText?.contains("Recovered Script") == true)
+    #expect(snapshot.failureReason == nil)
+    #expect(await analyzer.stageCalls == [.transcribing, .scripting])
+}
+
 @Test func digestVideoFileNoAudioFailureMarksFailedAndMovesQueueFile() async throws {
     let fixture = try DigestFixture()
     let videoURL = URL(fileURLWithPath: "/tmp/no-audio.mov")

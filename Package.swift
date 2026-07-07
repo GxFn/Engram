@@ -37,6 +37,7 @@ let package = Package(
         .library(name: "Persistence", targets: ["Persistence"]),
         .library(name: "AppGroupSupport", targets: ["AppGroupSupport"]),
         .library(name: "EngramLogging", targets: ["EngramLogging"]),
+        .executable(name: "MacVideoSmoke", targets: ["MacVideoSmoke"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
@@ -223,6 +224,20 @@ let package = Package(
                 "AppGroupSupport",
             ],
             path: "Sources/AppShell"
+        ),
+        .executableTarget(
+            name: "MacVideoSmoke",
+            dependencies: [
+                "EngineKit",
+                "VideoUnderstanding",
+                "SpeechTranscription",
+                "FrameVision",
+                "ScriptCore",
+                "ScriptComposer",
+                "MLXEngine",
+                "ModelStore",
+            ],
+            path: "Tools/MacVideoSmoke"
         ),
 
         // MARK: - Tests

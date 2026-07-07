@@ -17,6 +17,8 @@ struct RetrievalServices: Sendable {
 }
 
 enum RetrievalAssembly {
+    static let defaultVideoTranscriptionLocale = Locale(identifier: "zh_CN")
+
     private static let videoAnalyzerMaxFrames = 6
 
     @MainActor
@@ -24,6 +26,7 @@ enum RetrievalAssembly {
         modelContainer: ModelContainer,
         modelStore: ModelStore,
         activeEngine: any LLMEngine,
+        activeModel: ModelIdentity,
         generationConfig: GenerationConfig,
         videoAnalyzer: (any VideoAnalyzing)? = nil,
         appGroupLocations: AppGroupLocations? = nil,
@@ -59,6 +62,7 @@ enum RetrievalAssembly {
         let videoAnalyzer = videoAnalyzer ?? makeVideoAnalyzer(
             modelStore: modelStore,
             activeEngine: activeEngine,
+            activeModel: activeModel,
             generationConfig: generationConfig
         )
         let digestService = try ClipDigestService.live(
@@ -76,6 +80,7 @@ enum RetrievalAssembly {
     private static func makeVideoAnalyzer(
         modelStore: ModelStore,
         activeEngine: any LLMEngine,
+        activeModel: ModelIdentity,
         generationConfig: GenerationConfig
     ) -> any VideoAnalyzing {
         let textConfiguration = ScriptComposerConfiguration(
@@ -84,6 +89,7 @@ enum RetrievalAssembly {
         )
         let textComposer = TextScriptComposer(
             engine: activeEngine,
+            model: activeModel,
             configuration: textConfiguration
         )
         let visionConfiguration = ScriptComposerConfiguration(
@@ -97,7 +103,7 @@ enum RetrievalAssembly {
         )
 
         return VideoAnalyzer(
-            transcriber: SpeechAnalyzerTranscriber(locale: .current),
+            transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
             sampler: AVFoundationFrameSampler(),
             visionComposer: visionComposer,
             textComposer: textComposer,

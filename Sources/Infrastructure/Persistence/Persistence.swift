@@ -156,6 +156,46 @@ public actor ClipRecordStore {
         return try snapshot(id: clip.id)
     }
 
+    public func prepareQueuedClipForDigest(_ clip: Clip, now: Date = Date()) throws -> ClipRecordSnapshot {
+        let record = try record(for: clip.id)
+        if let record {
+            let current = state(of: record)
+            switch current {
+            case .queued:
+                break
+            case .failed:
+                try ensureTransition(id: clip.id, from: current, to: .queued)
+            case .fetching, .indexing, .transcribing, .analyzing, .scripting:
+                break
+            case .indexed:
+                return makeSnapshot(record)
+            }
+            apply(clip, to: record)
+            record.updatedAt = now
+            record.stateRaw = ClipState.queued.rawValue
+            record.failureReason = nil
+            record.failureRetryable = false
+            record.indexPreview = nil
+            record.scriptJSON = nil
+        } else {
+            let newRecord = ClipRecord(
+                id: clip.id,
+                title: clip.title,
+                note: clip.note,
+                bodyText: bodyText(from: clip),
+                urlString: urlString(from: clip),
+                sourceKindRaw: sourceKindRaw(from: clip),
+                createdAt: clip.createdAt,
+                updatedAt: now,
+                stateRaw: ClipState.queued.rawValue,
+                videoFileName: videoFileName(from: clip)
+            )
+            modelContext.insert(newRecord)
+        }
+        try modelContext.save()
+        return try snapshot(id: clip.id)
+    }
+
     public func transition(id: String, to next: ClipState, now: Date = Date()) throws -> ClipRecordSnapshot {
         let record = try requiredRecord(for: id)
         let current = state(of: record)

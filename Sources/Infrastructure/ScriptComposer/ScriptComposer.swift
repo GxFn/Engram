@@ -30,17 +30,41 @@ public protocol ScriptTextGenerating: Sendable {
 
 public actor LLMTextScriptGenerator: ScriptTextGenerating {
     private let engine: any LLMEngine
+    private let model: ModelIdentity?
     private let systemPrompt: String
+    private var loadedModelID: String?
 
     public init(
         engine: any LLMEngine,
+        model: ModelIdentity? = nil,
         systemPrompt: String = "你是 Engram 的端侧中文视频脚本编辑，只输出符合要求的 JSON。"
     ) {
         self.engine = engine
+        self.model = model
         self.systemPrompt = systemPrompt
     }
 
     public func generateScriptText(prompt: String, config: GenerationConfig) async throws -> String {
+        try await ensureModelLoadedIfNeeded()
+        do {
+            return try await collectGeneratedScriptText(prompt: prompt, config: config)
+        } catch EngineError.modelNotLoaded where model != nil {
+            loadedModelID = nil
+            try await ensureModelLoadedIfNeeded()
+            return try await collectGeneratedScriptText(prompt: prompt, config: config)
+        }
+    }
+
+    private func ensureModelLoadedIfNeeded() async throws {
+        guard let model, loadedModelID != model.id else {
+            return
+        }
+
+        try await engine.load(model)
+        loadedModelID = model.id
+    }
+
+    private func collectGeneratedScriptText(prompt: String, config: GenerationConfig) async throws -> String {
         let stream = await engine.generate(GenerationRequest(
             messages: [
                 ChatMessage(role: .system, content: systemPrompt),
@@ -249,12 +273,13 @@ public actor TextScriptComposer: TextScriptComposing {
 
     public init(
         engine: any LLMEngine,
+        model: ModelIdentity? = nil,
         configuration: ScriptComposerConfiguration = .init(maxKeyframeCount: 0),
         dateProvider: @escaping @Sendable () -> Date = { Date() },
         idProvider: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.init(
-            generator: LLMTextScriptGenerator(engine: engine),
+            generator: LLMTextScriptGenerator(engine: engine, model: model),
             configuration: configuration,
             dateProvider: dateProvider,
             idProvider: idProvider
@@ -304,10 +329,10 @@ public actor TextScriptComposer: TextScriptComposing {
         return DeterministicScriptFactory.make(
             sourceID: sourceID,
             transcript: transcript,
-            title: "转写-only 剧本",
-            summary: "文本剧本化不可用，已根据转写生成单分镜剧本。",
+            title: "语音转写草稿",
+            summary: "文本模型暂不可用，已先根据语音转写生成单分镜草稿。",
             visualDescription: "",
-            pacingNote: "转写-only 兜底",
+            pacingNote: "仅基于语音转写，暂未使用画面理解。",
             createdAt: dateProvider(),
             id: idProvider()
         )
@@ -370,33 +395,15 @@ private enum FramePreparer {
 private enum ScriptPromptBuilder {
     static func visionPrompt(transcript: [TranscriptSegment], keyframes: [SampledFrame]) -> String {
         """
-        你是 Engram 的端侧中文短视频剧本师。请结合随本消息附带的关键帧图片和转写台词，按时间顺序输出结构化分镜剧本。
-
-        只输出一个合法 JSON 对象，不要 Markdown，不要解释。JSON 结构必须是：
-        {
-          "title": "中文标题",
-          "summary": "一句中文摘要",
-          "shots": [
-            {
-              "start": 0.0,
-              "end": 3.2,
-              "narration": "该分镜对应的台词或旁白，可为空",
-              "visualDescription": "结合关键帧看到的画面、人物、动作、场景",
-              "pacingNote": "节奏/剪辑建议，可为空"
-            }
-          ]
-        }
-
-        要求：
-        - shots 必须按时间递增，覆盖主要内容，不要虚构看不到的画面。
-        - visualDescription 要体现关键帧画面，不要只复述转写。
-        - narration 使用转写原文或忠实概括；中文表达自然。
-        - 如果转写为空，也要根据关键帧输出可索引的画面分镜。
+        你是 Engram 的端侧中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成分镜。
+        只输出一个合法 JSON 对象，不要 Markdown，不要解释。字段严格如下：
+        {"title":"中文标题","summary":"一句中文摘要","shots":[{"start":0.0,"end":1.0,"narration":"台词或旁白，可为空","visualDescription":"画面、人物、动作、场景","pacingNote":"节奏建议，可为空"}]}
+        要求：shots 按时间递增；visualDescription 必须描述画面，不要只复述转写；不确定的人名不要编造。
 
         转写：
         \(transcriptLines(transcript))
 
-        关键帧（图片按以下顺序附加到同一条消息）：
+        关键帧（图片已按以下顺序附加）：
         \(keyframeLines(keyframes))
         """
     }
@@ -431,8 +438,8 @@ private enum ScriptPromptBuilder {
         """
         \(originalPrompt)
 
-        上一次输出不是合法 JSON。请只返回修正后的 JSON 对象，不要 Markdown，不要解释。
-        上一次输出摘录：
+        上一次输出不是合法 JSON。现在只返回一个可被 JSONDecoder 解析的 JSON 对象，不要 Markdown，不要解释，不要前后缀文本。
+        非法输出摘录：
         \(malformedOutput.prefix(1_000))
         """
     }

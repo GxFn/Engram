@@ -72,6 +72,7 @@ public final class AppDependencies {
                 modelContainer: $0,
                 modelStore: resolvedModelStore,
                 activeEngine: resolvedEngine,
+                activeModel: resolvedModel,
                 generationConfig: resolvedGenerationConfig,
                 videoAnalyzer: videoAnalyzer,
                 appGroupLocations: appGroupLocations,
