@@ -146,7 +146,18 @@ import VideoUnderstanding
         createdAt: Date(timeIntervalSince1970: 1_800_000_040)
     )
     let fileURL = try fixture.store.enqueue(clip)
-    let script = fixtureScript(sourceID: "video-clip", title: "Scripted Video")
+    let script = fixtureScript(
+        sourceID: "video-clip",
+        title: "Scripted Video",
+        hookStructure: HookAnalysis(
+            openingHook: "开头直接提出一个反常识问题。",
+            retentionDevices: ["结果前置", "步骤悬念"],
+            payoff: "最后给出清晰对比。",
+            callToAction: "保存这个脚本结构。",
+            whyItWorks: "钩子和画面标签都进入索引文本，后续 Ask 可以检索。"
+        ),
+        visualElements: ["人物出镜", "产品特写", "字幕强调"]
+    )
     let analyzer = RecordingVideoAnalyzer(result: script)
     let service = try fixture.makeService(fetcher: FailingFetcher(), videoAnalyzer: analyzer)
 
@@ -160,6 +171,10 @@ import VideoUnderstanding
     #expect(snapshot.state == .indexed)
     #expect(snapshot.title == "Scripted Video")
     #expect(snapshot.bodyText == ScriptRendering.indexableText(script))
+    #expect(snapshot.bodyText?.contains("## 爆点结构") == true)
+    #expect(snapshot.bodyText?.contains("钩子: 开头直接提出一个反常识问题。") == true)
+    #expect(snapshot.bodyText?.contains("## 视觉元素") == true)
+    #expect(snapshot.bodyText?.contains("标签: 人物出镜、产品特写、字幕强调") == true)
     #expect(try ClipRecordScriptJSON.decode(try #require(snapshot.scriptJSON)) == script)
     #expect(snapshot.videoFileName == "local-video.mov")
     #expect(snapshot.indexPreview?.contains("1. Scripted Video") == true)
@@ -588,7 +603,9 @@ private struct FailingFetcher: ArticleFetching {
 private func fixtureScript(
     sourceID: String,
     title: String = "Video Script",
-    visualDescription: String = "Presenter holds the product toward camera."
+    visualDescription: String = "Presenter holds the product toward camera.",
+    hookStructure: HookAnalysis? = nil,
+    visualElements: [String] = []
 ) -> Script {
     Script(
         id: "script-\(sourceID)",
@@ -605,7 +622,9 @@ private func fixtureScript(
                 pacingNote: "Steady cut"
             )
         ],
-        createdAt: Date(timeIntervalSince1970: 1_800_000_500)
+        createdAt: Date(timeIntervalSince1970: 1_800_000_500),
+        hookStructure: hookStructure,
+        visualElements: visualElements
     )
 }
 

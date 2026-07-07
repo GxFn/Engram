@@ -4,6 +4,14 @@ public enum ScriptRendering {
     public static func indexableText(_ script: Script) -> String {
         var blocks = [script.title, script.summary].filter { !$0.trimmedForIndexing.isEmpty }
 
+        if let hookBlock = hookStructureBlock(script.hookStructure) {
+            blocks.append(hookBlock)
+        }
+
+        if let visualElementsBlock = visualElementsBlock(script.visualElements) {
+            blocks.append(visualElementsBlock)
+        }
+
         for shot in script.shots.sorted(by: { $0.index < $1.index }) {
             var lines = [
                 "## 分镜 \(shot.index + 1) (\(formatSeconds(shot.startSeconds))–\(formatSeconds(shot.endSeconds)))"
@@ -25,6 +33,39 @@ public enum ScriptRendering {
         return blocks.joined(separator: "\n\n")
     }
 
+    private static func hookStructureBlock(_ hook: HookAnalysis?) -> String? {
+        guard let hook else {
+            return nil
+        }
+
+        var lines = [
+            "## 爆点结构",
+            "钩子: \(hook.openingHook.trimmedForIndexing)",
+            "留人: \(hook.retentionDevices.trimmedJoinedForIndexing)",
+        ]
+
+        if let payoff = hook.payoff?.trimmedForIndexing, !payoff.isEmpty {
+            lines.append("爆点: \(payoff)")
+        }
+
+        if let callToAction = hook.callToAction?.trimmedForIndexing, !callToAction.isEmpty {
+            lines.append("CTA: \(callToAction)")
+        }
+
+        lines.append("为什么成立: \(hook.whyItWorks.trimmedForIndexing)")
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func visualElementsBlock(_ elements: [String]) -> String? {
+        let labels = elements.trimmedJoinedForIndexing
+        guard !labels.isEmpty else {
+            return nil
+        }
+
+        return "## 视觉元素\n标签: \(labels)"
+    }
+
     private static func formatSeconds(_ seconds: Double) -> String {
         let safeSeconds = seconds.isFinite ? seconds : 0
         let sign = safeSeconds < 0 ? "-" : ""
@@ -43,5 +84,13 @@ public enum ScriptRendering {
 private extension String {
     var trimmedForIndexing: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private extension Array where Element == String {
+    var trimmedJoinedForIndexing: String {
+        map(\.trimmedForIndexing)
+            .filter { !$0.isEmpty }
+            .joined(separator: "、")
     }
 }
