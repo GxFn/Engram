@@ -24,7 +24,7 @@ public struct AskRetrievalConfiguration: Sendable, Hashable {
 @MainActor
 @Observable
 public final class AskViewModel {
-    public nonisolated static let noSupportingClipsMessage = "你的剪藏里没有这条"
+    public nonisolated static let noSupportingClipsMessage = "你的拆解库里没有相关内容"
 
     public struct DisplayMessage: Identifiable, Sendable {
         public enum Role: Sendable {
@@ -310,9 +310,9 @@ public final class AskViewModel {
         }.joined(separator: "\n\n")
 
         return """
-        仅基于以上剪藏回答，引用编号。不要使用剪藏外信息；如果剪藏不足以回答，就回答“\(Self.noSupportingClipsMessage)”。
+        以下是你的视频拆解库中的相关片段。仅基于这些内容回答，引用编号。不要使用拆解库外的信息；如果不足以回答，就回答“\(Self.noSupportingClipsMessage)”。
 
-        剪藏:
+        拆解内容:
         \(numberedChunks)
 
         问题:

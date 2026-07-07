@@ -207,7 +207,8 @@ import Testing
     await task.value
 
     let prompt = await engine.lastPrompt().joined(separator: "\n")
-    #expect(prompt.contains("仅基于以上剪藏回答，引用编号"))
+    #expect(prompt.contains("仅基于这些内容回答，引用编号"))
+    #expect(prompt.contains("拆解内容:"))
     #expect(prompt.contains("[1] First retrieved chunk"))
     #expect(prompt.contains("[2] Second retrieved chunk"))
     #expect(prompt.contains("What did I save?"))
