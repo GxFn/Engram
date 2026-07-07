@@ -12,6 +12,14 @@ import VideoUnderstanding
         {
           "title": "厨房开场",
           "summary": "主角在厨房介绍一道菜。",
+          "visualElements": ["厨房", "主角", "食材", "手部特写"],
+          "hookStructure": {
+            "openingHook": "今天我们做一道快手菜。",
+            "retentionDevices": ["先给成品期待", "用手部特写保持节奏"],
+            "payoff": "把复杂菜变成快手菜",
+            "callToAction": "收藏后照着做",
+            "whyItWorks": "开场直接给出低门槛收益，画面和转写共同强化实用价值。"
+          },
           "shots": [
             {
               "start": 0.0,
@@ -53,6 +61,14 @@ import VideoUnderstanding
     #expect(script.title == "厨房开场")
     #expect(script.summary == "主角在厨房介绍一道菜。")
     #expect(script.createdAt == Date(timeIntervalSince1970: 10))
+    #expect(script.visualElements == ["厨房", "主角", "食材", "手部特写"])
+    #expect(script.hookStructure == HookAnalysis(
+        openingHook: "今天我们做一道快手菜。",
+        retentionDevices: ["先给成品期待", "用手部特写保持节奏"],
+        payoff: "把复杂菜变成快手菜",
+        callToAction: "收藏后照着做",
+        whyItWorks: "开场直接给出低门槛收益，画面和转写共同强化实用价值。"
+    ))
     #expect(script.shots == [
         StoryboardShot(
             index: 0,
@@ -126,6 +142,8 @@ import VideoUnderstanding
     #expect(script.title == "重试成功")
     #expect(script.shots.count == 1)
     #expect(script.shots[0].visualDescription == "重试后描述画面。")
+    #expect(script.hookStructure == nil)
+    #expect(script.visualElements == [])
 
     let requests = await generator.requests
     #expect(requests.count == 2)
@@ -154,6 +172,8 @@ import VideoUnderstanding
     #expect(script.shots[0].endSeconds == 5)
     #expect(script.shots[0].narration?.contains("今天我们做一道快手菜。") == true)
     #expect(script.shots[0].visualDescription.contains("兜底分镜"))
+    #expect(script.hookStructure == nil)
+    #expect(script.visualElements == [])
     #expect(await generator.requests.count == 2)
 }
 
@@ -164,6 +184,14 @@ import VideoUnderstanding
         {
           "title": "转写版脚本",
           "summary": "只根据转写生成。",
+          "visualElements": [],
+          "hookStructure": {
+            "openingHook": "今天我们做一道快手菜。",
+            "retentionDevices": ["承诺快手结果"],
+            "payoff": "节省做菜时间",
+            "callToAction": null,
+            "whyItWorks": "转写开场直接说明收益，即使没有画面也能判断脚本钩子。"
+          },
           "shots": [
             {
               "start": 0,
@@ -196,6 +224,14 @@ import VideoUnderstanding
     #expect(script.id == "script-text")
     #expect(script.title == "转写版脚本")
     #expect(script.shots[0].visualDescription == "")
+    #expect(script.visualElements == [])
+    #expect(script.hookStructure == HookAnalysis(
+        openingHook: "今天我们做一道快手菜。",
+        retentionDevices: ["承诺快手结果"],
+        payoff: "节省做菜时间",
+        callToAction: nil,
+        whyItWorks: "转写开场直接说明收益，即使没有画面也能判断脚本钩子。"
+    ))
     #expect(await visionGenerator.requests.count == 1)
     let textRequests = await textGenerator.requests
     #expect(textRequests.count == 1)
@@ -293,6 +329,43 @@ import VideoUnderstanding
     #expect(script.title == "模型润色脚本")
     #expect(await engine.loadedModelIDs() == [model.id])
     #expect(await engine.generateCallCount() == 1)
+}
+
+@Test func scriptComposerLegacyJSONWithoutHookAndVisualFieldsDefaultsToEmptyDomainFields() async throws {
+    let generator = RecordingVLMGenerator(responses: [
+        """
+        {
+          "title": "旧格式脚本",
+          "summary": "旧 composer 输出没有新增字段。",
+          "shots": [
+            {
+              "start": 0,
+              "end": 2,
+              "narration": "旧格式台词",
+              "visualDescription": "旧格式画面",
+              "pacingNote": "旧格式节奏"
+            }
+          ]
+        }
+        """
+    ])
+    let composer = Qwen3VLScriptComposer(
+        generator: generator,
+        configuration: .init(maxKeyframeCount: 4),
+        dateProvider: { Date(timeIntervalSince1970: 70) },
+        idProvider: { "script-legacy-json" }
+    )
+
+    let script = try await composer.compose(
+        sourceID: "video-legacy-json",
+        transcript: fixtureTranscript,
+        keyframes: [jpegFrame(timestamp: 1)]
+    )
+
+    #expect(script.id == "script-legacy-json")
+    #expect(script.title == "旧格式脚本")
+    #expect(script.hookStructure == nil)
+    #expect(script.visualElements == [])
 }
 
 private actor RecordingVLMGenerator: QwenVLGenerating {

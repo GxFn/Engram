@@ -522,7 +522,9 @@ private enum JSONScriptDecoder {
             title: payload.title.trimmedOrDefault(DeterministicScriptFactory.defaultTitle(for: transcript)),
             summary: payload.summary.trimmedOrDefault(DeterministicScriptFactory.defaultSummary(for: transcript)),
             shots: shots,
-            createdAt: createdAt
+            createdAt: createdAt,
+            hookStructure: payload.hookStructure,
+            visualElements: payload.visualElements
         )
     }
 
@@ -567,11 +569,15 @@ private enum ScriptJSONDecodingError: Error, CustomStringConvertible {
 private struct ScriptPayload: Decodable {
     let title: String
     let summary: String
+    let visualElements: [String]
+    let hookStructure: HookAnalysis?
     let shots: [ShotPayload]
 
     enum CodingKeys: String, CodingKey {
         case title
         case summary
+        case visualElements
+        case hookStructure
         case shots
     }
 
@@ -579,6 +585,8 @@ private struct ScriptPayload: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
+        hookStructure = try container.decodeIfPresent(HookAnalysis.self, forKey: .hookStructure)
         shots = try container.decodeIfPresent([ShotPayload].self, forKey: .shots) ?? []
     }
 }
