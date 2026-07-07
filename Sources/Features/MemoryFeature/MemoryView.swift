@@ -1,6 +1,7 @@
 import ClipCore
 import Foundation
 import Observation
+import ScriptCore
 import SwiftUI
 
 #if os(iOS)
@@ -21,6 +22,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     public let failureReason: String?
     public let failureRetryable: Bool
     public let indexPreview: String?
+    /// Persisted ContentBreakdown (Script) JSON; nil for text/url clips or when not yet indexed.
+    public let scriptJSON: String?
 
     public init(
         id: String,
@@ -33,7 +36,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         state: ClipState,
         failureReason: String?,
         failureRetryable: Bool,
-        indexPreview: String?
+        indexPreview: String?,
+        scriptJSON: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -46,6 +50,21 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         self.failureReason = failureReason
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
+        self.scriptJSON = scriptJSON
+    }
+
+    /// Decoded breakdown, if this clip carries a persisted script.
+    public var breakdown: Script? {
+        ScriptCoding.decode(json: scriptJSON)
+    }
+
+    /// Copy/share text handed off to external generators (豆包 / 即梦). Prefers the
+    /// structured breakdown rendering, falling back to the plain indexed body text.
+    public var handoffText: String {
+        if let breakdown {
+            return ScriptRendering.indexableText(breakdown)
+        }
+        return bodyText ?? ""
     }
 }
 
@@ -413,7 +432,28 @@ private struct MemoryDetailView: View {
                 }
             }
 
-            if let bodyText = item.bodyText, !bodyText.isEmpty {
+            if let breakdown = item.breakdown {
+                if let hook = breakdown.hookStructure {
+                    Section("爆点结构") {
+                        HookStructureView(hook: hook)
+                    }
+                }
+
+                if !breakdown.visualElements.isEmpty {
+                    Section("视觉元素") {
+                        Text(breakdown.visualElements.joined(separator: "、"))
+                            .textSelection(.enabled)
+                    }
+                }
+
+                if !breakdown.shots.isEmpty {
+                    Section("分镜 (\(breakdown.shots.count))") {
+                        ForEach(breakdown.shots.sorted { $0.index < $1.index }, id: \.index) { shot in
+                            ShotRowView(shot: shot)
+                        }
+                    }
+                }
+            } else if let bodyText = item.bodyText, !bodyText.isEmpty {
                 Section("Original") {
                     Text(bodyText)
                         .textSelection(.enabled)
@@ -426,15 +466,93 @@ private struct MemoryDetailView: View {
                     LabeledContent("Chunk", value: highlightedChunkID)
                 }
             }
-
-            if let indexPreview = item.indexPreview, !indexPreview.isEmpty {
-                Section("Index Preview") {
-                    Text(indexPreview)
-                        .textSelection(.enabled)
+        }
+        .navigationTitle(item.title)
+        .toolbar {
+            if !item.handoffText.isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        ShareLink("分享剧本", item: item.handoffText)
+                        #if os(iOS)
+                        Button {
+                            UIPasteboard.general.string = item.handoffText
+                        } label: {
+                            Label("复制全文", systemImage: "doc.on.doc")
+                        }
+                        #endif
+                    } label: {
+                        Label("投喂", systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("复制或分享剧本，投喂到豆包/即梦")
                 }
             }
         }
-        .navigationTitle(item.title)
+    }
+}
+
+private struct HookStructureView: View {
+    let hook: HookAnalysis
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            labeledLine("钩子", hook.openingHook)
+            if !hook.retentionDevices.isEmpty {
+                labeledLine("留人", hook.retentionDevices.joined(separator: "、"))
+            }
+            if let payoff = hook.payoff, !payoff.isEmpty {
+                labeledLine("爆点", payoff)
+            }
+            if let cta = hook.callToAction, !cta.isEmpty {
+                labeledLine("CTA", cta)
+            }
+            if !hook.whyItWorks.isEmpty {
+                labeledLine("为什么成立", hook.whyItWorks)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func labeledLine(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline)
+        }
+    }
+}
+
+private struct ShotRowView: View {
+    let shot: StoryboardShot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("分镜 \(shot.index + 1)  \(timeRange)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if let narration = shot.narration, !narration.isEmpty {
+                Text("台词: \(narration)").font(.subheadline)
+            }
+            if !shot.visualDescription.isEmpty {
+                Text("画面: \(shot.visualDescription)").font(.subheadline)
+            }
+            if let pacing = shot.pacingNote, !pacing.isEmpty {
+                Text("节奏: \(pacing)").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .textSelection(.enabled)
+        .padding(.vertical, 2)
+    }
+
+    private var timeRange: String {
+        "\(format(shot.startSeconds))–\(format(shot.endSeconds))"
+    }
+
+    private func format(_ seconds: Double) -> String {
+        let safe = seconds.isFinite ? seconds : 0
+        return String(format: "%.1fs", safe)
     }
 }
 

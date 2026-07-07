@@ -332,7 +332,8 @@ public final class AppDependencies {
             state: snapshot.state,
             failureReason: snapshot.failureReason,
             failureRetryable: snapshot.failureRetryable,
-            indexPreview: snapshot.indexPreview
+            indexPreview: snapshot.indexPreview,
+            scriptJSON: snapshot.scriptJSON
         )
     }
 
