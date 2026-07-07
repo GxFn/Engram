@@ -58,3 +58,18 @@ public protocol ScriptComposing: Sendable {
         frames: [FrameDescription]
     ) async throws -> Script
 }
+
+public protocol VisionScriptComposing: Actor {
+    func compose(
+        sourceID: String,
+        transcript: [TranscriptSegment],
+        keyframes: [SampledFrame]
+    ) async throws -> Script
+}
+
+public protocol TextScriptComposing: Actor {
+    func compose(
+        sourceID: String,
+        transcript: [TranscriptSegment]
+    ) async throws -> Script
+}
