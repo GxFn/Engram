@@ -9,7 +9,17 @@ import ModelStore
 import Tokenizers
 import VideoUnderstanding
 
-/// Runtime seam used by Qwen3VLDescriber and later script-composition work.
+/// Runtime seam used by Qwen3-VL script composition to generate text from
+/// one prompt plus zero or more image attachments.
+public protocol QwenVLGenerating: Sendable {
+    func generate(
+        prompt: String,
+        frames: [SampledFrame],
+        config: GenerationConfig
+    ) async throws -> String
+}
+
+/// Runtime seam used by Qwen3VLDescriber for one-frame descriptions.
 public protocol QwenVLFrameGenerating: Sendable {
     func generateDescription(
         for frame: SampledFrame,
@@ -19,7 +29,7 @@ public protocol QwenVLFrameGenerating: Sendable {
 }
 
 /// MLX-VLM-backed Qwen3-VL container for local model folders managed by ModelStore.
-public actor QwenVLContainer: QwenVLFrameGenerating {
+public actor QwenVLContainer: QwenVLGenerating, QwenVLFrameGenerating {
     private let defaultModel: ModelIdentity
     private let runtime: any QwenVLRuntimeLoading
     private var session: (any QwenVLSession)?
@@ -74,10 +84,10 @@ public actor QwenVLContainer: QwenVLFrameGenerating {
         Log.frameVision.info("Unloaded Qwen3-VL model and cleared MLX cache")
     }
 
-    public func generateDescription(
-        for frame: SampledFrame,
+    public func generate(
         prompt: String,
-        config: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 96)
+        frames: [SampledFrame],
+        config: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 1_024)
     ) async throws -> String {
         if session == nil {
             try await load(defaultModel)
@@ -88,7 +98,7 @@ public actor QwenVLContainer: QwenVLFrameGenerating {
         }
 
         do {
-            return try await session.generateDescription(for: frame, prompt: prompt, config: config)
+            return try await session.generate(prompt: prompt, frames: frames, config: config)
         } catch let error as VideoUnderstandingError {
             throw error
         } catch {
@@ -99,6 +109,14 @@ public actor QwenVLContainer: QwenVLFrameGenerating {
                 "Qwen3-VL generation failed: \(String(describing: error))"
             )
         }
+    }
+
+    public func generateDescription(
+        for frame: SampledFrame,
+        prompt: String,
+        config: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 96)
+    ) async throws -> String {
+        try await generate(prompt: prompt, frames: [frame], config: config)
     }
 
     private nonisolated static func defaultModelDirectoryRoot() -> URL {
@@ -247,11 +265,22 @@ protocol QwenVLRuntimeLoading: Sendable {
 }
 
 protocol QwenVLSession: Sendable {
+    func generate(
+        prompt: String,
+        frames: [SampledFrame],
+        config: GenerationConfig
+    ) async throws -> String
+}
+
+extension QwenVLSession {
     func generateDescription(
         for frame: SampledFrame,
         prompt: String,
         config: GenerationConfig
     ) async throws -> String
+    {
+        try await generate(prompt: prompt, frames: [frame], config: config)
+    }
 }
 
 struct RealQwenVLRuntime: QwenVLRuntimeLoading {
@@ -381,19 +410,23 @@ struct RealQwenVLRuntime: QwenVLRuntimeLoading {
 struct RealQwenVLSession: QwenVLSession {
     let container: ModelContainer
 
-    func generateDescription(
-        for frame: SampledFrame,
+    func generate(
         prompt: String,
+        frames: [SampledFrame],
         config: GenerationConfig
     ) async throws -> String {
-        guard let image = CIImage(data: frame.jpegData) else {
-            throw VideoUnderstandingError.visionUnavailable(
-                "Qwen3-VL could not decode JPEG frame at \(frame.timestampSeconds)s."
-            )
+        let images = try frames.map { frame in
+            guard let image = CIImage(data: frame.jpegData) else {
+                throw VideoUnderstandingError.visionUnavailable(
+                    "Qwen3-VL could not decode JPEG frame at \(frame.timestampSeconds)s."
+                )
+            }
+
+            return image
         }
 
         let userInput = UserInput(chat: [
-            .user(prompt, images: [.ciImage(image)])
+            .user(prompt, images: images.map { .ciImage($0) })
         ])
         let input = try await container.prepare(input: userInput)
         let parameters = GenerateParameters(

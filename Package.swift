@@ -25,6 +25,7 @@ let package = Package(
         .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "FrameVision", targets: ["FrameVision"]),
         .library(name: "QwenVLRuntime", targets: ["QwenVLRuntime"]),
+        .library(name: "ScriptComposer", targets: ["ScriptComposer"]),
         .library(name: "MLXEngine", targets: ["MLXEngine"]),
         .library(name: "FMEngine", targets: ["FMEngine"]),
         .library(name: "EmbeddingMLX", targets: ["EmbeddingMLX"]),
@@ -134,6 +135,17 @@ let package = Package(
             path: "Sources/Infrastructure/QwenVLRuntime"
         ),
         .target(
+            name: "ScriptComposer",
+            dependencies: [
+                "ScriptCore",
+                "VideoUnderstanding",
+                "QwenVLRuntime",
+                "EngineKit",
+                "EngramLogging",
+            ],
+            path: "Sources/Infrastructure/ScriptComposer"
+        ),
+        .target(
             name: "ClipPipeline",
             dependencies: ["ClipCore", "AppGroupSupport"],
             path: "Sources/Infrastructure/ClipPipeline"
@@ -238,6 +250,17 @@ let package = Package(
             name: "QwenVLRuntimeTests",
             dependencies: ["QwenVLRuntime", "VideoUnderstanding", "ModelStore", "EngineKit"],
             path: "Tests/QwenVLRuntimeTests"
+        ),
+        .testTarget(
+            name: "ScriptComposerTests",
+            dependencies: [
+                "ScriptComposer",
+                "ScriptCore",
+                "VideoUnderstanding",
+                "QwenVLRuntime",
+                "EngineKit",
+            ],
+            path: "Tests/ScriptComposerTests"
         ),
         .testTarget(name: "SettingsFeatureTests", dependencies: ["SettingsFeature", "EngineKit"], path: "Tests/SettingsFeatureTests"),
         .testTarget(name: "ClipCoreTests", dependencies: ["ClipCore"], path: "Tests/ClipCoreTests"),

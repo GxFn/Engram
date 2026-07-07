@@ -160,7 +160,7 @@ private actor FakeRuntime: QwenVLRuntimeLoading {
 private actor FakeSession: QwenVLSession {
     struct Request: Sendable {
         let prompt: String
-        let timestamp: Double
+        let timestamps: [Double]
         let maxTokens: Int
     }
 
@@ -171,14 +171,14 @@ private actor FakeSession: QwenVLSession {
         self.response = response
     }
 
-    func generateDescription(
-        for frame: SampledFrame,
+    func generate(
         prompt: String,
+        frames: [SampledFrame],
         config: GenerationConfig
     ) async throws -> String {
         requests.append(Request(
             prompt: prompt,
-            timestamp: frame.timestampSeconds,
+            timestamps: frames.map(\.timestampSeconds),
             maxTokens: config.maxTokens
         ))
         return response
