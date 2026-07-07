@@ -176,6 +176,9 @@ public final class AppDependencies {
             },
             retryClip: { id in
                 try await clipDigestService.retryFailedClip(id: id)
+            },
+            importVideo: { url in
+                try await clipDigestService.importVideo(from: url)
             }
         ))
     }

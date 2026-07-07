@@ -320,6 +320,68 @@ import VideoUnderstanding
     #expect(snapshot.failureReason == nil)
 }
 
+@Test func videoImporterCopiesPickedVideoIntoVideosDirectoryAndEnqueuesClip() throws {
+    let fixture = try DigestFixture()
+    let pickedURL = fixture.rootURL.appendingPathComponent("picked-source.mp4")
+    try Data([0x00, 0x01, 0x02, 0x03]).write(to: pickedURL)
+    let videosDirectory = fixture.rootURL.appendingPathComponent("videos", isDirectory: true)
+    let importer = VideoImporter(
+        videosDirectory: videosDirectory,
+        queueStore: fixture.store,
+        idGenerator: { "imported-video" },
+        now: { Date(timeIntervalSince1970: 1_800_000_044) }
+    )
+
+    let clip = try importer.importVideo(from: pickedURL)
+
+    let copiedURL = videosDirectory.appendingPathComponent("imported-video.mp4")
+    #expect(clip.id == "imported-video")
+    #expect(clip.source == .videoFile(copiedURL))
+    #expect(clip.state == .queued)
+    #expect(clip.title == "picked-source")
+    #expect(FileManager.default.fileExists(atPath: copiedURL.path))
+    #expect(try Data(contentsOf: copiedURL) == Data([0x00, 0x01, 0x02, 0x03]))
+    #expect(try fixture.store.pendingItems().map(\.clip) == [clip])
+}
+
+@Test func videoImporterFallsBackToMovExtensionForExtensionlessPickedFile() throws {
+    let fixture = try DigestFixture()
+    let pickedURL = fixture.rootURL.appendingPathComponent("picked-source")
+    try Data([0x04, 0x05]).write(to: pickedURL)
+    let videosDirectory = fixture.rootURL.appendingPathComponent("videos", isDirectory: true)
+    let importer = VideoImporter(
+        videosDirectory: videosDirectory,
+        queueStore: fixture.store,
+        idGenerator: { "extensionless-video" },
+        now: { Date(timeIntervalSince1970: 1_800_000_045) }
+    )
+
+    let clip = try importer.importVideo(from: pickedURL)
+
+    let copiedURL = videosDirectory.appendingPathComponent("extensionless-video.mov")
+    #expect(clip.source == .videoFile(copiedURL))
+    #expect(FileManager.default.fileExists(atPath: copiedURL.path))
+    #expect(try fixture.store.pendingItems().map(\.clip) == [clip])
+}
+
+@Test func videoImporterRejectsMissingSourceWithoutCreatingQueueRecord() throws {
+    let fixture = try DigestFixture()
+    let pickedURL = fixture.rootURL.appendingPathComponent("missing.mov")
+    let videosDirectory = fixture.rootURL.appendingPathComponent("videos", isDirectory: true)
+    let importer = VideoImporter(
+        videosDirectory: videosDirectory,
+        queueStore: fixture.store,
+        idGenerator: { "missing-video" },
+        now: { Date(timeIntervalSince1970: 1_800_000_046) }
+    )
+
+    #expect(throws: VideoImportError.sourceMissing(pickedURL)) {
+        _ = try importer.importVideo(from: pickedURL)
+    }
+    #expect(try fixture.store.pendingItems().isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: videosDirectory.appendingPathComponent("missing-video.mov").path))
+}
+
 private final class DigestFixture {
     let rootURL: URL
     let store: ClipQueueStore

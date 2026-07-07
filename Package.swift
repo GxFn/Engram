@@ -250,6 +250,7 @@ let package = Package(
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"], path: "Tests/EngineKitTests"),
         .testTarget(name: "EmbeddingMLXTests", dependencies: ["EmbeddingMLX", "RAGCore"], path: "Tests/EmbeddingMLXTests"),
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
+        .testTarget(name: "MemoryFeatureTests", dependencies: ["MemoryFeature", "ClipCore"], path: "Tests/MemoryFeatureTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
         .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence", "ScriptCore"], path: "Tests/PersistenceTests"),

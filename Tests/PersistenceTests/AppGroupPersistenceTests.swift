@@ -23,8 +23,10 @@ import Testing
     #expect(locations.storeURL == root.appendingPathComponent("Engram.store"))
     #expect(locations.queueDirectory == root.appendingPathComponent("queue", isDirectory: true))
     #expect(locations.modelsDirectory == root.appendingPathComponent("Models", isDirectory: true))
+    #expect(locations.videosDirectory == root.appendingPathComponent("videos", isDirectory: true))
     #expect(FileManager.default.fileExists(atPath: locations.queueDirectory.path))
     #expect(FileManager.default.fileExists(atPath: locations.modelsDirectory.path))
+    #expect(FileManager.default.fileExists(atPath: locations.videosDirectory.path))
 }
 
 @Test func appGroupLocationsFallbackWhenContainerIsUnavailable() throws {
@@ -43,6 +45,7 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: locations.rootDirectory.path))
     #expect(FileManager.default.fileExists(atPath: locations.queueDirectory.path))
     #expect(FileManager.default.fileExists(atPath: locations.modelsDirectory.path))
+    #expect(FileManager.default.fileExists(atPath: locations.videosDirectory.path))
 }
 
 @Test func persistenceStackStoresSwiftDataAtAppGroupStoreURL() throws {

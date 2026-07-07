@@ -174,6 +174,45 @@ import Testing
 }
 
 @MainActor
+@Test func appShellMemoryBridgeImportsVideoAndShowsQueuedClip() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellVideoImportTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let queueStore = ClipQueueStore(queueDirectory: root.appendingPathComponent("queue", isDirectory: true))
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let recordStore = ClipRecordStore(modelContainer: container)
+    let videosDirectory = root.appendingPathComponent("videos", isDirectory: true)
+    let digestService = ClipDigestService(
+        queueStore: queueStore,
+        recordStore: recordStore,
+        videoDirectoryURL: videosDirectory
+    )
+    let pickedURL = root.appendingPathComponent("picked-video.mov", isDirectory: false)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data([0x10, 0x11, 0x12]).write(to: pickedURL)
+
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        defaults: nil,
+        clipDigestService: digestService
+    )
+    let memory = dependencies.makeMemoryViewModel()
+
+    await memory.importVideo(.file(pickedURL))
+
+    let item = try #require(memory.items.first)
+    let copiedURL = try #require(item.sourceURL)
+    #expect(memory.items.count == 1)
+    #expect(item.state == .queued)
+    #expect(copiedURL.deletingLastPathComponent() == videosDirectory)
+    #expect(copiedURL.pathExtension == "mov")
+    #expect(try Data(contentsOf: copiedURL) == Data([0x10, 0x11, 0x12]))
+    #expect(try queueStore.pendingItems().count == 1)
+    #expect(memory.errorMessage == nil)
+}
+
+@MainActor
 @Test func appLaunchContextRegistersClipDigestTriggersDuringInitialization() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramAppShellLaunchTests-\(UUID().uuidString)", isDirectory: true)

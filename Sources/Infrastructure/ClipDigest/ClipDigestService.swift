@@ -127,6 +127,7 @@ public enum ClipDigestServiceError: Error, Equatable, Sendable {
     case unsupportedEmptyText(String)
     case unsupportedURL(URL)
     case videoAnalyzerUnavailable(URL)
+    case videoImportUnavailable
     case extractionFailed(String)
     case retryUnavailable(String)
 }
@@ -139,6 +140,7 @@ public actor ClipDigestService: ClipDigesting {
     private let indexer: any ClipDigestIndexing
     private let videoAnalyzer: (any VideoAnalyzing)?
     private let videoDirectoryURL: URL?
+    private let videoImporter: VideoImporter?
     private let now: @Sendable () -> Date
 
     public init(
@@ -149,6 +151,7 @@ public actor ClipDigestService: ClipDigesting {
         indexer: any ClipDigestIndexing = DigestPreviewIndexer(),
         videoAnalyzer: (any VideoAnalyzing)? = nil,
         videoDirectoryURL: URL? = nil,
+        videoImporter: VideoImporter? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.queueStore = queueStore
@@ -158,6 +161,9 @@ public actor ClipDigestService: ClipDigesting {
         self.indexer = indexer
         self.videoAnalyzer = videoAnalyzer
         self.videoDirectoryURL = videoDirectoryURL
+        self.videoImporter = videoImporter ?? videoDirectoryURL.map {
+            VideoImporter(videosDirectory: $0, queueStore: queueStore, now: now)
+        }
         self.now = now
     }
 
@@ -172,7 +178,7 @@ public actor ClipDigestService: ClipDigesting {
             recordStore: ClipRecordStore(modelContainer: modelContainer),
             indexer: indexer ?? DigestPreviewIndexer(),
             videoAnalyzer: videoAnalyzer,
-            videoDirectoryURL: locations.rootDirectory.appendingPathComponent("videos", isDirectory: true)
+            videoDirectoryURL: locations.videosDirectory
         )
     }
 
@@ -196,6 +202,15 @@ public actor ClipDigestService: ClipDigesting {
             Log.clip.error("Failed to requeue clip \(id, privacy: .public): \(String(describing: error), privacy: .public)")
             throw error
         }
+    }
+
+    public func importVideo(from pickedURL: URL) async throws {
+        guard let videoImporter else {
+            throw ClipDigestServiceError.videoImportUnavailable
+        }
+        let clip = try videoImporter.importVideo(from: pickedURL)
+        _ = try await recordStore.upsertQueuedClip(clip, now: now())
+        Log.clip.info("Imported video clip \(clip.id, privacy: .public)")
     }
 
     private func digest(_ item: ClipQueueItem) async throws {

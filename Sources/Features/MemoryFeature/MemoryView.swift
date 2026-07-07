@@ -1,6 +1,13 @@
 import ClipCore
+import Foundation
 import Observation
 import SwiftUI
+
+#if os(iOS)
+import PhotosUI
+import UniformTypeIdentifiers
+import UIKit
+#endif
 
 public struct MemoryClip: Identifiable, Equatable, Sendable {
     public let id: String
@@ -57,22 +64,31 @@ public struct MemoryClient: Sendable {
     public let loadItems: @Sendable () async throws -> [MemoryClip]
     public let digestPending: @Sendable () async throws -> Void
     public let retryClip: @Sendable (String) async throws -> Void
+    public let importVideo: @Sendable (URL) async throws -> Void
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
         digestPending: @escaping @Sendable () async throws -> Void,
-        retryClip: @escaping @Sendable (String) async throws -> Void
+        retryClip: @escaping @Sendable (String) async throws -> Void,
+        importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in }
     ) {
         self.loadItems = loadItems
         self.digestPending = digestPending
         self.retryClip = retryClip
+        self.importVideo = importVideo
     }
 
     public static let empty = MemoryClient(
         loadItems: { [] },
         digestPending: {},
-        retryClip: { _ in }
+        retryClip: { _ in },
+        importVideo: { _ in }
     )
+}
+
+public enum MemoryVideoImportSelection: Sendable, Equatable {
+    case cancelled
+    case file(URL)
 }
 
 @MainActor
@@ -123,12 +139,33 @@ public final class MemoryViewModel {
             errorMessage = String(describing: error)
         }
     }
+
+    public func importVideo(_ selection: MemoryVideoImportSelection) async {
+        guard case let .file(url) = selection else {
+            return
+        }
+
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            try await client.importVideo(url)
+            items = try await client.loadItems()
+            errorMessage = nil
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+
+    public func reportImportFailure(_ error: Error) {
+        errorMessage = String(describing: error)
+    }
 }
 
 /// Memory surface — the app-side digest status timeline.
 public struct MemoryView: View {
     @State private var viewModel: MemoryViewModel
     @Binding private var navigationTarget: MemoryNavigationTarget?
+    @State private var isShowingVideoPicker = false
 
     public init(
         viewModel: MemoryViewModel = MemoryViewModel(),
@@ -172,6 +209,17 @@ public struct MemoryView: View {
             }
         }
         .toolbar {
+            #if os(iOS)
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    isShowingVideoPicker = true
+                } label: {
+                    Label("导入视频", systemImage: "video.badge.plus")
+                }
+                .accessibilityLabel("导入视频")
+                .disabled(viewModel.isRefreshing)
+            }
+            #endif
             ToolbarItem(placement: .automatic) {
                 Button {
                     Task { await viewModel.digestAndRefresh() }
@@ -182,6 +230,19 @@ public struct MemoryView: View {
                 .disabled(viewModel.isRefreshing)
             }
         }
+        #if os(iOS)
+        .sheet(isPresented: $isShowingVideoPicker) {
+            VideoPickerView { result in
+                isShowingVideoPicker = false
+                switch result {
+                case let .success(selection):
+                    Task { await viewModel.importVideo(selection) }
+                case let .failure(error):
+                    viewModel.reportImportFailure(error)
+                }
+            }
+        }
+        #endif
         .navigationTitle("Memory")
         .navigationDestination(item: $navigationTarget) { target in
             if let item = viewModel.items.first(where: { $0.id == target.clipID }) {
@@ -201,6 +262,96 @@ public struct MemoryView: View {
         }
     }
 }
+
+#if os(iOS)
+private enum VideoPickerError: Error, Equatable, Sendable {
+    case providerFailed(String)
+    case copyFailed(String)
+}
+
+private struct VideoPickerView: UIViewControllerRepresentable {
+    let onCompletion: @MainActor @Sendable (Result<MemoryVideoImportSelection, VideoPickerError>) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.filter = .videos
+        configuration.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {
+        _ = uiViewController
+        _ = context
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCompletion: onCompletion)
+    }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let onCompletion: @MainActor @Sendable (Result<MemoryVideoImportSelection, VideoPickerError>) -> Void
+
+        init(onCompletion: @escaping @MainActor @Sendable (Result<MemoryVideoImportSelection, VideoPickerError>) -> Void) {
+            self.onCompletion = onCompletion
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            _ = picker
+            guard let provider = results.first?.itemProvider else {
+                onCompletion(.success(.cancelled))
+                return
+            }
+
+            let typeIdentifier = provider.registeredTypeIdentifiers.first {
+                UTType($0)?.conforms(to: .movie) == true
+            } ?? UTType.movie.identifier
+
+            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { [onCompletion] url, error in
+                if let error {
+                    Self.complete(.failure(.providerFailed(String(describing: error))), onCompletion: onCompletion)
+                    return
+                }
+
+                guard let url else {
+                    Self.complete(.success(.cancelled), onCompletion: onCompletion)
+                    return
+                }
+
+                do {
+                    let stableURL = try Self.copyPickerTemporaryFile(url)
+                    Self.complete(.success(.file(stableURL)), onCompletion: onCompletion)
+                } catch {
+                    Self.complete(.failure(.copyFailed(String(describing: error))), onCompletion: onCompletion)
+                }
+            }
+        }
+
+        private static func complete(
+            _ result: Result<MemoryVideoImportSelection, VideoPickerError>,
+            onCompletion: @escaping @MainActor @Sendable (Result<MemoryVideoImportSelection, VideoPickerError>) -> Void
+        ) {
+            Task { @MainActor in
+                onCompletion(result)
+            }
+        }
+
+        private static func copyPickerTemporaryFile(_ url: URL) throws -> URL {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("EngramPickedVideos", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let pathExtension = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+            let destination = directory
+                .appendingPathComponent(UUID().uuidString, isDirectory: false)
+                .appendingPathExtension(pathExtension)
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.copyItem(at: url, to: destination)
+            return destination
+        }
+    }
+}
+#endif
 
 private struct MemoryRow: View {
     let item: MemoryClip

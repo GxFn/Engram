@@ -6,6 +6,7 @@ public struct AppGroupLocations: Equatable, Sendable {
     public let storeURL: URL
     public let queueDirectory: URL
     public let modelsDirectory: URL
+    public let videosDirectory: URL
     public let retrievalIndexURL: URL
     public let usesAppGroupContainer: Bool
 
@@ -15,6 +16,7 @@ public struct AppGroupLocations: Equatable, Sendable {
         storeURL: URL,
         queueDirectory: URL,
         modelsDirectory: URL,
+        videosDirectory: URL,
         retrievalIndexURL: URL,
         usesAppGroupContainer: Bool
     ) {
@@ -23,6 +25,7 @@ public struct AppGroupLocations: Equatable, Sendable {
         self.storeURL = storeURL
         self.queueDirectory = queueDirectory
         self.modelsDirectory = modelsDirectory
+        self.videosDirectory = videosDirectory
         self.retrievalIndexURL = retrievalIndexURL
         self.usesAppGroupContainer = usesAppGroupContainer
     }
@@ -34,6 +37,7 @@ public enum EngramAppGroup {
     public static let retrievalIndexFileName = "EngramRetrieval.sqlite"
     public static let queueDirectoryName = "queue"
     public static let modelsDirectoryName = "Models"
+    public static let videosDirectoryName = "videos"
     public static let fallbackDirectoryName = "Engram"
 
     public static func locations(
@@ -54,6 +58,7 @@ public enum EngramAppGroup {
             storeURL: rootDirectory.appendingPathComponent(storeFileName, isDirectory: false),
             queueDirectory: rootDirectory.appendingPathComponent(queueDirectoryName, isDirectory: true),
             modelsDirectory: rootDirectory.appendingPathComponent(modelsDirectoryName, isDirectory: true),
+            videosDirectory: rootDirectory.appendingPathComponent(videosDirectoryName, isDirectory: true),
             retrievalIndexURL: rootDirectory.appendingPathComponent(retrievalIndexFileName, isDirectory: false),
             usesAppGroupContainer: groupContainerURL != nil
         )
@@ -61,6 +66,7 @@ public enum EngramAppGroup {
         try fileManager.createDirectory(at: locations.rootDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: locations.queueDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: locations.modelsDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: locations.videosDirectory, withIntermediateDirectories: true)
 
         return locations
     }
