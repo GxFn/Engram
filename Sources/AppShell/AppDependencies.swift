@@ -37,6 +37,8 @@ public final class AppDependencies {
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private let clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling
     @ObservationIgnored private var clipNotificationObserver: ClipEnqueueNotificationObserver?
+    // Shared so the 剪藏 and 拆解 tabs render the same store from one instance / one load.
+    @ObservationIgnored private var cachedMemoryViewModel: MemoryViewModel?
 
     public init(
         engines: [any LLMEngine] = [MLXEngine()],
@@ -209,25 +211,33 @@ public final class AppDependencies {
     }
 
     public func makeMemoryViewModel() -> MemoryViewModel {
-        guard let clipDigestService else {
-            return MemoryViewModel()
+        if let cachedMemoryViewModel {
+            return cachedMemoryViewModel
         }
 
-        return MemoryViewModel(client: MemoryClient(
-            loadItems: {
-                let snapshots = try await clipDigestService.memorySnapshots()
-                return snapshots.map(Self.memoryClip(from:))
-            },
-            digestPending: {
-                try await clipDigestService.digestPending()
-            },
-            retryClip: { id in
-                try await clipDigestService.retryFailedClip(id: id)
-            },
-            importVideo: { url in
-                try await clipDigestService.importVideo(from: url)
-            }
-        ))
+        let viewModel: MemoryViewModel
+        if let clipDigestService {
+            viewModel = MemoryViewModel(client: MemoryClient(
+                loadItems: {
+                    let snapshots = try await clipDigestService.memorySnapshots()
+                    return snapshots.map(Self.memoryClip(from:))
+                },
+                digestPending: {
+                    try await clipDigestService.digestPending()
+                },
+                retryClip: { id in
+                    try await clipDigestService.retryFailedClip(id: id)
+                },
+                importVideo: { url in
+                    try await clipDigestService.importVideo(from: url)
+                }
+            ))
+        } else {
+            viewModel = MemoryViewModel()
+        }
+
+        cachedMemoryViewModel = viewModel
+        return viewModel
     }
 
     public func makeAskViewModel() -> AskViewModel {

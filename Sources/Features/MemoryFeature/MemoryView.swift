@@ -57,6 +57,11 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         self.sourceKind = sourceKind
     }
 
+    /// Whether this item belongs to the 拆解 (video) library rather than 剪藏 (text/url).
+    public var isVideoBreakdown: Bool {
+        sourceKind == .video
+    }
+
     /// Decoded breakdown, if this clip carries a persisted script.
     public var breakdown: Script? {
         ScriptCoding.decode(json: scriptJSON)
@@ -114,6 +119,27 @@ public enum MemoryVideoImportSelection: Sendable, Equatable {
     case file(URL)
 }
 
+/// The two first-class libraries backed by the same store: 剪藏 (text/url knowledge) and
+/// 拆解 (video breakdowns). Each tab renders the shared MemoryViewModel filtered by kind.
+public enum MemoryLibraryKind: Sendable, Hashable {
+    case clips
+    case studio
+
+    public var title: String {
+        switch self {
+        case .clips: "剪藏"
+        case .studio: "拆解"
+        }
+    }
+
+    var sourceKinds: Set<ClipSourceKind> {
+        switch self {
+        case .clips: [.text, .url]
+        case .studio: [.video]
+        }
+    }
+}
+
 @MainActor
 @Observable
 public final class MemoryViewModel {
@@ -127,7 +153,13 @@ public final class MemoryViewModel {
         self.client = client
     }
 
+    /// Items for one library tab (剪藏 vs 拆解), filtered from the shared store.
+    public func items(for kind: MemoryLibraryKind) -> [MemoryClip] {
+        items.filter { kind.sourceKinds.contains($0.sourceKind) }
+    }
+
     public func refresh() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -139,6 +171,7 @@ public final class MemoryViewModel {
     }
 
     public func digestAndRefresh() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -189,24 +222,32 @@ public struct MemoryView: View {
     @State private var viewModel: MemoryViewModel
     @Binding private var navigationTarget: MemoryNavigationTarget?
     @State private var isShowingVideoPicker = false
+    private let kind: MemoryLibraryKind
 
     public init(
+        kind: MemoryLibraryKind = .clips,
         viewModel: MemoryViewModel = MemoryViewModel(),
         navigationTarget: Binding<MemoryNavigationTarget?> = .constant(nil)
     ) {
+        self.kind = kind
         _viewModel = State(initialValue: viewModel)
         _navigationTarget = navigationTarget
     }
 
+    private var items: [MemoryClip] {
+        viewModel.items(for: kind)
+    }
+
     public var body: some View {
         Group {
-            if viewModel.items.isEmpty {
+            if items.isEmpty {
                 ContentUnavailableView(
-                    "No clips yet",
-                    systemImage: "tray.full"
+                    emptyTitle,
+                    systemImage: kind == .studio ? "film.stack" : "tray.full",
+                    description: Text(emptyDescription)
                 )
             } else {
-                List(viewModel.items) { item in
+                List(items) { item in
                     NavigationLink {
                         MemoryDetailView(item: item) {
                             Task { await viewModel.retry(item) }
@@ -233,14 +274,16 @@ public struct MemoryView: View {
         }
         .toolbar {
             #if os(iOS)
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isShowingVideoPicker = true
-                } label: {
-                    Label("导入视频", systemImage: "video.badge.plus")
+            if kind == .studio {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        isShowingVideoPicker = true
+                    } label: {
+                        Label("导入视频", systemImage: "video.badge.plus")
+                    }
+                    .accessibilityLabel("导入视频")
+                    .disabled(viewModel.isRefreshing)
                 }
-                .accessibilityLabel("导入视频")
-                .disabled(viewModel.isRefreshing)
             }
             #endif
             ToolbarItem(placement: .automatic) {
@@ -266,14 +309,14 @@ public struct MemoryView: View {
             }
         }
         #endif
-        .navigationTitle("Memory")
+        .navigationTitle(kind.title)
         .navigationDestination(item: $navigationTarget) { target in
             if let item = viewModel.items.first(where: { $0.id == target.clipID }) {
                 MemoryDetailView(item: item, highlightedChunkID: target.chunkID) {
                     Task { await viewModel.retry(item) }
                 }
             } else {
-                ContentUnavailableView("Clip not found", systemImage: "doc.text.magnifyingglass")
+                ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
             }
         }
         .task {
@@ -282,6 +325,19 @@ public struct MemoryView: View {
         .onChange(of: navigationTarget) { _, target in
             guard target != nil else { return }
             Task { await viewModel.refresh() }
+        }
+    }
+
+    private var emptyTitle: String {
+        kind == .studio ? "还没有视频拆解" : "还没有剪藏"
+    }
+
+    private var emptyDescription: String {
+        switch kind {
+        case .studio:
+            "点右上角导入本地视频，端侧/云端会拆出爆点结构与分镜剧本。"
+        case .clips:
+            "从任意 app 分享文本或链接到 Engram，之后就能问出来。"
         }
     }
 }

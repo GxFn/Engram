@@ -2,13 +2,15 @@ import AskFeature
 import BenchFeature
 import MemoryFeature
 import Persistence
+import RAGCore
 import SettingsFeature
 import SwiftData
 import SwiftUI
 
-/// App shell: three-tab layout per the requirement design (Memory / Ask /
-/// Bench; Settings is a page, not a tab). Dependency injection of engines and
-/// stores happens here and only here — features never see Infrastructure.
+/// App shell: dual-function three-tab layout (剪藏 clips / 拆解 studio / 问答 ask);
+/// Settings (with Bench) is a page reached from the toolbar. The 剪藏 and 拆解 tabs
+/// render the same shared MemoryViewModel filtered by content kind. Dependency
+/// injection happens here and only here — features never see Infrastructure.
 public struct RootView: View {
     @State private var dependencies: AppDependencies
     private let modelContainer: ModelContainer?
@@ -36,15 +38,15 @@ public struct RootView: View {
 
 private struct RootContent: View {
     private enum RootTab: Hashable {
-        case memory
+        case clips
+        case studio
         case ask
-        case bench
     }
 
     @Environment(\.deps) private var dependencies
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarded") private var onboarded = false
-    @State private var selectedTab: RootTab = .memory
+    @State private var selectedTab: RootTab = .clips
     @State private var memoryNavigationTarget: MemoryNavigationTarget?
 
     var body: some View {
@@ -52,40 +54,46 @@ private struct RootContent: View {
             NavigationStack {
                 if let dependencies {
                     MemoryView(
+                        kind: .clips,
                         viewModel: dependencies.makeMemoryViewModel(),
                         navigationTarget: $memoryNavigationTarget
                     )
                         .toolbar { settingsToolbar }
                 } else {
-                    ContentUnavailableView("Memory", systemImage: "tray.full")
+                    ContentUnavailableView("剪藏", systemImage: "tray.full")
                         .toolbar { settingsToolbar }
                 }
             }
-                .tabItem { Label("Memory", systemImage: "tray.full") }
-                .tag(RootTab.memory)
+                .tabItem { Label("剪藏", systemImage: "tray.full") }
+                .tag(RootTab.clips)
+
+            NavigationStack {
+                if let dependencies {
+                    MemoryView(
+                        kind: .studio,
+                        viewModel: dependencies.makeMemoryViewModel(),
+                        navigationTarget: $memoryNavigationTarget
+                    )
+                        .toolbar { settingsToolbar }
+                } else {
+                    ContentUnavailableView("拆解", systemImage: "film.stack")
+                        .toolbar { settingsToolbar }
+                }
+            }
+                .tabItem { Label("拆解", systemImage: "film.stack") }
+                .tag(RootTab.studio)
 
             NavigationStack {
                 if let dependencies {
                     AskView(viewModel: dependencies.makeAskViewModel()) { citation in
-                        memoryNavigationTarget = AppDependencies.memoryNavigationTarget(for: citation)
-                        selectedTab = .memory
+                        routeCitation(citation, dependencies: dependencies)
                     }
                     .id(consumerIdentity(for: dependencies))
                     .toolbar { settingsToolbar }
                 }
             }
-                .tabItem { Label("Ask", systemImage: "questionmark.bubble") }
+                .tabItem { Label("问答", systemImage: "questionmark.bubble") }
                 .tag(RootTab.ask)
-
-            NavigationStack {
-                if let dependencies {
-                    BenchView(viewModel: dependencies.makeBenchViewModel())
-                    .id(consumerIdentity(for: dependencies))
-                    .toolbar { settingsToolbar }
-                }
-            }
-                .tabItem { Label("Bench", systemImage: "gauge.with.dots.needle.67percent") }
-                .tag(RootTab.bench)
         }
         .sheet(isPresented: onboardingPresented) {
             if let dependencies {
@@ -112,6 +120,15 @@ private struct RootContent: View {
         }
     }
 
+    /// Routes an Ask citation to the tab that owns its source, then pushes its detail.
+    private func routeCitation(_ citation: CitationRef, dependencies: AppDependencies) {
+        let isVideo = dependencies.makeMemoryViewModel().items
+            .first { $0.id == citation.clipID }?
+            .isVideoBreakdown ?? false
+        selectedTab = isVideo ? .studio : .clips
+        memoryNavigationTarget = AppDependencies.memoryNavigationTarget(for: citation)
+    }
+
     private var settingsToolbar: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
             NavigationLink {
@@ -119,7 +136,7 @@ private struct RootContent: View {
             } label: {
                 Image(systemName: "gearshape")
             }
-            .accessibilityLabel("Settings")
+            .accessibilityLabel("设置")
         }
     }
 
@@ -127,8 +144,18 @@ private struct RootContent: View {
     private var settingsDestination: some View {
         if let dependencies {
             SettingsView(viewModel: dependencies.makeSettingsViewModel())
+                .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        NavigationLink {
+                            BenchView(viewModel: dependencies.makeBenchViewModel())
+                                .navigationTitle("跑分")
+                        } label: {
+                            Label("跑分", systemImage: "gauge.with.dots.needle.67percent")
+                        }
+                    }
+                }
         } else {
-            ContentUnavailableView("Settings", systemImage: "gearshape")
+            ContentUnavailableView("设置", systemImage: "gearshape")
         }
     }
 
