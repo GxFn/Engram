@@ -363,7 +363,8 @@ public final class AppDependencies {
             failureReason: snapshot.failureReason,
             failureRetryable: snapshot.failureRetryable,
             indexPreview: snapshot.indexPreview,
-            scriptJSON: snapshot.scriptJSON
+            scriptJSON: snapshot.scriptJSON,
+            sourceKind: snapshot.sourceKind
         )
     }
 

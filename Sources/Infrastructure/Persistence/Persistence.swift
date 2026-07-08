@@ -70,6 +70,7 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
     public let indexPreview: String?
     public let scriptJSON: String?
     public let videoFileName: String?
+    public let sourceKind: ClipSourceKind
 
     public init(
         id: String,
@@ -84,7 +85,8 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         failureRetryable: Bool,
         indexPreview: String?,
         scriptJSON: String? = nil,
-        videoFileName: String? = nil
+        videoFileName: String? = nil,
+        sourceKind: ClipSourceKind = .text
     ) {
         self.id = id
         self.title = title
@@ -99,6 +101,7 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
         self.videoFileName = videoFileName
+        self.sourceKind = sourceKind
     }
 }
 
@@ -382,8 +385,29 @@ public actor ClipRecordStore {
             failureRetryable: record.failureRetryable,
             indexPreview: record.indexPreview,
             scriptJSON: record.scriptJSON,
-            videoFileName: record.videoFileName
+            videoFileName: record.videoFileName,
+            sourceKind: clipSourceKind(of: record)
         )
+    }
+
+    private func clipSourceKind(of record: ClipRecord) -> ClipSourceKind {
+        switch sourceKind(of: record) {
+        case .videoFile:
+            return .video
+        case .url:
+            return .url
+        case .text:
+            return .text
+        case .none:
+            // Legacy records without an explicit kind: infer from available fields.
+            if record.videoFileName != nil {
+                return .video
+            }
+            if record.urlString != nil {
+                return .url
+            }
+            return .text
+        }
     }
 }
 

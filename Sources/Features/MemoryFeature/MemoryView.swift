@@ -24,6 +24,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     public let indexPreview: String?
     /// Persisted ContentBreakdown (Script) JSON; nil for text/url clips or when not yet indexed.
     public let scriptJSON: String?
+    /// Coarse content type, used to route the clip into the 剪藏 vs 拆解 library.
+    public let sourceKind: ClipSourceKind
 
     public init(
         id: String,
@@ -37,7 +39,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         failureReason: String?,
         failureRetryable: Bool,
         indexPreview: String?,
-        scriptJSON: String? = nil
+        scriptJSON: String? = nil,
+        sourceKind: ClipSourceKind = .text
     ) {
         self.id = id
         self.title = title
@@ -51,6 +54,7 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
+        self.sourceKind = sourceKind
     }
 
     /// Decoded breakdown, if this clip carries a persisted script.

@@ -35,6 +35,22 @@ public enum ClipSource: Sendable, Hashable, Codable {
     case text(String)
     case url(URL)
     case videoFile(URL)
+
+    public var kind: ClipSourceKind {
+        switch self {
+        case .text: .text
+        case .url: .url
+        case .videoFile: .video
+        }
+    }
+}
+
+/// Coarse content type used by the UI to split the two first-class functions:
+/// text/url clips (剪藏 knowledge) versus video breakdowns (拆解 studio).
+public enum ClipSourceKind: String, Sendable, Codable, CaseIterable {
+    case text
+    case url
+    case video
 }
 
 /// Digestion lifecycle. Text clips skip `fetching` because their body arrived
