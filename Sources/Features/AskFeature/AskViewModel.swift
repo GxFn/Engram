@@ -3,23 +3,6 @@ import Foundation
 import Observation
 import RAGCore
 
-/// Answer scope: 全部(all) / 剪藏(text/url clips) / 拆解(video breakdowns).
-public enum AskScope: String, Sendable, CaseIterable, Identifiable {
-    case all
-    case clips
-    case studio
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .all: "全部"
-        case .clips: "剪藏"
-        case .studio: "拆解"
-        }
-    }
-}
-
 public struct AskRetrievalConfiguration: Sendable, Hashable {
     public var resultLimit: Int
     public var minimumScore: Double
@@ -81,8 +64,8 @@ public final class AskViewModel {
 
     public private(set) var messages: [DisplayMessage]
     public private(set) var isGenerating: Bool
-    /// Which library the question is answered from: 全部 / 剪藏 / 拆解.
-    public var scope: AskScope
+    /// True while retrieving grounding before generation starts (drives the "检索中" hint).
+    public private(set) var isRetrieving: Bool
 
     public let engineName: String
     public let modelName: String
@@ -92,7 +75,6 @@ public final class AskViewModel {
     @ObservationIgnored private let model: ModelIdentity
     @ObservationIgnored private let retriever: (any Retriever)?
     @ObservationIgnored private let retrievalConfiguration: AskRetrievalConfiguration
-    @ObservationIgnored private let videoClipIDsProvider: (@Sendable () async -> Set<String>)?
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private var loadedModelID: String?
 
@@ -102,22 +84,27 @@ public final class AskViewModel {
         generationConfig: GenerationConfig = .default,
         retriever: (any Retriever)? = nil,
         retrievalConfiguration: AskRetrievalConfiguration = .default,
-        scope: AskScope = .all,
-        videoClipIDsProvider: (@Sendable () async -> Set<String>)? = nil,
         messages: [DisplayMessage] = []
     ) {
         self.engine = engine
         self.model = model
         self.retriever = retriever
         self.retrievalConfiguration = retrievalConfiguration
-        self.scope = scope
-        self.videoClipIDsProvider = videoClipIDsProvider
         self.generationConfig = generationConfig
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
         self.messages = messages
         self.isGenerating = false
+        self.isRetrieving = false
     }
+
+    /// Example prompts shown on the empty Ask screen to make the surface feel guided/smart.
+    public nonisolated static let suggestedPrompts: [String] = [
+        "帮我总结最近保存的重点",
+        "我存的开场钩子都怎么写的？",
+        "有哪些讲同一个主题的内容？",
+        "把最近的视频拆解列成选题清单",
+    ]
 
     @discardableResult
     public func send(_ rawText: String) -> Task<Void, Never>? {
@@ -157,6 +144,7 @@ public final class AskViewModel {
         defer {
             generationTask = nil
             isGenerating = false
+            isRetrieving = false
         }
 
         do {
@@ -199,6 +187,7 @@ public final class AskViewModel {
         defer {
             generationTask = nil
             isGenerating = false
+            isRetrieving = false
         }
 
         do {
@@ -208,14 +197,15 @@ public final class AskViewModel {
                 return
             }
 
+            isRetrieving = true
             let retrieved = try await retriever.retrieve(
                 question: question,
                 topK: retrievalConfiguration.resultLimit
             )
+            isRetrieving = false
             let grounded = retrieved.filter { $0.score >= retrievalConfiguration.minimumScore }
-            let scoped = await applyScope(grounded)
 
-            guard !scoped.isEmpty else {
+            guard !grounded.isEmpty else {
                 markNoSupportingClips(assistantID)
                 return
             }
@@ -224,7 +214,7 @@ public final class AskViewModel {
             try await ensureModelLoaded()
             try Task.checkCancellation()
 
-            let prompt = try await buildGroundedPrompt(question: question, retrieved: scoped)
+            let prompt = try await buildGroundedPrompt(question: question, retrieved: grounded)
             attachCitations(prompt.citations, to: assistantID)
 
             let stream = await engine.generate(GenerationRequest(
@@ -263,23 +253,6 @@ public final class AskViewModel {
 
         try await engine.load(model)
         loadedModelID = model.id
-    }
-
-    /// Restricts retrieved chunks to the selected library. `.all` keeps everything; `.studio`
-    /// keeps video-breakdown chunks; `.clips` keeps the rest. No-op without a resolver.
-    private func applyScope(_ chunks: [RetrievedChunk]) async -> [RetrievedChunk] {
-        guard scope != .all, let videoClipIDsProvider else {
-            return chunks
-        }
-        let videoClipIDs = await videoClipIDsProvider()
-        switch scope {
-        case .studio:
-            return chunks.filter { videoClipIDs.contains($0.chunk.clipID) }
-        case .clips:
-            return chunks.filter { !videoClipIDs.contains($0.chunk.clipID) }
-        case .all:
-            return chunks
-        }
     }
 
     private struct GroundedPrompt: Sendable {

@@ -47,42 +47,33 @@ public struct AskView: View {
     }
 
     private var header: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                Label(viewModel.engineName, systemImage: "cpu")
-                    .font(.subheadline.weight(.semibold))
+        HStack(spacing: 10) {
+            Label(viewModel.engineName, systemImage: "cpu")
+                .font(.subheadline.weight(.semibold))
 
-                Text(viewModel.modelName)
+            Text(viewModel.modelName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+
+            if viewModel.isRetrieving {
+                Label("检索中", systemImage: "sparkle.magnifyingglass")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer(minLength: 8)
-
-                if viewModel.isGenerating {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                    .labelStyle(.titleAndIcon)
+            } else if viewModel.isGenerating {
+                Label("生成中", systemImage: "sparkles")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
+                    .symbolEffect(.variableColor, isActive: true)
             }
-
-            Picker("范围", selection: scopeBinding) {
-                ForEach(AskScope.allCases) { scope in
-                    Text(scope.title).tag(scope)
-                }
-            }
-            .pickerStyle(.segmented)
-            .disabled(viewModel.isGenerating)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-    }
-
-    private var scopeBinding: Binding<AskScope> {
-        Binding(
-            get: { viewModel.scope },
-            set: { viewModel.scope = $0 }
-        )
     }
 
     private var messages: some View {
@@ -90,14 +81,7 @@ public struct AskView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     if viewModel.messages.isEmpty {
-                        VStack(spacing: 10) {
-                            Image(systemName: "questionmark.bubble")
-                                .font(.system(size: 34))
-                                .foregroundStyle(.secondary)
-                            Text("问问你的剪藏与拆解")
-                                .font(.title3.weight(.semibold))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 260)
+                        emptyState
                     }
 
                     ForEach(viewModel.messages) { message in
@@ -120,31 +104,89 @@ public struct AskView: View {
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        HStack(alignment: .bottom, spacing: 8) {
             TextField("问问你的剪藏与拆解", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
+                .lineLimit(1...5)
                 .focused($composerFocused)
                 .disabled(viewModel.isGenerating)
                 .onSubmit(sendDraft)
+                .padding(.leading, 16)
+                .padding(.vertical, 10)
 
-            Button(action: sendDraft) {
-                Image(systemName: "paperplane.fill")
-                    .frame(width: 28, height: 28)
+            if viewModel.isGenerating {
+                Button(action: viewModel.stop) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 30))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 6)
+                .padding(.bottom, 4)
+                .accessibilityLabel("停止")
+            } else {
+                Button(action: sendDraft) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .padding(.trailing, 6)
+                .padding(.bottom, 4)
+                .accessibilityLabel("发送")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canSend)
-            .accessibilityLabel("Send")
-
-            Button(action: viewModel.stop) {
-                Image(systemName: "stop.fill")
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.bordered)
-            .disabled(!viewModel.isGenerating)
-            .accessibilityLabel("Stop")
         }
-        .padding()
+        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+        )
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 38))
+                .foregroundStyle(.tint)
+            VStack(spacing: 6) {
+                Text("问问你的剪藏与拆解")
+                    .font(.title3.weight(.semibold))
+                Text("基于你保存的全部内容回答，并附上可点击的来源引用。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(AskViewModel.suggestedPrompts, id: \.self) { prompt in
+                    Button {
+                        submit(prompt)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "text.magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            Text(prompt)
+                                .font(.subheadline)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isGenerating)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 240)
+        .padding(.horizontal, 20)
     }
 
     private var canSend: Bool {
@@ -158,7 +200,17 @@ public struct AskView: View {
 
         let submittedText = draft
         draft = ""
-        viewModel.send(submittedText)
+        submit(submittedText)
+    }
+
+    /// Sends any text (draft or a tapped suggestion) if idle.
+    private func submit(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !viewModel.isGenerating else {
+            return
+        }
+        composerFocused = false
+        viewModel.send(trimmed)
     }
 
     private func scrollToLatest(_ proxy: ScrollViewProxy) {
