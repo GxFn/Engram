@@ -238,6 +238,9 @@ public final class AppDependencies {
                     case let .url(url):
                         try await clipDigestService.capture(.url(url))
                     }
+                },
+                deleteClip: { id in
+                    try await clipDigestService.deleteClip(id: id)
                 }
             ))
         } else {

@@ -165,4 +165,9 @@ private struct ClipRetrievalIndexer: ClipDigestIndexing {
             .joined(separator: "\n")
         return ClipDigestIndexingResult(preview: preview.isEmpty ? nil : preview)
     }
+
+    func deleteClip(clipID: String) async throws {
+        try await vectorStore.deleteClip(clipID: clipID)
+        try await keywordIndex.deleteClip(clipID: clipID)
+    }
 }

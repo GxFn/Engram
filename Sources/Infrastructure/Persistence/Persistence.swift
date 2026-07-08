@@ -336,6 +336,16 @@ public actor ClipRecordStore {
         try makeSnapshot(requiredRecord(for: id))
     }
 
+    @discardableResult
+    public func delete(id: String) throws -> Bool {
+        guard let record = try record(for: id) else {
+            return false
+        }
+        modelContext.delete(record)
+        try modelContext.save()
+        return true
+    }
+
     private func record(for id: String) throws -> ClipRecord? {
         let targetID = id
         var descriptor = FetchDescriptor<ClipRecord>(

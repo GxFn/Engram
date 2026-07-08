@@ -452,6 +452,34 @@ import VideoUnderstanding
     #expect(try await service.memorySnapshots().isEmpty)
 }
 
+@Test func deleteClipRemovesRecordAndPurgesIndex() async throws {
+    let fixture = try DigestFixture()
+    let indexer = RecordingDeleteIndexer()
+    let service = try fixture.makeService(fetcher: StaticFetcher(html: ""), indexer: indexer)
+
+    try await service.capture(.text("要删除的剪藏"))
+    let before = try await service.memorySnapshots()
+    #expect(before.count == 1)
+    let id = try #require(before.first?.id)
+
+    try await service.deleteClip(id: id)
+
+    #expect(try await service.memorySnapshots().isEmpty)
+    #expect(await indexer.deletedClipIDs == [id])
+}
+
+private actor RecordingDeleteIndexer: ClipDigestIndexing {
+    private(set) var deletedClipIDs: [String] = []
+
+    func index(_ payload: ClipDigestIndexingPayload) async throws -> ClipDigestIndexingResult {
+        ClipDigestIndexingResult(preview: nil)
+    }
+
+    func deleteClip(clipID: String) async throws {
+        deletedClipIDs.append(clipID)
+    }
+}
+
 private final class DigestFixture {
     let rootURL: URL
     let store: ClipQueueStore

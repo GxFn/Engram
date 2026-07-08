@@ -94,19 +94,22 @@ public struct MemoryClient: Sendable {
     public let retryClip: @Sendable (String) async throws -> Void
     public let importVideo: @Sendable (URL) async throws -> Void
     public let addClip: @Sendable (MemoryCaptureInput) async throws -> Void
+    public let deleteClip: @Sendable (String) async throws -> Void
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
         digestPending: @escaping @Sendable () async throws -> Void,
         retryClip: @escaping @Sendable (String) async throws -> Void,
         importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in },
-        addClip: @escaping @Sendable (MemoryCaptureInput) async throws -> Void = { _ in }
+        addClip: @escaping @Sendable (MemoryCaptureInput) async throws -> Void = { _ in },
+        deleteClip: @escaping @Sendable (String) async throws -> Void = { _ in }
     ) {
         self.loadItems = loadItems
         self.digestPending = digestPending
         self.retryClip = retryClip
         self.importVideo = importVideo
         self.addClip = addClip
+        self.deleteClip = deleteClip
     }
 
     public static let empty = MemoryClient(
@@ -114,7 +117,8 @@ public struct MemoryClient: Sendable {
         digestPending: {},
         retryClip: { _ in },
         importVideo: { _ in },
-        addClip: { _ in }
+        addClip: { _ in },
+        deleteClip: { _ in }
     )
 }
 
@@ -236,6 +240,22 @@ public final class MemoryViewModel {
         }
     }
 
+    public func delete(_ item: MemoryClip) async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        // Optimistic removal so the row disappears immediately.
+        items.removeAll { $0.id == item.id }
+        do {
+            try await client.deleteClip(item.id)
+            items = try await client.loadItems()
+            errorMessage = nil
+        } catch {
+            errorMessage = String(describing: error)
+            items = (try? await client.loadItems()) ?? items
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -279,6 +299,13 @@ public struct MemoryView: View {
                         }
                     } label: {
                         MemoryRow(item: item)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            Task { await viewModel.delete(item) }
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
                     }
                 }
                 .refreshable {

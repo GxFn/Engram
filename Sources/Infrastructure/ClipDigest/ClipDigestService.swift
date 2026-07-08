@@ -101,6 +101,13 @@ public struct ClipDigestIndexingResult: Equatable, Sendable {
 
 public protocol ClipDigestIndexing: Sendable {
     func index(_ payload: ClipDigestIndexingPayload) async throws -> ClipDigestIndexingResult
+    /// Removes a clip's entries from the retrieval indexes. Default no-op for indexers that
+    /// do not own a persistent index (e.g. the preview indexer).
+    func deleteClip(clipID: String) async throws
+}
+
+public extension ClipDigestIndexing {
+    func deleteClip(clipID: String) async throws {}
 }
 
 /// W2.4's indexing handoff is intentionally not retrieval quality work. It
@@ -247,6 +254,29 @@ public actor ClipDigestService: ClipDigesting {
         try queueStore.enqueue(clip)
         _ = try await recordStore.upsertQueuedClip(clip, now: now())
         Log.clip.info("Captured clip \(clip.id, privacy: .public)")
+    }
+
+    /// Deletes a clip everywhere: retrieval index, durable record, any pending queue file, and
+    /// the imported video file. Index/queue/file removals are best-effort so a partial state
+    /// still results in the record being gone.
+    public func deleteClip(id: String) async throws {
+        let snapshot = try? await recordStore.snapshot(id: id)
+
+        try? await indexer.deleteClip(clipID: id)
+        try await recordStore.delete(id: id)
+
+        if let items = try? queueStore.pendingItems(quarantineDate: now()) {
+            for item in items where item.clip.id == id {
+                try? queueStore.delete(item)
+            }
+        }
+
+        if let fileName = snapshot?.videoFileName, let videoDirectoryURL {
+            let fileURL = videoDirectoryURL.appendingPathComponent(fileName, isDirectory: false)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        Log.clip.info("Deleted clip \(id, privacy: .public)")
     }
 
     private func digest(_ item: ClipQueueItem) async throws {
