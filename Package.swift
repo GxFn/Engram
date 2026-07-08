@@ -25,6 +25,7 @@ let package = Package(
         .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "FrameVision", targets: ["FrameVision"]),
         .library(name: "QwenVLRuntime", targets: ["QwenVLRuntime"]),
+        .library(name: "CloudVision", targets: ["CloudVision"]),
         .library(name: "ScriptComposer", targets: ["ScriptComposer"]),
         .library(name: "MLXEngine", targets: ["MLXEngine"]),
         .library(name: "FMEngine", targets: ["FMEngine"]),
@@ -53,7 +54,7 @@ let package = Package(
         .target(name: "VideoUnderstanding", path: "Sources/Domain/VideoUnderstanding"),
         .target(
             name: "ScriptCore",
-            dependencies: ["VideoUnderstanding"],
+            dependencies: ["VideoUnderstanding", "EngineKit"],
             path: "Sources/Domain/ScriptCore"
         ),
 
@@ -134,6 +135,16 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ],
             path: "Sources/Infrastructure/QwenVLRuntime"
+        ),
+        .target(
+            name: "CloudVision",
+            dependencies: [
+                "ScriptCore",
+                "VideoUnderstanding",
+                "EngineKit",
+                "EngramLogging",
+            ],
+            path: "Sources/Infrastructure/CloudVision"
         ),
         .target(
             name: "ScriptComposer",
@@ -217,6 +228,7 @@ let package = Package(
                 "SpeechTranscription",
                 "FrameVision",
                 "ScriptComposer",
+                "CloudVision",
                 "MLXEngine",
                 "ModelStore",
                 "Persistence",
@@ -285,6 +297,11 @@ let package = Package(
             name: "QwenVLRuntimeTests",
             dependencies: ["QwenVLRuntime", "VideoUnderstanding", "ModelStore", "EngineKit"],
             path: "Tests/QwenVLRuntimeTests"
+        ),
+        .testTarget(
+            name: "CloudVisionTests",
+            dependencies: ["CloudVision", "ScriptCore", "VideoUnderstanding", "EngineKit"],
+            path: "Tests/CloudVisionTests"
         ),
         .testTarget(
             name: "ScriptComposerTests",

@@ -6,18 +6,14 @@ import MLX
 import MLXLMCommon
 import MLXVLM
 import ModelStore
+import ScriptCore
 import Tokenizers
 import VideoUnderstanding
 
 /// Runtime seam used by Qwen3-VL script composition to generate text from
-/// one prompt plus zero or more image attachments.
-public protocol QwenVLGenerating: Sendable {
-    func generate(
-        prompt: String,
-        frames: [SampledFrame],
-        config: GenerationConfig
-    ) async throws -> String
-}
+/// one prompt plus zero or more image attachments. Refines the backend-neutral
+/// `VisionScriptGenerating` so the MLX runtime and cloud VLMs are interchangeable.
+public protocol QwenVLGenerating: VisionScriptGenerating {}
 
 /// Runtime seam used by Qwen3VLDescriber for one-frame descriptions.
 public protocol QwenVLFrameGenerating: Sendable {

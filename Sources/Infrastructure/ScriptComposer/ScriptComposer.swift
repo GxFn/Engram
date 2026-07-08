@@ -92,7 +92,7 @@ public actor LLMTextScriptGenerator: ScriptTextGenerating {
 }
 
 public actor Qwen3VLScriptComposer: VisionScriptComposing {
-    private let generator: any QwenVLGenerating
+    private let generator: any VisionScriptGenerating
     private let textFallback: (any TextScriptComposing)?
     private let configuration: ScriptComposerConfiguration
     private let dateProvider: @Sendable () -> Date
@@ -111,7 +111,7 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
     }
 
     public init(
-        generator: any QwenVLGenerating,
+        generator: any VisionScriptGenerating,
         configuration: ScriptComposerConfiguration = .init(),
         textFallback: (any TextScriptComposing)? = nil,
         dateProvider: @escaping @Sendable () -> Date = { Date() },
