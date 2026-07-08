@@ -304,6 +304,58 @@ private let testModel = ModelIdentity(
     estimatedMemoryBytes: 1_100_000_000
 )
 
+@MainActor
+@Test func askScopeStudioRestrictsGroundingToVideoClips() async {
+    let engine = FakeEngine(events: [
+        .token("answer [1]"),
+        .finished(.stop, GenerationMetrics(firstTokenLatencyMillis: 1, tokensPerSecond: 1, outputTokenCount: 1)),
+    ])
+    let retrieved = [
+        RetrievedChunk(chunk: testChunk("vid", text: "视频拆解片段"), score: 0.9, citation: CitationRef(chunkID: "vid", clipID: "clip-vid", snippet: "vid")),
+        RetrievedChunk(chunk: testChunk("txt", text: "文本剪藏片段"), score: 0.9, citation: CitationRef(chunkID: "txt", clipID: "clip-txt", snippet: "txt")),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: retrieved),
+        scope: .studio,
+        videoClipIDsProvider: { ["clip-vid"] }
+    )
+
+    guard let task = viewModel.send("Q") else { Issue.record("send failed"); return }
+    await task.value
+
+    let prompt = await engine.lastPrompt().joined(separator: "\n")
+    #expect(prompt.contains("视频拆解片段"))
+    #expect(!prompt.contains("文本剪藏片段"))
+}
+
+@MainActor
+@Test func askScopeClipsRestrictsGroundingToTextClips() async {
+    let engine = FakeEngine(events: [
+        .token("answer [1]"),
+        .finished(.stop, GenerationMetrics(firstTokenLatencyMillis: 1, tokensPerSecond: 1, outputTokenCount: 1)),
+    ])
+    let retrieved = [
+        RetrievedChunk(chunk: testChunk("vid", text: "视频拆解片段"), score: 0.9, citation: CitationRef(chunkID: "vid", clipID: "clip-vid", snippet: "vid")),
+        RetrievedChunk(chunk: testChunk("txt", text: "文本剪藏片段"), score: 0.9, citation: CitationRef(chunkID: "txt", clipID: "clip-txt", snippet: "txt")),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: retrieved),
+        scope: .clips,
+        videoClipIDsProvider: { ["clip-vid"] }
+    )
+
+    guard let task = viewModel.send("Q") else { Issue.record("send failed"); return }
+    await task.value
+
+    let prompt = await engine.lastPrompt().joined(separator: "\n")
+    #expect(prompt.contains("文本剪藏片段"))
+    #expect(!prompt.contains("视频拆解片段"))
+}
+
 private actor FakeEngine: LLMEngine {
     nonisolated let descriptor = EngineDescriptor(
         id: "fake",

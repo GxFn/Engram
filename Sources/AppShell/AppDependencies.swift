@@ -249,11 +249,22 @@ public final class AppDependencies {
     }
 
     public func makeAskViewModel() -> AskViewModel {
-        AskViewModel(
+        let videoClipIDsProvider: (@Sendable () async -> Set<String>)?
+        if let service = clipDigestService {
+            videoClipIDsProvider = {
+                let snapshots = (try? await service.memorySnapshots()) ?? []
+                return Set(snapshots.filter(\.isVideo).map(\.id))
+            }
+        } else {
+            videoClipIDsProvider = nil
+        }
+
+        return AskViewModel(
             engine: activeEngine,
             model: activeModel,
             generationConfig: generationConfig,
-            retriever: retriever
+            retriever: retriever,
+            videoClipIDsProvider: videoClipIDsProvider
         )
     }
 

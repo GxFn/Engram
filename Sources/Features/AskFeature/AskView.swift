@@ -43,29 +43,46 @@ public struct AskView: View {
             Divider()
             composer
         }
-        .navigationTitle("Ask")
+        .navigationTitle("问答")
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Label(viewModel.engineName, systemImage: "cpu")
-                .font(.subheadline.weight(.semibold))
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Label(viewModel.engineName, systemImage: "cpu")
+                    .font(.subheadline.weight(.semibold))
 
-            Text(viewModel.modelName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                Text(viewModel.modelName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
-            Spacer(minLength: 8)
+                Spacer(minLength: 8)
 
-            if viewModel.isGenerating {
-                ProgressView()
-                    .controlSize(.small)
+                if viewModel.isGenerating {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
+
+            Picker("范围", selection: scopeBinding) {
+                ForEach(AskScope.allCases) { scope in
+                    Text(scope.title).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(viewModel.isGenerating)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
+    }
+
+    private var scopeBinding: Binding<AskScope> {
+        Binding(
+            get: { viewModel.scope },
+            set: { viewModel.scope = $0 }
+        )
     }
 
     private var messages: some View {
@@ -77,7 +94,7 @@ public struct AskView: View {
                             Image(systemName: "questionmark.bubble")
                                 .font(.system(size: 34))
                                 .foregroundStyle(.secondary)
-                            Text("Ask Engram")
+                            Text("问问你的剪藏与拆解")
                                 .font(.title3.weight(.semibold))
                         }
                         .frame(maxWidth: .infinity, minHeight: 260)
@@ -104,7 +121,7 @@ public struct AskView: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask Engram", text: $draft, axis: .vertical)
+            TextField("问问你的剪藏与拆解", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
                 .focused($composerFocused)

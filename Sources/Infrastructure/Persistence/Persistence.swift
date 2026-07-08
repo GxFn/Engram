@@ -103,6 +103,8 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         self.videoFileName = videoFileName
         self.sourceKind = sourceKind
     }
+
+    public var isVideo: Bool { sourceKind == .video }
 }
 
 public enum ClipRecordScriptJSON {
