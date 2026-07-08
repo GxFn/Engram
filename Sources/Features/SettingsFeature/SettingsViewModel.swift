@@ -12,6 +12,7 @@ public final class SettingsViewModel {
     public private(set) var isRefreshing: Bool
     public private(set) var operationModelID: String?
     public private(set) var downloadProgress: ModelDownloadProgress?
+    public private(set) var visionBackend: VisionBackendSettings
     public var errorMessage: String?
 
     public let engines: [SettingsEngineOption]
@@ -19,6 +20,7 @@ public final class SettingsViewModel {
     public let recommendedModelID: String
 
     @ObservationIgnored private let client: ModelManagementClient
+    @ObservationIgnored private let visionBackendClient: VisionBackendClient
     @ObservationIgnored private let applyActiveModel: (ModelIdentity) -> Void
     @ObservationIgnored private let applyActiveEngine: (String) -> Void
     @ObservationIgnored private let applyGenerationConfig: (GenerationConfig) -> Void
@@ -33,6 +35,7 @@ public final class SettingsViewModel {
         physicalMemoryBytes: Int64,
         recommendedModelID: String,
         client: ModelManagementClient = .empty,
+        visionBackendClient: VisionBackendClient = .empty,
         applyActiveModel: @escaping (ModelIdentity) -> Void = { _ in },
         applyActiveEngine: @escaping (String) -> Void = { _ in },
         applyGenerationConfig: @escaping (GenerationConfig) -> Void = { _ in }
@@ -45,10 +48,36 @@ public final class SettingsViewModel {
         self.physicalMemoryBytes = physicalMemoryBytes
         self.recommendedModelID = recommendedModelID
         self.client = client
+        self.visionBackendClient = visionBackendClient
+        self.visionBackend = visionBackendClient.load()
         self.applyActiveModel = applyActiveModel
         self.applyActiveEngine = applyActiveEngine
         self.applyGenerationConfig = applyGenerationConfig
         self.isRefreshing = false
+    }
+
+    // MARK: - Vision backend (on-device Qwen3-VL ↔ cloud VLM)
+
+    public func selectVisionBackend(_ kind: VisionBackendKind) {
+        visionBackend.kind = kind
+        visionBackendClient.save(visionBackend, nil)
+    }
+
+    public func setCloudBaseURL(_ value: String) {
+        visionBackend.cloudBaseURL = value
+        visionBackendClient.save(visionBackend, nil)
+    }
+
+    public func setCloudModel(_ value: String) {
+        visionBackend.cloudModel = value
+        visionBackendClient.save(visionBackend, nil)
+    }
+
+    /// Stores the API key in the Keychain (via the client) and only tracks whether one exists.
+    public func setCloudAPIKey(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        visionBackend.hasCloudKey = !trimmed.isEmpty
+        visionBackendClient.save(visionBackend, trimmed)
     }
 
     public var selectedModel: ManagedModel? {

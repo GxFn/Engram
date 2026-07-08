@@ -5,6 +5,7 @@ public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
     @State private var isShowingModelImporter = false
+    @State private var cloudKeyInput = ""
 
     public init(viewModel: SettingsViewModel) {
         _viewModel = State(initialValue: viewModel)
@@ -14,6 +15,7 @@ public struct SettingsView: View {
         Form {
             deviceSection
             engineSection
+            visionSection
             modelSection
             generationSection
 
@@ -59,6 +61,48 @@ public struct SettingsView: View {
                 ForEach(viewModel.engines) { engine in
                     Text(engine.displayName).tag(engine.id)
                 }
+            }
+        }
+    }
+
+    private var visionSection: some View {
+        Section("视觉理解后端") {
+            Picker("后端", selection: visionKindBinding) {
+                ForEach(VisionBackendKind.allCases, id: \.self) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+
+            if viewModel.visionBackend.kind == .cloud {
+                TextField("Base URL（如 https://ark.cn-beijing.volces.com/api/v3）", text: cloudBaseURLBinding)
+                    .textContentType(.URL)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                TextField("模型（如 doubao-vision-pro）", text: cloudModelBinding)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                HStack {
+                    SecureField(
+                        viewModel.visionBackend.hasCloudKey ? "API Key（已保存，可覆盖）" : "API Key",
+                        text: $cloudKeyInput
+                    )
+                    Button("保存") {
+                        viewModel.setCloudAPIKey(cloudKeyInput)
+                        cloudKeyInput = ""
+                    }
+                    .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("云端画质更高、无需下载模型；帧会上传到你配置的服务，需自备账号与 API Key。可用豆包/DeepSeek/通义千问 VL/GLM-4V 等 OpenAI 兼容接口。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("端侧 Qwen3-VL 在本机理解画面，完全离线、免费，但需下载模型，部分机型可能跑不动。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -115,6 +159,27 @@ public struct SettingsView: View {
         Binding(
             get: { viewModel.selectedEngineID },
             set: { viewModel.selectEngine(id: $0) }
+        )
+    }
+
+    private var visionKindBinding: Binding<VisionBackendKind> {
+        Binding(
+            get: { viewModel.visionBackend.kind },
+            set: { viewModel.selectVisionBackend($0) }
+        )
+    }
+
+    private var cloudBaseURLBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.cloudBaseURL },
+            set: { viewModel.setCloudBaseURL($0) }
+        )
+    }
+
+    private var cloudModelBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.cloudModel },
+            set: { viewModel.setCloudModel($0) }
         )
     }
 

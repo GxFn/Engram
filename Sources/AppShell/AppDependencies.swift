@@ -67,6 +67,7 @@ public final class AppDependencies {
                 ?? Self.storedGenerationConfig(defaults: defaults)
                 ?? .default
         )
+        let resolvedVisionGenerator = VisionBackendResolver.makeGenerator(defaults: defaults)
         let retrievalServices = modelContainer.flatMap {
             try? RetrievalAssembly.makeServices(
                 modelContainer: $0,
@@ -75,6 +76,7 @@ public final class AppDependencies {
                 activeModel: resolvedModel,
                 generationConfig: resolvedGenerationConfig,
                 videoAnalyzer: videoAnalyzer,
+                visionGenerator: resolvedVisionGenerator,
                 appGroupLocations: appGroupLocations,
                 embeddingEngine: retrievalEmbeddingEngine
             )
@@ -152,6 +154,33 @@ public final class AppDependencies {
             }
         )
 
+        // UserDefaults is thread-safe; the compiler just can't prove it Sendable for these
+        // @Sendable closures. The vision-backend client owns UserDefaults + Keychain access so
+        // SettingsFeature never touches infrastructure directly.
+        nonisolated(unsafe) let capturedDefaults = defaults
+        let visionBackendClient = VisionBackendClient(
+            load: {
+                let kind = VisionBackendKind(
+                    rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? ""
+                ) ?? .onDevice
+                let hasKey = (KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false)
+                return VisionBackendSettings(
+                    kind: kind,
+                    cloudBaseURL: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? "",
+                    cloudModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? "",
+                    hasCloudKey: hasKey
+                )
+            },
+            save: { settings, newKey in
+                capturedDefaults?.set(settings.kind.rawValue, forKey: VisionBackendDefaultsKey.kind)
+                capturedDefaults?.set(settings.cloudBaseURL, forKey: VisionBackendDefaultsKey.cloudBaseURL)
+                capturedDefaults?.set(settings.cloudModel, forKey: VisionBackendDefaultsKey.cloudModel)
+                if let newKey {
+                    KeychainStore.set(newKey, for: VisionBackendKeychainAccount.cloudAPIKey)
+                }
+            }
+        )
+
         return SettingsViewModel(
             engines: engines.map {
                 SettingsEngineOption(
@@ -166,6 +195,7 @@ public final class AppDependencies {
             physicalMemoryBytes: deviceCapability.physicalMemoryBytes,
             recommendedModelID: deviceCapability.recommendedModel.id,
             client: client,
+            visionBackendClient: visionBackendClient,
             applyActiveModel: { [weak self] model in
                 self?.selectModel(model)
             },

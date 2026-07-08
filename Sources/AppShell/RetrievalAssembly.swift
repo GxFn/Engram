@@ -1,5 +1,6 @@
 import AppGroupSupport
 import ClipDigest
+import CloudVision
 import EmbeddingMLX
 import EngineKit
 import Foundation
@@ -7,6 +8,7 @@ import FrameVision
 import ModelStore
 import RAGCore
 import ScriptComposer
+import ScriptCore
 import SpeechTranscription
 import SwiftData
 import VectorStoreSQLite
@@ -29,6 +31,7 @@ enum RetrievalAssembly {
         activeModel: ModelIdentity,
         generationConfig: GenerationConfig,
         videoAnalyzer: (any VideoAnalyzing)? = nil,
+        visionGenerator: (any VisionScriptGenerating)? = nil,
         appGroupLocations: AppGroupLocations? = nil,
         embeddingEngine: (any EmbeddingEngine)? = nil
     ) throws -> RetrievalServices {
@@ -63,7 +66,8 @@ enum RetrievalAssembly {
             modelStore: modelStore,
             activeEngine: activeEngine,
             activeModel: activeModel,
-            generationConfig: generationConfig
+            generationConfig: generationConfig,
+            visionGenerator: visionGenerator
         )
         let digestService = try ClipDigestService.live(
             modelContainer: modelContainer,
@@ -81,7 +85,8 @@ enum RetrievalAssembly {
         modelStore: ModelStore,
         activeEngine: any LLMEngine,
         activeModel: ModelIdentity,
-        generationConfig: GenerationConfig
+        generationConfig: GenerationConfig,
+        visionGenerator: (any VisionScriptGenerating)? = nil
     ) -> any VideoAnalyzing {
         let textConfiguration = ScriptComposerConfiguration(
             maxKeyframeCount: 0,
@@ -96,11 +101,22 @@ enum RetrievalAssembly {
             maxKeyframeCount: videoAnalyzerMaxFrames,
             generationConfig: generationConfig
         )
-        let visionComposer = Qwen3VLScriptComposer(
-            modelDirectoryRoot: modelStore.modelDirectoryRoot,
-            configuration: visionConfiguration,
-            textFallback: textComposer
-        )
+        // A cloud generator (selected by the user) replaces the on-device MLX backend at this
+        // one seam; everything downstream — composer, prompt, JSON decoding — is identical.
+        let visionComposer: Qwen3VLScriptComposer
+        if let visionGenerator {
+            visionComposer = Qwen3VLScriptComposer(
+                generator: visionGenerator,
+                configuration: visionConfiguration,
+                textFallback: textComposer
+            )
+        } else {
+            visionComposer = Qwen3VLScriptComposer(
+                modelDirectoryRoot: modelStore.modelDirectoryRoot,
+                configuration: visionConfiguration,
+                textFallback: textComposer
+            )
+        }
 
         return VideoAnalyzer(
             transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
