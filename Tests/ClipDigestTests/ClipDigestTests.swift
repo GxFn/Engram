@@ -426,6 +426,32 @@ import VideoUnderstanding
     #expect(!FileManager.default.fileExists(atPath: videosDirectory.appendingPathComponent("missing-video.mov").path))
 }
 
+@Test func captureTextEnqueuesQueuedTextClip() async throws {
+    let fixture = try DigestFixture()
+    let service = try fixture.makeService(fetcher: StaticFetcher(html: "<html></html>"))
+
+    try await service.capture(.text("  剪藏的一段文字  "))
+
+    let snapshots = try await service.memorySnapshots()
+    #expect(snapshots.count == 1)
+    #expect(snapshots.first?.sourceKind == .text)
+    #expect(snapshots.first?.state == .queued)
+    #expect(snapshots.first?.bodyText == "剪藏的一段文字")
+}
+
+@Test func captureRejectsEmptyTextAndNonHTTPURL() async throws {
+    let fixture = try DigestFixture()
+    let service = try fixture.makeService(fetcher: StaticFetcher(html: ""))
+
+    await #expect(throws: (any Error).self) {
+        try await service.capture(.text("   "))
+    }
+    await #expect(throws: (any Error).self) {
+        try await service.capture(.url(URL(string: "ftp://example.com/x")!))
+    }
+    #expect(try await service.memorySnapshots().isEmpty)
+}
+
 private final class DigestFixture {
     let rootURL: URL
     let store: ClipQueueStore

@@ -230,6 +230,14 @@ public final class AppDependencies {
                 },
                 importVideo: { url in
                     try await clipDigestService.importVideo(from: url)
+                },
+                addClip: { input in
+                    switch input {
+                    case let .text(text):
+                        try await clipDigestService.capture(.text(text))
+                    case let .url(url):
+                        try await clipDigestService.capture(.url(url))
+                    }
                 }
             ))
         } else {

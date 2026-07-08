@@ -93,25 +93,35 @@ public struct MemoryClient: Sendable {
     public let digestPending: @Sendable () async throws -> Void
     public let retryClip: @Sendable (String) async throws -> Void
     public let importVideo: @Sendable (URL) async throws -> Void
+    public let addClip: @Sendable (MemoryCaptureInput) async throws -> Void
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
         digestPending: @escaping @Sendable () async throws -> Void,
         retryClip: @escaping @Sendable (String) async throws -> Void,
-        importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in }
+        importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in },
+        addClip: @escaping @Sendable (MemoryCaptureInput) async throws -> Void = { _ in }
     ) {
         self.loadItems = loadItems
         self.digestPending = digestPending
         self.retryClip = retryClip
         self.importVideo = importVideo
+        self.addClip = addClip
     }
 
     public static let empty = MemoryClient(
         loadItems: { [] },
         digestPending: {},
         retryClip: { _ in },
-        importVideo: { _ in }
+        importVideo: { _ in },
+        addClip: { _ in }
     )
+}
+
+/// In-app 剪藏 capture input (text snippet or a URL to fetch).
+public enum MemoryCaptureInput: Sendable, Equatable {
+    case text(String)
+    case url(URL)
 }
 
 public enum MemoryVideoImportSelection: Sendable, Equatable {
@@ -212,6 +222,20 @@ public final class MemoryViewModel {
         }
     }
 
+    public func addClip(_ input: MemoryCaptureInput) async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            try await client.addClip(input)
+            try await client.digestPending()
+            items = try await client.loadItems()
+            errorMessage = nil
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -222,6 +246,7 @@ public struct MemoryView: View {
     @State private var viewModel: MemoryViewModel
     @Binding private var navigationTarget: MemoryNavigationTarget?
     @State private var isShowingVideoPicker = false
+    @State private var isShowingClipCapture = false
     private let kind: MemoryLibraryKind
 
     public init(
@@ -273,6 +298,17 @@ public struct MemoryView: View {
             }
         }
         .toolbar {
+            if kind == .clips {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        isShowingClipCapture = true
+                    } label: {
+                        Label("剪藏", systemImage: "plus")
+                    }
+                    .accessibilityLabel("新建剪藏")
+                    .disabled(viewModel.isRefreshing)
+                }
+            }
             #if os(iOS)
             if kind == .studio {
                 ToolbarItem(placement: .automatic) {
@@ -309,6 +345,14 @@ public struct MemoryView: View {
             }
         }
         #endif
+        .sheet(isPresented: $isShowingClipCapture) {
+            ClipCaptureSheet { input in
+                isShowingClipCapture = false
+                Task { await viewModel.addClip(input) }
+            } cancel: {
+                isShowingClipCapture = false
+            }
+        }
         .navigationTitle(kind.title)
         .navigationDestination(item: $navigationTarget) { target in
             if let item = viewModel.items.first(where: { $0.id == target.clipID }) {
@@ -431,6 +475,81 @@ private struct VideoPickerView: UIViewControllerRepresentable {
     }
 }
 #endif
+
+private struct ClipCaptureSheet: View {
+    enum Mode: String, CaseIterable, Identifiable {
+        case text = "文本"
+        case url = "链接"
+        var id: String { rawValue }
+    }
+
+    let submit: (MemoryCaptureInput) -> Void
+    let cancel: () -> Void
+
+    @State private var mode: Mode = .text
+    @State private var text = ""
+    @State private var urlString = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("类型", selection: $mode) {
+                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+
+                switch mode {
+                case .text:
+                    Section("文本") {
+                        TextField("粘贴要剪藏的文本", text: $text, axis: .vertical)
+                            .lineLimit(4...12)
+                    }
+                case .url:
+                    Section("链接") {
+                        TextField("https://…", text: $urlString)
+                            .autocorrectionDisabled()
+                            .textContentType(.URL)
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                        Text("剪藏时会联网抓取一次正文,之后问答离线。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("新建剪藏")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: cancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        if let input = makeInput() {
+                            submit(input)
+                        }
+                    }
+                    .disabled(makeInput() == nil)
+                }
+            }
+        }
+    }
+
+    private func makeInput() -> MemoryCaptureInput? {
+        switch mode {
+        case .text:
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : .text(trimmed)
+        case .url:
+            let trimmed = urlString.trimmingCharacters(in: .whitespaces)
+            guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else {
+                return nil
+            }
+            return .url(url)
+        }
+    }
+}
 
 private struct MemoryRow: View {
     let item: MemoryClip

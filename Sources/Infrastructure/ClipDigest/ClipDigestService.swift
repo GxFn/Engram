@@ -132,6 +132,12 @@ public enum ClipDigestServiceError: Error, Equatable, Sendable {
     case retryUnavailable(String)
 }
 
+/// In-app capture intent for the 剪藏 library.
+public enum ClipCaptureInput: Sendable, Equatable {
+    case text(String)
+    case url(URL)
+}
+
 public actor ClipDigestService: ClipDigesting {
     private let queueStore: ClipQueueStore
     private let recordStore: ClipRecordStore
@@ -218,6 +224,29 @@ public actor ClipDigestService: ClipDigesting {
         let clip = try videoImporter.importVideo(from: pickedURL)
         _ = try await recordStore.upsertQueuedClip(clip, now: now())
         Log.clip.info("Imported video clip \(clip.id, privacy: .public)")
+    }
+
+    /// In-app 剪藏 capture for the Clips library: enqueue a text/url clip and record it.
+    /// Mirrors `importVideo` for the text/url side.
+    public func capture(_ input: ClipCaptureInput) async throws {
+        let clip: Clip
+        switch input {
+        case let .text(text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw ClipDigestServiceError.unsupportedEmptyText(text)
+            }
+            clip = Clip(id: UUID().uuidString, source: .text(trimmed), createdAt: now())
+        case let .url(url):
+            guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                throw ClipDigestServiceError.unsupportedURL(url)
+            }
+            clip = Clip(id: UUID().uuidString, source: .url(url), createdAt: now())
+        }
+
+        try queueStore.enqueue(clip)
+        _ = try await recordStore.upsertQueuedClip(clip, now: now())
+        Log.clip.info("Captured clip \(clip.id, privacy: .public)")
     }
 
     private func digest(_ item: ClipQueueItem) async throws {
