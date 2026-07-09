@@ -18,7 +18,9 @@ enum VisionBackendKeychainAccount {
 /// the vision backend run on the same cloud endpoint/key; in 本地 mode both run on-device.
 enum CloudAIResolver {
     static func isCloudMode(defaults: UserDefaults?) -> Bool {
-        defaults?.string(forKey: VisionBackendDefaultsKey.kind) == "cloud"
+        // Default to cloud when the user hasn't chosen a mode yet (low-memory devices can't run
+        // the local models well). Unconfigured cloud gracefully falls back to on-device below.
+        (defaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud") == "cloud"
     }
 
     /// Cloud is usable only when mode is cloud AND base URL + Keychain key are present.

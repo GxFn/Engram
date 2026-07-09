@@ -172,9 +172,10 @@ public final class AppDependencies {
         nonisolated(unsafe) let capturedDefaults = defaults
         let visionBackendClient = VisionBackendClient(
             load: {
+                // Default to cloud when unset so Settings opens on the 云端 tab.
                 let kind = VisionBackendKind(
-                    rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? ""
-                ) ?? .onDevice
+                    rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud"
+                ) ?? .cloud
                 let hasKey = (KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false)
                 return VisionBackendSettings(
                     kind: kind,
