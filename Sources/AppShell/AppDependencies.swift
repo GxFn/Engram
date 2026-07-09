@@ -45,6 +45,9 @@ public final class AppDependencies {
     @ObservationIgnored private let appGroupLocations: AppGroupLocations?
     @ObservationIgnored private let retrievalEmbeddingEngine: (any EmbeddingEngine)?
     @ObservationIgnored private let videoAnalyzer: (any VideoAnalyzing)?
+    // Last AI config applied to the live graph; a change (incl. a model-id edit within 云端 mode)
+    // triggers a rebuild so 问答/拆解 pick up new endpoints without a relaunch.
+    @ObservationIgnored private var appliedAISignature: String
 
     public init(
         engines: [any LLMEngine] = [MLXEngine()],
@@ -109,6 +112,7 @@ public final class AppDependencies {
         self.appGroupLocations = appGroupLocations
         self.retrievalEmbeddingEngine = retrievalEmbeddingEngine
         self.videoAnalyzer = videoAnalyzer
+        self.appliedAISignature = CloudAIResolver.configSignature(defaults: defaults)
     }
 
     /// Resolves the active text engine + model from the current settings: 云端 mode returns the
@@ -133,16 +137,25 @@ public final class AppDependencies {
         return (engine, model)
     }
 
-    /// Identity of the current AI routing, used by the shell to re-create tab views when the
-    /// user switches 云端/本地 so each feature rebinds to the freshly resolved engine + services.
+    /// Identity of the current AI routing, used by the shell to re-create tab views when routing
+    /// changes so each feature rebinds to the freshly resolved engine + services. Includes the
+    /// cloud config signature so a model-endpoint edit (engine id stays "cloud") still re-creates.
     public var aiRoutingSignature: String {
-        "\(activeEngine.descriptor.id)|\(activeModel.id)"
+        "\(activeEngine.descriptor.id)|\(activeModel.id)|\(appliedAISignature)"
     }
 
     /// Re-resolves the text engine, vision generator, and retrieval services from the current
     /// 云端/本地 settings so 问答 and 拆解 apply a mode/credential change without an app relaunch.
     /// Cheap no-op when the resolved text engine + model are unchanged.
     public func reloadAIRouting() {
+        // Rebuild whenever any AI config changed — including a cloud model-id edit within 云端 mode,
+        // where the engine id ("cloud") and model id stay constant but the endpoint differs.
+        let signature = CloudAIResolver.configSignature(defaults: defaults)
+        guard signature != appliedAISignature else {
+            return
+        }
+        appliedAISignature = signature
+
         let resolved = Self.resolveRouting(
             defaults: defaults,
             explicitEngine: nil,
@@ -150,11 +163,6 @@ public final class AppDependencies {
             engines: engines,
             deviceCapability: deviceCapability
         )
-        guard resolved.engine.descriptor.id != activeEngine.descriptor.id
-            || resolved.model.id != activeModel.id else {
-            return
-        }
-
         activeEngine = resolved.engine
         activeModel = resolved.model
 

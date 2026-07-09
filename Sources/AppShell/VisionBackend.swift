@@ -23,6 +23,18 @@ enum CloudAIResolver {
         (defaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud") == "cloud"
     }
 
+    /// Cheap signature of the whole AI configuration (mode + base URL + both model ids + whether a
+    /// key exists). It changes whenever the user edits any of these, so the shell can rebuild the
+    /// engine + video pipeline on a model-string change — not only on a 云端/本地 switch.
+    static func configSignature(defaults: UserDefaults?) -> String {
+        let kind = defaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud"
+        let base = defaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? ""
+        let vision = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
+        let text = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
+        let hasKey = KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false
+        return [kind, base, vision, text, hasKey ? "k" : "-"].joined(separator: "|")
+    }
+
     /// Cloud is usable only when mode is cloud AND base URL + Keychain key are present.
     private static func credentials(defaults: UserDefaults?) -> (baseURL: URL, apiKey: String)? {
         guard isCloudMode(defaults: defaults),
