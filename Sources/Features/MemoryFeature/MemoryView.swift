@@ -5,6 +5,7 @@ import ScriptCore
 import SwiftUI
 
 #if os(iOS)
+import AVFoundation
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
@@ -693,7 +694,7 @@ private struct MemoryDetailView: View {
                 if !breakdown.shots.isEmpty {
                     Section("分镜 (\(breakdown.shots.count))") {
                         ForEach(breakdown.shots.sorted { $0.index < $1.index }, id: \.index) { shot in
-                            ShotRowView(shot: shot)
+                            ShotRowView(shot: shot, videoURL: breakdownVideoURL)
                         }
                     }
                 }
@@ -749,6 +750,13 @@ private struct MemoryDetailView: View {
     /// scripts (their 台词 is auto-corrected during analysis), so they aren't free-text editable here.
     private var canEditContent: Bool {
         item.breakdown == nil && !(item.bodyText ?? "").isEmpty
+    }
+
+    /// The local video file backing this breakdown, used to render per-shot frame thumbnails. Video
+    /// clips store their imported copy as the source URL; nil for web/text clips (no thumbnails).
+    private var breakdownVideoURL: URL? {
+        guard let url = item.sourceURL, url.isFileURL else { return nil }
+        return url
     }
 
     private var editSheet: some View {
@@ -815,23 +823,32 @@ private struct HookStructureView: View {
 
 private struct ShotRowView: View {
     let shot: StoryboardShot
+    var videoURL: URL? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("分镜 \(shot.index + 1)  \(timeRange)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            if let narration = shot.narration, !narration.isEmpty {
-                Text("台词: \(narration)").font(.subheadline)
+        HStack(alignment: .top, spacing: 10) {
+            #if os(iOS)
+            if let videoURL {
+                ShotThumbnail(videoURL: videoURL, seconds: shot.startSeconds, shotIndex: shot.index)
             }
-            if !shot.visualDescription.isEmpty {
-                Text("画面: \(shot.visualDescription)").font(.subheadline)
+            #endif
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("分镜 \(shot.index + 1)  \(timeRange)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if let narration = shot.narration, !narration.isEmpty {
+                    Text("台词: \(narration)").font(.subheadline)
+                }
+                if !shot.visualDescription.isEmpty {
+                    Text("画面: \(shot.visualDescription)").font(.subheadline)
+                }
+                if let pacing = shot.pacingNote, !pacing.isEmpty {
+                    Text("节奏: \(pacing)").font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if let pacing = shot.pacingNote, !pacing.isEmpty {
-                Text("节奏: \(pacing)").font(.caption).foregroundStyle(.secondary)
-            }
+            .textSelection(.enabled)
         }
-        .textSelection(.enabled)
         .padding(.vertical, 2)
     }
 
@@ -844,6 +861,110 @@ private struct ShotRowView: View {
         return String(format: "%.1fs", safe)
     }
 }
+
+#if os(iOS)
+/// A per-shot frame thumbnail, decoded on demand from the local video at the shot's start time and
+/// cached so re-scrolling the storyboard doesn't re-decode. Tap to view the frame full-screen.
+private struct ShotThumbnail: View {
+    let videoURL: URL
+    let seconds: Double
+    let shotIndex: Int
+    @State private var image: UIImage?
+    @State private var isEnlarged = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.15))
+                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+            }
+        }
+        .frame(width: 60, height: 84)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture { if image != nil { isEnlarged = true } }
+        .task(id: seconds) {
+            image = await ShotThumbnailCache.shared.load(url: videoURL, seconds: seconds)
+        }
+        .fullScreenCover(isPresented: $isEnlarged) {
+            ShotFramePreview(videoURL: videoURL, seconds: seconds, shotIndex: shotIndex)
+        }
+        .accessibilityLabel("分镜 \(shotIndex + 1) 画面")
+    }
+}
+
+/// Full-screen frame preview, regenerated at higher resolution than the row thumbnail.
+private struct ShotFramePreview: View {
+    let videoURL: URL
+    let seconds: Double
+    let shotIndex: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                ProgressView().tint(.white)
+            }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .padding()
+                    }
+                    .accessibilityLabel("关闭")
+                }
+                Spacer()
+            }
+        }
+        .task {
+            image = await ShotThumbnailCache.shared.load(url: videoURL, seconds: seconds, maxSize: 1280)
+        }
+    }
+}
+
+/// Small in-memory cache + decoder for video frame thumbnails. Keyed by (url, ~0.1s, size) so a
+/// row thumbnail and its full-screen preview are cached independently.
+@MainActor
+private final class ShotThumbnailCache {
+    static let shared = ShotThumbnailCache()
+    private var cache: [String: UIImage] = [:]
+
+    func load(url: URL, seconds: Double, maxSize: CGFloat = 320) async -> UIImage? {
+        let key = "\(url.absoluteString)#\(Int(seconds * 10))@\(Int(maxSize))"
+        if let cached = cache[key] { return cached }
+        let image = await Self.decode(url: url, seconds: seconds, maxSize: maxSize)
+        if let image { cache[key] = image }
+        return image
+    }
+
+    private static func decode(url: URL, seconds: Double, maxSize: CGFloat) async -> UIImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.3, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.3, preferredTimescale: 600)
+        generator.maximumSize = CGSize(width: maxSize, height: maxSize)
+        let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        guard let cgImage = try? await generator.image(at: time).image else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
+    }
+}
+#endif
 
 private struct StateBadge: View {
     let state: ClipState
