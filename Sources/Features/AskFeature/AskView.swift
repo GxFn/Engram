@@ -44,11 +44,32 @@ public struct AskView: View {
             Divider()
             composer
         }
-        .navigationTitle("问答")
+        .navigationTitle("")
+        // Pin the nav bar to its compact height so there's no collapsing large title. The visible
+        // 问答 title lives in the fixed header below, so it never rides up with the message scroll.
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .sheet(isPresented: $isShowingControls) { controlsSheet }
     }
 
     private var header: some View {
+        // A fixed large title + engine bar, both outside the message ScrollView so neither scrolls
+        // with the chat. Matches 洞察's big-title layout; the title can't collapse because it's plain
+        // content, not a collapsing navigation large title.
+        VStack(alignment: .leading, spacing: 10) {
+            Text("问答")
+                .font(.largeTitle.bold())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+            engineBar
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    private var engineBar: some View {
         HStack(spacing: 10) {
             Label(viewModel.engineName, systemImage: "cpu")
                 .font(.subheadline.weight(.semibold))
@@ -84,8 +105,6 @@ public struct AskView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("问答设置")
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
     }
 
     /// Non-default style/scope highlights the controls button so an active filter is visible.
