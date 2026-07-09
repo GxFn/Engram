@@ -10,7 +10,10 @@ public struct AskRetrievalConfiguration: Sendable, Hashable {
 
     public init(
         resultLimit: Int = 8,
-        minimumScore: Double = 0.015,
+        // Barely above zero: RRF scores are rank-shaped (top ≈ 1/(k+1) ≈ 0.016), so a 0.015 floor
+        // silently killed everything past the first few single-route hits. Result count is governed
+        // by topK/resultLimit; the floor only drops true zero/noise scores.
+        minimumScore: Double = 0.001,
         promptTokenBudget: Int? = nil
     ) {
         self.resultLimit = resultLimit

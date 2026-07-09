@@ -514,7 +514,7 @@ public actor FTS5KeywordIndex: KeywordIndex {
             ORDER BY rank ASC, chunk_id ASC
             LIMIT ?
             """,
-            bindings: [.text(Self.ftsPhrase(queryText)), .int64(Int64(topK))]
+            bindings: [.text(Self.ftsMatchQuery(queryText)), .int64(Int64(topK))]
         ) { statement in
             let chunkID = try statement.text(at: 0)
             let rank = sqlite3_column_double(statement.raw, 1)
@@ -601,6 +601,35 @@ public actor FTS5KeywordIndex: KeywordIndex {
 
     private static func ftsPhrase(_ text: String) -> String {
         "\"\(text.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    /// Tokenized OR match: quoting the WHOLE question as one phrase required the entire contiguous
+    /// string to appear (trigram semantics), so BM25 was effectively dead for natural-language
+    /// questions. Split into words, break long CJK runs into sliding 3-grams (step 2, tail covered),
+    /// quote each (≥3 chars — the trigram index can't match shorter), and OR-join. Falls back to
+    /// the whole-phrase form when nothing tokenizes.
+    static func ftsMatchQuery(_ text: String) -> String {
+        var terms: [String] = []
+        for token in text.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }) {
+            let chars = Array(token)
+            guard chars.count >= 3 else { continue }
+            if chars.count <= 4 {
+                terms.append(ftsPhrase(String(token)))
+            } else {
+                var index = 0
+                while index + 3 <= chars.count {
+                    terms.append(ftsPhrase(String(chars[index ..< index + 3])))
+                    index += 2
+                }
+                terms.append(ftsPhrase(String(chars[(chars.count - 3)...]))) // cover the tail
+            }
+        }
+        guard !terms.isEmpty else {
+            return ftsPhrase(text)
+        }
+        var seen = Set<String>()
+        let unique = terms.filter { seen.insert($0).inserted }
+        return unique.prefix(24).joined(separator: " OR ")
     }
 
     private static func escapeLike(_ text: String) -> String {

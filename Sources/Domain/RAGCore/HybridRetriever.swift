@@ -56,13 +56,15 @@ public actor HybridRetriever: Retriever {
             )
         }
 
+        // Candidate pools scale with the caller's ask: a focused 问这条 query over-fetches (topK 48)
+        // and post-filters to one clip — pools stuck at their defaults starved that filter.
         let dense = try await vectorStore.query(
             vector: queryVector,
-            topK: max(configuration.denseTopK, 0)
+            topK: max(max(configuration.denseTopK, topK), 0)
         )
         let keyword = try await keywordIndex.query(
             text: normalizedQuestion,
-            topK: max(configuration.keywordTopK, 0)
+            topK: max(max(configuration.keywordTopK, topK), 0)
         )
         let fused = ReciprocalRankFusion.score(
             rankings: [dense.map(\.chunkID), keyword.map(\.chunkID)],
@@ -72,7 +74,10 @@ public actor HybridRetriever: Retriever {
             return []
         }
 
-        let limit = max(0, min(topK, configuration.citationLimit))
+        // topK is the caller's true budget — clamping it to citationLimit silently returned the
+        // global top-8 no matter how much a focused query over-fetched. citationLimit only fills
+        // in when the caller passes no positive ask.
+        let limit = topK > 0 ? topK : configuration.citationLimit
         let ranked = Array(fused.prefix(limit))
         let chunksByID = try await chunkResolver.resolve(chunkIDs: ranked.map(\.id))
 

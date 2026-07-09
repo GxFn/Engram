@@ -161,7 +161,9 @@ import Testing
     let viewModel = AskViewModel(
         engine: engine,
         model: testModel,
-        retriever: FakeRetriever(results: [lowScore])
+        retriever: FakeRetriever(results: [lowScore]),
+        // Explicit floor: the default is deliberately near-zero, this test exercises the mechanism.
+        retrievalConfiguration: AskRetrievalConfiguration(minimumScore: 0.015)
     )
 
     guard let task = viewModel.send("Weak?") else {
