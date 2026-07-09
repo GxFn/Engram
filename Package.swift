@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "AppShell", targets: ["AppShell"]),
         .library(name: "AskFeature", targets: ["AskFeature"]),
         .library(name: "MemoryFeature", targets: ["MemoryFeature"]),
+        .library(name: "InsightFeature", targets: ["InsightFeature"]),
         .library(name: "BenchFeature", targets: ["BenchFeature"]),
         .library(name: "SettingsFeature", targets: ["SettingsFeature"]),
         .library(name: "EngineKit", targets: ["EngineKit"]),
@@ -212,6 +213,11 @@ let package = Package(
             dependencies: ["EngineKit", "EngramLogging"],
             path: "Sources/Features/SettingsFeature"
         ),
+        .target(
+            name: "InsightFeature",
+            dependencies: ["ScriptCore", "EngramLogging"],
+            path: "Sources/Features/InsightFeature"
+        ),
 
         // MARK: - AppShell (assembly layer; the only place allowed to wire Infrastructure into Features)
         .target(
@@ -219,6 +225,7 @@ let package = Package(
             dependencies: [
                 "AskFeature",
                 "MemoryFeature",
+                "InsightFeature",
                 "BenchFeature",
                 "SettingsFeature",
                 "EngineKit",
@@ -285,6 +292,7 @@ let package = Package(
         .testTarget(name: "EmbeddingMLXTests", dependencies: ["EmbeddingMLX", "RAGCore"], path: "Tests/EmbeddingMLXTests"),
         .testTarget(name: "MetricsKitTests", dependencies: ["MetricsKit"], path: "Tests/MetricsKitTests"),
         .testTarget(name: "MemoryFeatureTests", dependencies: ["MemoryFeature", "ClipCore", "ScriptCore"], path: "Tests/MemoryFeatureTests"),
+        .testTarget(name: "InsightFeatureTests", dependencies: ["InsightFeature", "ScriptCore"], path: "Tests/InsightFeatureTests"),
         .testTarget(name: "MLXEngineTests", dependencies: ["EngineKit", "MLXEngine"], path: "Tests/MLXEngineTests"),
         .testTarget(name: "ModelStoreTests", dependencies: ["EngineKit", "ModelStore"], path: "Tests/ModelStoreTests"),
         .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence", "ScriptCore"], path: "Tests/PersistenceTests"),

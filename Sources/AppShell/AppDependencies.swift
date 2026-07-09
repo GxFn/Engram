@@ -4,12 +4,14 @@ import BenchFeature
 import ClipDigest
 import EngramLogging
 import EngineKit
+import InsightFeature
 import MemoryFeature
 import MLXEngine
 import ModelStore
 import Observation
 import Persistence
 import RAGCore
+import ScriptCore
 import SettingsFeature
 import SwiftData
 import SwiftUI
@@ -377,6 +379,48 @@ public final class AppDependencies {
             retriever: retriever,
             clipKinds: clipKinds
         )
+    }
+
+    public func makeHookLibraryViewModel() -> HookLibraryViewModel {
+        // Hooks are derived from video breakdowns (scriptJSON); favorites persist in UserDefaults.
+        // Single source of truth stays the breakdown — this is a rebuildable derived view.
+        let service = clipDigestService
+        nonisolated(unsafe) let capturedDefaults = defaults
+        let favoritesKey = "favoriteHookClipIDs"
+
+        let client = HookLibraryClient(
+            loadHooks: {
+                guard let service else {
+                    return []
+                }
+                let snapshots = (try? await service.memorySnapshots()) ?? []
+                let favorites = Set(capturedDefaults?.stringArray(forKey: favoritesKey) ?? [])
+                return snapshots
+                    .compactMap { snapshot -> HookEntry? in
+                        guard let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
+                            return nil
+                        }
+                        return HookEntry.derive(
+                            clipID: snapshot.id,
+                            clipTitle: snapshot.title ?? "未命名",
+                            createdAt: snapshot.createdAt,
+                            script: script,
+                            isFavorite: favorites.contains(snapshot.id)
+                        )
+                    }
+                    .sorted { $0.createdAt > $1.createdAt }
+            },
+            setFavorite: { clipID, isFavorite in
+                var favorites = Set(capturedDefaults?.stringArray(forKey: favoritesKey) ?? [])
+                if isFavorite {
+                    favorites.insert(clipID)
+                } else {
+                    favorites.remove(clipID)
+                }
+                capturedDefaults?.set(Array(favorites), forKey: favoritesKey)
+            }
+        )
+        return HookLibraryViewModel(client: client)
     }
 
     public func makeBenchViewModel() -> BenchViewModel {

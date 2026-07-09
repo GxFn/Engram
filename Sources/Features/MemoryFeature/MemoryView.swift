@@ -704,7 +704,7 @@ private struct MemoryDetailView: View {
                 }
             }
 
-            if let highlightedChunkID {
+            if let highlightedChunkID, !highlightedChunkID.isEmpty {
                 Section("Citation") {
                     LabeledContent("Clip", value: item.id)
                     LabeledContent("Chunk", value: highlightedChunkID)

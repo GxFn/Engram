@@ -1,5 +1,6 @@
 import AskFeature
 import BenchFeature
+import InsightFeature
 import MemoryFeature
 import Persistence
 import RAGCore
@@ -41,6 +42,7 @@ private struct RootContent: View {
         case clips
         case studio
         case ask
+        case insight
     }
 
     @Environment(\.deps) private var dependencies
@@ -96,6 +98,20 @@ private struct RootContent: View {
             }
                 .tabItem { Label("问答", systemImage: "questionmark.bubble") }
                 .tag(RootTab.ask)
+
+            NavigationStack {
+                if let dependencies {
+                    InsightView(viewModel: dependencies.makeHookLibraryViewModel()) { clipID in
+                        // A hook always comes from a video breakdown → open it in the 拆解 tab.
+                        selectedTab = .studio
+                        memoryNavigationTarget = MemoryNavigationTarget(clipID: clipID, chunkID: "")
+                    }
+                    .id(dependencies.aiRoutingSignature)
+                    .toolbar { settingsToolbar }
+                }
+            }
+                .tabItem { Label("洞察", systemImage: "sparkles.rectangle.stack") }
+                .tag(RootTab.insight)
         }
         .sheet(isPresented: onboardingPresented) {
             if let dependencies {

@@ -7,19 +7,38 @@ public struct HookAnalysis: Sendable, Hashable, Codable {
     public let payoff: String?
     public let callToAction: String?
     public let whyItWorks: String
+    /// Hook category for the personal hook library (v6). Defaults to `.other` for scripts produced
+    /// before hookType existed, so old scriptJSON keeps decoding.
+    public let hookType: HookType
 
     public init(
         openingHook: String,
         retentionDevices: [String],
         payoff: String? = nil,
         callToAction: String? = nil,
-        whyItWorks: String
+        whyItWorks: String,
+        hookType: HookType = .other
     ) {
         self.openingHook = openingHook
         self.retentionDevices = retentionDevices
         self.payoff = payoff
         self.callToAction = callToAction
         self.whyItWorks = whyItWorks
+        self.hookType = hookType
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case openingHook, retentionDevices, payoff, callToAction, whyItWorks, hookType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        openingHook = try container.decodeIfPresent(String.self, forKey: .openingHook) ?? ""
+        retentionDevices = try container.decodeIfPresent([String].self, forKey: .retentionDevices) ?? []
+        payoff = try container.decodeIfPresent(String.self, forKey: .payoff)
+        callToAction = try container.decodeIfPresent(String.self, forKey: .callToAction)
+        whyItWorks = try container.decodeIfPresent(String.self, forKey: .whyItWorks) ?? ""
+        hookType = (try? container.decode(HookType.self, forKey: .hookType)) ?? .other
     }
 }
 

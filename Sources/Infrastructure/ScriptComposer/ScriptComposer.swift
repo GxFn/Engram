@@ -429,6 +429,7 @@ private enum ScriptPromptBuilder {
           "visualElements": ["场景/道具/风格/色调标签，3-8 个"],
           "hookStructure": {
             "openingHook": "前 3 秒钩子",
+            "hookType": "钩子类型，从这九类里选最贴切的一个：悬念/共鸣/反差/痛点/利益前置/好奇/身份认同/情绪冲击/其他",
             "retentionDevices": ["留人手法"],
             "payoff": "爆点/反转/信息增量，可为空",
             "callToAction": "CTA，可为空",
@@ -470,6 +471,7 @@ private enum ScriptPromptBuilder {
           "visualElements": [],
           "hookStructure": {
             "openingHook": "基于转写判断的前 3 秒钩子",
+            "hookType": "钩子类型，从这九类里选最贴切的一个：悬念/共鸣/反差/痛点/利益前置/好奇/身份认同/情绪冲击/其他",
             "retentionDevices": ["基于转写判断的留人手法"],
             "payoff": "爆点/反转/信息增量，可为空",
             "callToAction": "CTA，可为空",
@@ -689,6 +691,7 @@ private struct HookPayload: Decodable {
     let payoff: String?
     let callToAction: String?
     let whyItWorks: String
+    let hookType: HookType
 
     enum CodingKeys: String, CodingKey {
         case openingHook
@@ -696,6 +699,7 @@ private struct HookPayload: Decodable {
         case payoff
         case callToAction
         case whyItWorks
+        case hookType
     }
 
     init(from decoder: Decoder) throws {
@@ -705,6 +709,7 @@ private struct HookPayload: Decodable {
         payoff = try container.decodeIfPresent(String.self, forKey: .payoff)
         callToAction = try container.decodeIfPresent(String.self, forKey: .callToAction)
         whyItWorks = try container.decodeIfPresent(String.self, forKey: .whyItWorks) ?? ""
+        hookType = HookType.from(try container.decodeIfPresent(String.self, forKey: .hookType) ?? "")
     }
 
     func hookAnalysis() -> HookAnalysis? {
@@ -726,7 +731,8 @@ private struct HookPayload: Decodable {
             retentionDevices: devices,
             payoff: pay,
             callToAction: cta,
-            whyItWorks: why
+            whyItWorks: why,
+            hookType: hookType
         )
     }
 }
