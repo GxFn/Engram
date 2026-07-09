@@ -1,8 +1,9 @@
 import Foundation
 
 public enum VisionBackendKind: String, Sendable, CaseIterable, Codable {
-    case onDevice
+    // Cloud first so it reads as the primary option (leftmost) in the segmented control.
     case cloud
+    case onDevice
 
     public var displayName: String {
         switch self {
