@@ -31,6 +31,26 @@ public enum CloudVLMError: Error, Equatable, Sendable {
     case decodingFailed(String)
 }
 
+extension CloudVLMError: LocalizedError {
+    // Surfaced verbatim in the UI so a misconfigured model/endpoint/key is diagnosable on device
+    // (the server body carried by `.statusCode` is the actual reason, e.g. an unknown model id).
+    public var errorDescription: String? {
+        switch self {
+        case .missingAPIKey:
+            return "云端未配置 API Key。"
+        case .invalidResponse:
+            return "云端返回了无法识别的响应。"
+        case let .statusCode(code, body):
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? "云端服务错误 (HTTP \(code))。" : "云端服务错误 (HTTP \(code)): \(detail)"
+        case .emptyContent:
+            return "云端返回了空内容。"
+        case let .decodingFailed(detail):
+            return "云端响应解析失败: \(detail)"
+        }
+    }
+}
+
 public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
     private let configuration: CloudVLMConfiguration
     private let dataForRequest: @Sendable (URLRequest) async throws -> (Data, URLResponse)
