@@ -72,7 +72,8 @@ private actor FixtureVisionComposer: VisionScriptComposing {
     func compose(
         sourceID: String,
         transcript: [TranscriptSegment],
-        keyframes: [SampledFrame]
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
     ) async throws -> Script {
         let shots = keyframes.enumerated().map { index, frame in
             StoryboardShot(

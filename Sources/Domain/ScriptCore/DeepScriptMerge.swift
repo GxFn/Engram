@@ -29,7 +29,8 @@ public enum DeepScriptMerge {
                     endSeconds: shot.endSeconds,
                     narration: shot.narration,
                     visualDescription: shot.visualDescription,
-                    pacingNote: shot.pacingNote
+                    pacingNote: shot.pacingNote,
+                    onScreenText: shot.onScreenText
                 )
             }
 

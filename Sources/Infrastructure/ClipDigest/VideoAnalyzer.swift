@@ -17,6 +17,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
     private let visionComposer: any VisionScriptComposing
     private let textComposer: any TextScriptComposing
     private let corrector: (any TranscriptCorrecting)?
+    private let recognizer: (any FrameTextRecognizing)?
     private let maxFrames: Int
     private let deep: DeepModeConfiguration?
 
@@ -48,6 +49,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
         visionComposer: any VisionScriptComposing,
         textComposer: any TextScriptComposing,
         corrector: (any TranscriptCorrecting)? = nil,
+        recognizer: (any FrameTextRecognizing)? = nil,
         maxFrames: Int = 6,
         deep: DeepModeConfiguration? = DeepModeConfiguration()
     ) {
@@ -56,6 +58,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
         self.visionComposer = visionComposer
         self.textComposer = textComposer
         self.corrector = corrector
+        self.recognizer = recognizer
         self.maxFrames = max(0, min(maxFrames, 8))
         self.deep = deep
     }
@@ -72,9 +75,13 @@ public struct VideoAnalyzer: VideoAnalyzing {
 
         await onStage(.scripting)
 
+        // Deterministic OCR of burned-in 字幕/on-screen text (independent of the VLM) so captions are
+        // captured in both 云端 and 本地 modes; empty when no recognizer or nothing detected.
+        let onScreenText = await recognizeOnScreenText(source)
+
         let duration = videoDuration(source: source, transcript: transcript)
         if let deep, duration > deep.thresholdSeconds,
-           let merged = try await analyzeDeep(source, transcript: transcript, duration: duration, config: deep) {
+           let merged = try await analyzeDeep(source, transcript: transcript, onScreenText: onScreenText, duration: duration, config: deep) {
             return merged
         }
 
@@ -84,7 +91,8 @@ public struct VideoAnalyzer: VideoAnalyzing {
             return try await visionComposer.compose(
                 sourceID: source.id,
                 transcript: transcript,
-                keyframes: keyframes
+                keyframes: keyframes,
+                onScreenText: onScreenText
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -103,11 +111,17 @@ public struct VideoAnalyzer: VideoAnalyzing {
         return try await corrector.correct(raw)
     }
 
+    private func recognizeOnScreenText(_ source: VideoSource) async -> [FrameText] {
+        guard let recognizer else { return [] }
+        return await recognizer.recognizeText(in: source)
+    }
+
     // MARK: - Deep (segmented map-reduce) path
 
     private func analyzeDeep(
         _ source: VideoSource,
         transcript: [TranscriptSegment],
+        onScreenText: [FrameText],
         duration: Double,
         config: DeepModeConfiguration
     ) async throws -> Script? {
@@ -124,13 +138,15 @@ public struct VideoAnalyzer: VideoAnalyzing {
             let end = duration * Double(index + 1) / Double(segmentCount)
             let segmentFrames = allFrames.filter { $0.timestampSeconds >= start && $0.timestampSeconds < end }
             let segmentTranscript = transcript.filter { $0.startSeconds >= start && $0.startSeconds < end }
+            let segmentText = onScreenText.filter { $0.timestampSeconds >= start && $0.timestampSeconds < end }
             guard !segmentFrames.isEmpty || !segmentTranscript.isEmpty else { continue }
 
             do {
                 let partial = try await visionComposer.compose(
                     sourceID: "\(source.id)#seg\(index)",
                     transcript: segmentTranscript,
-                    keyframes: segmentFrames
+                    keyframes: segmentFrames,
+                    onScreenText: segmentText
                 )
                 partials.append(partial)
             } catch is CancellationError {

@@ -126,6 +126,9 @@ enum RetrievalAssembly {
             // Cleans the raw ASR with the active text engine before scripting (cheap, one call);
             // gracefully returns the raw transcript if the model/network is unavailable.
             corrector: LLMTranscriptCorrector(engine: activeEngine, model: activeModel),
+            // Deterministic on-device OCR of burned-in 字幕/on-screen text — runs regardless of the
+            // 云端/本地 vision backend, so captions are captured and attached to shots.
+            recognizer: VisionFrameTextRecognizer(),
             maxFrames: videoAnalyzerMaxFrames
         )
     }

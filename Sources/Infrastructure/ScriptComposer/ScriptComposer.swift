@@ -10,17 +10,22 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
     public var maxFrameBytes: Int
     public var generationConfig: GenerationConfig
     public var retryMalformedJSON: Bool
+    /// 分镜 shorter than this are folded into a neighbour so noisy ASR splits (0.1s fragments) never
+    /// survive as their own shot. The prompt also asks the VLM not to fragment; this guarantees it.
+    public var minShotSeconds: Double
 
     public init(
         maxKeyframeCount: Int = 6,
         maxFrameBytes: Int = 8_000_000,
         generationConfig: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 1_500),
-        retryMalformedJSON: Bool = true
+        retryMalformedJSON: Bool = true,
+        minShotSeconds: Double = 1.2
     ) {
         self.maxKeyframeCount = max(0, min(maxKeyframeCount, 8))
         self.maxFrameBytes = max(1, maxFrameBytes)
         self.generationConfig = generationConfig
         self.retryMalformedJSON = retryMalformedJSON
+        self.minShotSeconds = max(0, minShotSeconds)
     }
 }
 
@@ -127,7 +132,25 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
     public func compose(
         sourceID: String,
         transcript: [TranscriptSegment],
-        keyframes: [SampledFrame]
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
+    ) async throws -> Script {
+        let script = try await composeVision(
+            sourceID: sourceID,
+            transcript: transcript,
+            keyframes: keyframes,
+            onScreenText: onScreenText
+        )
+        // Every return path funnels through here: attach deterministic OCR captions to their shots,
+        // then fold away sub-minimum-duration fragments so noisy ASR splits never survive.
+        return Self.finalize(script, onScreenText: onScreenText, minShotSeconds: configuration.minShotSeconds)
+    }
+
+    private func composeVision(
+        sourceID: String,
+        transcript: [TranscriptSegment],
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
     ) async throws -> Script {
         let preparedFrames: [SampledFrame]
         do {
@@ -158,7 +181,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
 
         let prompt = ScriptPromptBuilder.visionPrompt(
             transcript: transcript,
-            keyframes: preparedFrames
+            keyframes: preparedFrames,
+            onScreenText: onScreenText
         )
 
         do {
@@ -268,6 +292,61 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             title: script.title,
             summary: summary,
             shots: script.shots,
+            createdAt: script.createdAt,
+            hookStructure: script.hookStructure,
+            visualElements: script.visualElements,
+            characters: script.characters
+        )
+    }
+
+    /// Attaches deterministic OCR captions to the shots covering their timestamps, then folds away
+    /// sub-`minShotSeconds` fragments. Captions are OCR's job (not the VLM's), so 字幕 survive
+    /// regardless of backend; merging stops 分镜 from mirroring noisy ASR splits.
+    nonisolated static func finalize(_ script: Script, onScreenText: [FrameText], minShotSeconds: Double) -> Script {
+        let withText = attachOnScreenText(to: script, onScreenText: onScreenText)
+        let merged = ShotMerger.merge(withText.shots, minSeconds: minShotSeconds)
+        return replacingShots(withText, shots: merged)
+    }
+
+    nonisolated static func attachOnScreenText(to script: Script, onScreenText: [FrameText]) -> Script {
+        guard !onScreenText.isEmpty, !script.shots.isEmpty else { return script }
+        let sortedShots = script.shots.sorted { $0.startSeconds < $1.startSeconds }
+        let lastIndex = sortedShots.count - 1
+
+        let shots = sortedShots.enumerated().map { position, shot -> StoryboardShot in
+            // The last shot also absorbs any trailing frames past its end, so no caption is orphaned.
+            let lines = onScreenText
+                .filter { text in
+                    text.timestampSeconds >= shot.startSeconds
+                        && (text.timestampSeconds < shot.endSeconds || position == lastIndex)
+                }
+                .flatMap(\.lines)
+            guard !lines.isEmpty else { return shot }
+
+            var merged = shot.onScreenText
+            for line in lines where !merged.contains(line) { merged.append(line) }
+            guard merged != shot.onScreenText else { return shot }
+
+            return StoryboardShot(
+                index: shot.index,
+                startSeconds: shot.startSeconds,
+                endSeconds: shot.endSeconds,
+                narration: shot.narration,
+                visualDescription: shot.visualDescription,
+                pacingNote: shot.pacingNote,
+                onScreenText: merged
+            )
+        }
+        return replacingShots(script, shots: shots)
+    }
+
+    private nonisolated static func replacingShots(_ script: Script, shots: [StoryboardShot]) -> Script {
+        Script(
+            id: script.id,
+            videoSourceID: script.videoSourceID,
+            title: script.title,
+            summary: script.summary,
+            shots: shots,
             createdAt: script.createdAt,
             hookStructure: script.hookStructure,
             visualElements: script.visualElements,
@@ -419,9 +498,9 @@ private enum FramePreparer {
 }
 
 private enum ScriptPromptBuilder {
-    static func visionPrompt(transcript: [TranscriptSegment], keyframes: [SampledFrame]) -> String {
+    static func visionPrompt(transcript: [TranscriptSegment], keyframes: [SampledFrame], onScreenText: [FrameText]) -> String {
         """
-        你是 Engram 的中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成可直接用于 AI 生图/生视频的爆款拆解分镜。
+        你是 Engram 的中文短视频剧本师。根据已附加的关键帧图片、下面的转写和画面文字，生成可直接用于 AI 生图/生视频的爆款拆解分镜。
         只输出一个合法 JSON 对象，不要 Markdown，不要解释。字段严格如下：
         {
           "title": "中文标题",
@@ -447,13 +526,18 @@ private enum ScriptPromptBuilder {
           ]
         }
         要求：
-        - shots 按时间递增；每个 visualDescription 必须写实可拍、能直接生成画面，不要只复述台词，禁止“表情认真”“反应各异”这类笼统词；
+        - shots 按时间递增；每个分镜时长尽量≥1.5 秒，不要把同一句话拆成多个分镜；分镜边界优先落在一句话说完或画面明显切换处，不要机械照搬语音停顿；
+        - 每个 visualDescription 必须写实可拍、能直接生成画面，不要只复述台词，禁止“表情认真”“反应各异”这类笼统词；
+        - 画面里出现的字幕/文字以“画面文字”为准，结合它们做分析，不要臆造或漏掉；
         - characters 里每个人物在各 shot 中保持同一称呼与外貌，方便下游生成一致的 AI 形象；
         - 不确定的真实姓名不要编造，可用“男生A”“女生B”等中性称呼。
         请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立，并给出人物形象与关键视觉元素。
 
         转写：
         \(transcriptLines(transcript))
+
+        画面文字（OCR 识别的烧录字幕/关键文字，按时间）：
+        \(onScreenTextLines(onScreenText))
 
         关键帧（图片已按以下顺序附加）：
         \(keyframeLines(keyframes))
@@ -523,6 +607,14 @@ private enum ScriptPromptBuilder {
         }
 
         return lines.isEmpty ? "（无关键帧）" : lines.joined(separator: "\n")
+    }
+
+    static func onScreenTextLines(_ texts: [FrameText]) -> String {
+        let lines = texts
+            .sorted { $0.timestampSeconds < $1.timestampSeconds }
+            .map { "[\(format($0.timestampSeconds))s] \($0.lines.joined(separator: " / "))" }
+
+        return lines.isEmpty ? "（无画面文字）" : lines.joined(separator: "\n")
     }
 }
 

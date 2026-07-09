@@ -51,6 +51,18 @@ public struct FrameDescription: Sendable, Hashable, Codable {
     }
 }
 
+/// On-screen text (burned-in 字幕 / captions / key words) recognized in the frame at `timestampSeconds`.
+/// Deterministic OCR output — kept separate from the VLM so the text is captured regardless of backend.
+public struct FrameText: Sendable, Hashable, Codable {
+    public let timestampSeconds: Double
+    public let lines: [String]
+
+    public init(timestampSeconds: Double, lines: [String]) {
+        self.timestampSeconds = timestampSeconds
+        self.lines = lines
+    }
+}
+
 public protocol Transcriber: Sendable {
     func transcribe(_ source: VideoSource) async throws -> [TranscriptSegment]
 }
@@ -68,6 +80,13 @@ public protocol FrameSampler: Sendable {
 
 public protocol VisionDescriber: Sendable {
     func describe(_ frames: [SampledFrame]) async throws -> [FrameDescription]
+}
+
+/// Recognizes on-screen text (burned-in 字幕 / captions) across a video, densely enough that caption
+/// changes aren't missed, and de-duplicated so a caption held across frames isn't repeated.
+/// Implementations must never throw — return an empty array on any failure so 拆解 still proceeds.
+public protocol FrameTextRecognizing: Sendable {
+    func recognizeText(in source: VideoSource) async -> [FrameText]
 }
 
 public enum VideoUnderstandingError: Error, Sendable, Hashable, Codable {

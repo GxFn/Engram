@@ -6,6 +6,29 @@ import Testing
 import VideoUnderstanding
 @testable import ScriptComposer
 
+@Test func qwenComposerFinalizeAttachesOCRByTimestampAndMergesFragments() {
+    let script = Script(
+        id: "s", videoSourceID: "s", title: "t", summary: "",
+        shots: [
+            StoryboardShot(index: 0, startSeconds: 0, endSeconds: 2.7, narration: "a", visualDescription: "x"),
+            StoryboardShot(index: 1, startSeconds: 2.7, endSeconds: 2.8, narration: "我", visualDescription: ""),
+            StoryboardShot(index: 2, startSeconds: 2.8, endSeconds: 6, narration: "b", visualDescription: "y"),
+        ],
+        createdAt: Date(timeIntervalSince1970: 0)
+    )
+    let ocr = [
+        FrameText(timestampSeconds: 1.0, lines: ["字幕1"]),
+        FrameText(timestampSeconds: 4.0, lines: ["字幕2"]),
+    ]
+
+    let result = Qwen3VLScriptComposer.finalize(script, onScreenText: ocr, minShotSeconds: 1.2)
+
+    // The 0.1s "我" fragment is folded away; each OCR caption lands on the shot covering its time.
+    #expect(result.shots.count == 2)
+    #expect(result.shots[0].onScreenText == ["字幕1"])
+    #expect(result.shots[1].onScreenText == ["字幕2"])
+}
+
 @Test func qwenComposerMapsStrictJSONToScriptAndPromptShape() async throws {
     let generator = RecordingVLMGenerator(responses: [
         """

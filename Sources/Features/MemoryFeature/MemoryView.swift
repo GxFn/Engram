@@ -862,6 +862,11 @@ private struct ShotRowView: View {
                 if let narration = shot.narration, !narration.isEmpty {
                     Text("台词: \(narration)").font(.subheadline)
                 }
+                if !shot.onScreenText.isEmpty {
+                    Text("字幕: \(shot.onScreenText.joined(separator: " / "))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 if !shot.visualDescription.isEmpty {
                     Text("画面: \(shot.visualDescription)").font(.subheadline)
                 }

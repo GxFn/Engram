@@ -605,7 +605,8 @@ private actor FailingVisionComposer: VisionScriptComposing {
     func compose(
         sourceID: String,
         transcript: [TranscriptSegment],
-        keyframes: [SampledFrame]
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
     ) async throws -> Script {
         calls.append(Call(sourceID: sourceID, transcript: transcript, keyframes: keyframes))
         throw error

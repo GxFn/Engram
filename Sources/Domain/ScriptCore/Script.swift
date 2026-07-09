@@ -49,6 +49,9 @@ public struct StoryboardShot: Sendable, Hashable, Codable {
     public let narration: String?
     public let visualDescription: String
     public let pacingNote: String?
+    /// Burned-in on-screen text (字幕 / key words) for this shot, from deterministic OCR. Empty when
+    /// none detected, or for scripts produced before OCR existed (decoded back-compat).
+    public let onScreenText: [String]
 
     public init(
         index: Int,
@@ -56,7 +59,8 @@ public struct StoryboardShot: Sendable, Hashable, Codable {
         endSeconds: Double,
         narration: String? = nil,
         visualDescription: String,
-        pacingNote: String? = nil
+        pacingNote: String? = nil,
+        onScreenText: [String] = []
     ) {
         self.index = index
         self.startSeconds = startSeconds
@@ -64,6 +68,22 @@ public struct StoryboardShot: Sendable, Hashable, Codable {
         self.narration = narration
         self.visualDescription = visualDescription
         self.pacingNote = pacingNote
+        self.onScreenText = onScreenText
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case index, startSeconds, endSeconds, narration, visualDescription, pacingNote, onScreenText
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        index = try container.decode(Int.self, forKey: .index)
+        startSeconds = try container.decode(Double.self, forKey: .startSeconds)
+        endSeconds = try container.decode(Double.self, forKey: .endSeconds)
+        narration = try container.decodeIfPresent(String.self, forKey: .narration)
+        visualDescription = try container.decodeIfPresent(String.self, forKey: .visualDescription) ?? ""
+        pacingNote = try container.decodeIfPresent(String.self, forKey: .pacingNote)
+        onScreenText = try container.decodeIfPresent([String].self, forKey: .onScreenText) ?? []
     }
 }
 
@@ -155,8 +175,20 @@ public protocol VisionScriptComposing: Actor {
     func compose(
         sourceID: String,
         transcript: [TranscriptSegment],
-        keyframes: [SampledFrame]
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
     ) async throws -> Script
+}
+
+public extension VisionScriptComposing {
+    /// Convenience for callers that have no OCR text (smoke tools / tests).
+    func compose(
+        sourceID: String,
+        transcript: [TranscriptSegment],
+        keyframes: [SampledFrame]
+    ) async throws -> Script {
+        try await compose(sourceID: sourceID, transcript: transcript, keyframes: keyframes, onScreenText: [])
+    }
 }
 
 public protocol TextScriptComposing: Actor {

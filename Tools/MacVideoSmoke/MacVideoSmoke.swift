@@ -139,7 +139,8 @@ private struct MacVideoSmokeRunner {
             let script = try await composer.compose(
                 sourceID: source.id,
                 transcript: transcript,
-                keyframes: frames
+                keyframes: frames,
+                onScreenText: []
             )
             return SmokeComposition(script: script, rawVLMOutputs: await generator.outputs())
         }
