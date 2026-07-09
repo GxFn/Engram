@@ -17,13 +17,15 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
     public var minShotSeconds: Double
 
     public init(
-        maxKeyframeCount: Int = 6,
+        maxKeyframeCount: Int = 16,
         maxFrameBytes: Int = 8_000_000,
         generationConfig: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 1_500),
         retryMalformedJSON: Bool = true,
         minShotSeconds: Double = 0.35
     ) {
-        self.maxKeyframeCount = max(0, min(maxKeyframeCount, 8))
+        // Ceiling matches VideoAnalyzer.frameBudgetCeiling so the composer never silently trims the
+        // analyzer's duration-adaptive frame budget back down.
+        self.maxKeyframeCount = max(0, min(maxKeyframeCount, 16))
         self.maxFrameBytes = max(1, maxFrameBytes)
         self.generationConfig = generationConfig
         self.retryMalformedJSON = retryMalformedJSON

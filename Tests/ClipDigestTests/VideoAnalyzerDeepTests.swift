@@ -113,3 +113,14 @@ private actor DeepRecordingTextComposer: TextScriptComposing {
         Script(id: sourceID, videoSourceID: sourceID, title: "text", summary: "text", shots: [], createdAt: Date(timeIntervalSince1970: 0))
     }
 }
+
+@Test func frameBudgetScalesWithDurationWithinFloorAndCeiling() {
+    // ~1 frame per 10s, floored at the configured base, capped at the ceiling; deep mode takes over
+    // past its threshold so the single-pass budget never needs to stretch further.
+    #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 30) == 6)    // short: floor holds
+    #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 100) == 10)  // scales up
+    #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 150) == 15)
+    #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 10_000) == 16) // ceiling
+    #expect(VideoAnalyzer.frameBudget(base: 0, durationSeconds: 100) == 0)   // frames disabled stays disabled
+    #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 0) == 6)     // unknown duration: base
+}

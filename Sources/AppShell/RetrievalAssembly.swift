@@ -21,6 +21,7 @@ struct RetrievalServices: Sendable {
 enum RetrievalAssembly {
     static let defaultVideoTranscriptionLocale = Locale(identifier: "zh_CN")
 
+    /// Base (floor) of the analyzer's duration-adaptive frame budget (~1 frame / 10s, ceiling 16).
     private static let videoAnalyzerMaxFrames = 6
 
     @MainActor
@@ -98,7 +99,9 @@ enum RetrievalAssembly {
             configuration: textConfiguration
         )
         let visionConfiguration = ScriptComposerConfiguration(
-            maxKeyframeCount: videoAnalyzerMaxFrames,
+            // Accept up to the analyzer's ceiling: the analyzer scales frames with duration, and the
+            // composer must not trim that adaptive budget back to the floor.
+            maxKeyframeCount: 16,
             generationConfig: generationConfig
         )
         // A cloud generator (selected by the user) replaces the on-device MLX backend at this

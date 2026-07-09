@@ -31,10 +31,10 @@ public struct VideoAnalyzer: VideoAnalyzing {
         public var framesPerSegment: Int
 
         public init(
-            thresholdSeconds: Double = 300,
+            thresholdSeconds: Double = 150,
             segmentWindowSeconds: Double = 150,
             maxSegments: Int = 8,
-            framesPerSegment: Int = 4
+            framesPerSegment: Int = 6
         ) {
             self.thresholdSeconds = max(1, thresholdSeconds)
             self.segmentWindowSeconds = max(1, segmentWindowSeconds)
@@ -42,6 +42,9 @@ public struct VideoAnalyzer: VideoAnalyzing {
             self.framesPerSegment = max(1, framesPerSegment)
         }
     }
+
+    /// Hard ceiling for frames in one VLM call — bounds cloud token cost and on-device memory.
+    static let frameBudgetCeiling = 16
 
     public init(
         transcriber: any Transcriber,
@@ -59,8 +62,19 @@ public struct VideoAnalyzer: VideoAnalyzing {
         self.textComposer = textComposer
         self.corrector = corrector
         self.recognizer = recognizer
-        self.maxFrames = max(0, min(maxFrames, 8))
+        self.maxFrames = max(0, min(maxFrames, Self.frameBudgetCeiling))
         self.deep = deep
+    }
+
+    /// Frames scale with duration (~1 per 10s) so a fast-cut 2-minute video isn't summarized from a
+    /// fixed 6 snapshots — most 分镜 would have no frame in their window, forcing the VLM to fabricate
+    /// 画面. `base` (the configured maxFrames) is the floor; the ceiling bounds cost. Deep mode covers
+    /// anything longer than its threshold with per-segment budgets instead.
+    static func frameBudget(base: Int, durationSeconds: Double) -> Int {
+        guard base > 0 else { return 0 }
+        guard durationSeconds.isFinite, durationSeconds > 0 else { return base }
+        let byDuration = Int((durationSeconds / 10).rounded(.up))
+        return max(base, min(frameBudgetCeiling, byDuration))
     }
 
     public func analyze(
@@ -85,7 +99,10 @@ public struct VideoAnalyzer: VideoAnalyzing {
             return merged
         }
 
-        let keyframes = try await sampledFrames(for: source, maxFrames: maxFrames)
+        let keyframes = try await sampledFrames(
+            for: source,
+            maxFrames: Self.frameBudget(base: maxFrames, durationSeconds: duration)
+        )
 
         do {
             return try await visionComposer.compose(
