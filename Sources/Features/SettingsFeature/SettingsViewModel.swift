@@ -73,6 +73,11 @@ public final class SettingsViewModel {
         visionBackendClient.save(visionBackend, nil)
     }
 
+    public func setCloudTextModel(_ value: String) {
+        visionBackend.cloudTextModel = value
+        visionBackendClient.save(visionBackend, nil)
+    }
+
     /// Stores the API key in the Keychain (via the client) and only tracks whether one exists.
     public func setCloudAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

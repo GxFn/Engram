@@ -7,9 +7,9 @@ public enum VisionBackendKind: String, Sendable, CaseIterable, Codable {
     public var displayName: String {
         switch self {
         case .onDevice:
-            "端侧 Qwen3-VL"
+            "本地"
         case .cloud:
-            "云端 AI"
+            "云端"
         }
     }
 }
@@ -19,18 +19,21 @@ public enum VisionBackendKind: String, Sendable, CaseIterable, Codable {
 public struct VisionBackendSettings: Sendable, Equatable {
     public var kind: VisionBackendKind
     public var cloudBaseURL: String
-    public var cloudModel: String
+    public var cloudModel: String      // vision model id
+    public var cloudTextModel: String  // text/LLM model id
     public var hasCloudKey: Bool
 
     public init(
         kind: VisionBackendKind = .onDevice,
         cloudBaseURL: String = "",
         cloudModel: String = "",
+        cloudTextModel: String = "",
         hasCloudKey: Bool = false
     ) {
         self.kind = kind
         self.cloudBaseURL = cloudBaseURL
         self.cloudModel = cloudModel
+        self.cloudTextModel = cloudTextModel
         self.hasCloudKey = hasCloudKey
     }
 }

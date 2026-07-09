@@ -13,10 +13,16 @@ public struct SettingsView: View {
 
     public var body: some View {
         Form {
-            deviceSection
-            engineSection
-            visionSection
-            modelSection
+            modeSection
+
+            if viewModel.visionBackend.kind == .cloud {
+                cloudSection
+            } else {
+                deviceSection
+                engineSection
+                modelSection
+            }
+
             generationSection
 
             if let errorMessage = viewModel.errorMessage {
@@ -65,45 +71,57 @@ public struct SettingsView: View {
         }
     }
 
-    private var visionSection: some View {
-        Section("视觉理解后端") {
-            Picker("后端", selection: visionKindBinding) {
+    private var modeSection: some View {
+        Section {
+            Picker("AI 模式", selection: visionKindBinding) {
                 ForEach(VisionBackendKind.allCases, id: \.self) { kind in
                     Text(kind.displayName).tag(kind)
                 }
             }
+            .pickerStyle(.segmented)
 
-            if viewModel.visionBackend.kind == .cloud {
-                TextField("Base URL（如 https://ark.cn-beijing.volces.com/api/v3）", text: cloudBaseURLBinding)
-                    .textContentType(.URL)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                TextField("模型（如 doubao-vision-pro）", text: cloudModelBinding)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                HStack {
-                    SecureField(
-                        viewModel.visionBackend.hasCloudKey ? "API Key（已保存，可覆盖）" : "API Key",
-                        text: $cloudKeyInput
-                    )
-                    Button("保存") {
-                        viewModel.setCloudAPIKey(cloudKeyInput)
-                        cloudKeyInput = ""
-                    }
-                    .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
+            Text(viewModel.visionBackend.kind == .cloud
+                ? "云端：文本与画面都走你配置的云端 AI，无需下载模型；帧与文本会上传到你的服务。"
+                : "本地：全部在本机运行，完全离线、免费；需下载模型，部分机型可能跑不动。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("AI 模式")
+        }
+    }
+
+    private var cloudSection: some View {
+        Section("云端 AI 服务") {
+            TextField("Base URL（如 https://ark.cn-beijing.volces.com/api/v3）", text: cloudBaseURLBinding)
+                .textContentType(.URL)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            TextField("文本模型（如 doubao-1.5-pro）", text: cloudTextModelBinding)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            TextField("视觉模型（如 doubao-vision-pro）", text: cloudModelBinding)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            HStack {
+                SecureField(
+                    viewModel.visionBackend.hasCloudKey ? "API Key（已保存，可覆盖）" : "API Key",
+                    text: $cloudKeyInput
+                )
+                Button("保存") {
+                    viewModel.setCloudAPIKey(cloudKeyInput)
+                    cloudKeyInput = ""
                 }
-                Text("云端画质更高、无需下载模型；帧会上传到你配置的服务，需自备账号与 API Key。可用豆包/DeepSeek/通义千问 VL/GLM-4V 等 OpenAI 兼容接口。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("端侧 Qwen3-VL 在本机理解画面，完全离线、免费，但需下载模型，部分机型可能跑不动。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Text("需自备账号与 API Key。兼容豆包/DeepSeek/通义千问/GLM 等 OpenAI 兼容接口；文本用于剧本化与问答，视觉用于画面理解。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -180,6 +198,13 @@ public struct SettingsView: View {
         Binding(
             get: { viewModel.visionBackend.cloudModel },
             set: { viewModel.setCloudModel($0) }
+        )
+    }
+
+    private var cloudTextModelBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.cloudTextModel },
+            set: { viewModel.setCloudTextModel($0) }
         )
     }
 

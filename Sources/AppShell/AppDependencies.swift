@@ -57,19 +57,29 @@ public final class AppDependencies {
         clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler()
     ) {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
-        let resolvedModel = activeModel
-            ?? Self.storedModel(defaults: defaults)
-            ?? deviceCapability.recommendedModel
-        let resolvedEngine = activeEngine
-            ?? Self.storedEngine(defaults: defaults, engines: resolvedEngines)
-            ?? resolvedEngines[0]
+        // Cloud mode makes the cloud engine the active text engine (and vision runs on cloud too);
+        // otherwise fall back to the on-device engine/model resolution.
+        let cloudLLMEngine = activeEngine == nil ? CloudAIResolver.makeLLMEngine(defaults: defaults) : nil
+        let resolvedModel: ModelIdentity
+        let resolvedEngine: any LLMEngine
+        if let cloudLLMEngine {
+            resolvedEngine = cloudLLMEngine
+            resolvedModel = CloudAIResolver.cloudModelIdentity
+        } else {
+            resolvedEngine = activeEngine
+                ?? Self.storedEngine(defaults: defaults, engines: resolvedEngines)
+                ?? resolvedEngines[0]
+            resolvedModel = activeModel
+                ?? Self.storedModel(defaults: defaults)
+                ?? deviceCapability.recommendedModel
+        }
         let resolvedModelStore = modelStore
         let resolvedGenerationConfig = GenerationConfigBounds.clamped(
             generationConfig
                 ?? Self.storedGenerationConfig(defaults: defaults)
                 ?? .default
         )
-        let resolvedVisionGenerator = VisionBackendResolver.makeGenerator(defaults: defaults)
+        let resolvedVisionGenerator = CloudAIResolver.makeVisionGenerator(defaults: defaults)
         let retrievalServices = modelContainer.flatMap {
             try? RetrievalAssembly.makeServices(
                 modelContainer: $0,
@@ -170,6 +180,7 @@ public final class AppDependencies {
                     kind: kind,
                     cloudBaseURL: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? "",
                     cloudModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? "",
+                    cloudTextModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? "",
                     hasCloudKey: hasKey
                 )
             },
@@ -177,6 +188,7 @@ public final class AppDependencies {
                 capturedDefaults?.set(settings.kind.rawValue, forKey: VisionBackendDefaultsKey.kind)
                 capturedDefaults?.set(settings.cloudBaseURL, forKey: VisionBackendDefaultsKey.cloudBaseURL)
                 capturedDefaults?.set(settings.cloudModel, forKey: VisionBackendDefaultsKey.cloudModel)
+                capturedDefaults?.set(settings.cloudTextModel, forKey: VisionBackendDefaultsKey.cloudTextModel)
                 if let newKey {
                     KeychainStore.set(newKey, for: VisionBackendKeychainAccount.cloudAPIKey)
                 }
