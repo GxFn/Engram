@@ -39,6 +39,9 @@ public final class AppDependencies {
     @ObservationIgnored private var clipNotificationObserver: ClipEnqueueNotificationObserver?
     // Shared so the 剪藏 and 拆解 tabs render the same store from one instance / one load.
     @ObservationIgnored private var cachedMemoryViewModel: MemoryViewModel?
+    // The single in-flight digest, so overlapping triggers coalesce and the slow cloud VLM request
+    // it may run is shielded from view-lifecycle cancellation (-999) via a detached task.
+    @ObservationIgnored private var digestTask: Task<Void, Never>?
     // Retained so AI routing (云端 ↔ 本地) can be re-resolved live, without an app relaunch,
     // when the user changes the mode or cloud credentials in Settings.
     @ObservationIgnored private let modelContainer: ModelContainer?
@@ -319,8 +322,10 @@ public final class AppDependencies {
                     let snapshots = try await clipDigestService.memorySnapshots()
                     return snapshots.map(Self.memoryClip(from:))
                 },
-                digestPending: {
-                    try await clipDigestService.digestPending()
+                digestPending: { [weak self] in
+                    // Shielded + coalesced so a pull-to-refresh release or navigation can't cancel
+                    // an in-flight cloud digest (-999); routed through the owning dependencies.
+                    await self?.digestPendingClips()
                 },
                 retryClip: { id in
                     try await clipDigestService.retryFailedClip(id: id)
@@ -401,14 +406,28 @@ public final class AppDependencies {
     }
 
     public func digestPendingClips() async {
+        // Coalesce overlapping triggers (launch .task, foreground, enqueue notification, manual
+        // refresh) and shield the digest from view-lifecycle cancellation: its video path makes a
+        // slow cloud VLM request that a pull-to-refresh release / navigation / scene change would
+        // otherwise abort mid-flight as NSURLErrorCancelled (-999), silently degrading 拆解 to
+        // transcript-only. A detached task does not inherit the caller's cancellation.
+        if let digestTask {
+            await digestTask.value
+            return
+        }
         guard let clipDigestService else {
             return
         }
-        do {
-            try await clipDigestService.digestPending()
-        } catch {
-            Log.clip.error("Foreground digest failed: \(String(describing: error), privacy: .public)")
+        let task = Task.detached(priority: .utility) {
+            do {
+                try await clipDigestService.digestPending()
+            } catch {
+                Log.clip.error("Digest failed: \(String(describing: error), privacy: .public)")
+            }
         }
+        digestTask = task
+        await task.value
+        digestTask = nil
     }
 
     public func scheduleClipDigest() {
