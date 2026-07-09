@@ -18,9 +18,7 @@ public struct SettingsView: View {
             if viewModel.visionBackend.kind == .cloud {
                 cloudSection
             } else {
-                deviceSection
-                engineSection
-                modelSection
+                localModelSection
             }
 
             generationSection
@@ -49,26 +47,7 @@ public struct SettingsView: View {
                 await viewModel.installLocalModel(target, from: url)
             }
         }
-        .navigationTitle("Settings")
-    }
-
-    private var deviceSection: some View {
-        Section("Device") {
-            LabeledContent("Memory", value: viewModel.memorySummary)
-            if let recommendedModel = viewModel.recommendedModel {
-                LabeledContent("Recommended", value: recommendedModel.displayName)
-            }
-        }
-    }
-
-    private var engineSection: some View {
-        Section("Engine") {
-            Picker("Active Engine", selection: engineBinding) {
-                ForEach(viewModel.engines) { engine in
-                    Text(engine.displayName).tag(engine.id)
-                }
-            }
-        }
+        .navigationTitle("设置")
     }
 
     private var modeSection: some View {
@@ -125,8 +104,13 @@ public struct SettingsView: View {
         }
     }
 
-    private var modelSection: some View {
-        Section("Models") {
+    private var localModelSection: some View {
+        Section {
+            LabeledContent("设备内存", value: viewModel.memorySummary)
+            if let recommendedModel = viewModel.recommendedModel {
+                LabeledContent("推荐模型", value: recommendedModel.displayName)
+            }
+
             if viewModel.isRefreshing && viewModel.models.isEmpty {
                 ProgressView()
             }
@@ -149,14 +133,18 @@ public struct SettingsView: View {
                     delete: { Task { await viewModel.delete(model) } }
                 )
             }
+        } header: {
+            Text("本地模型")
+        } footer: {
+            Text("根据你的设备内存推荐合适的模型；标「内存不足」的机型跑不动，已禁用下载。")
         }
     }
 
     private var generationSection: some View {
-        Section("Generation") {
+        Section("生成参数") {
             VStack(alignment: .leading, spacing: 8) {
                 LabeledContent(
-                    "Temperature",
+                    "发散度",
                     value: String(format: "%.2f", viewModel.generationConfig.temperature)
                 )
                 Slider(value: temperatureBinding, in: GenerationConfigBounds.temperature)
@@ -168,16 +156,9 @@ public struct SettingsView: View {
             }
 
             Stepper(value: maxTokensBinding, in: GenerationConfigBounds.maxTokens, step: 64) {
-                LabeledContent("Max Tokens", value: "\(viewModel.generationConfig.maxTokens)")
+                LabeledContent("回答长度", value: "\(viewModel.generationConfig.maxTokens)")
             }
         }
-    }
-
-    private var engineBinding: Binding<String> {
-        Binding(
-            get: { viewModel.selectedEngineID },
-            set: { viewModel.selectEngine(id: $0) }
-        )
     }
 
     private var visionKindBinding: Binding<VisionBackendKind> {
@@ -260,7 +241,7 @@ private struct ModelManagementRow: View {
                 if isActive {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                        .accessibilityLabel("Active")
+                        .accessibilityLabel("使用中")
                 }
             }
 
@@ -276,21 +257,21 @@ private struct ModelManagementRow: View {
             }
 
             HStack {
-                Button("Use", action: select)
+                Button("使用", action: select)
                     .disabled(isActive)
 
                 if isOperating {
-                    Button("Cancel", role: .cancel, action: cancelOperation)
+                    Button("取消", role: .cancel, action: cancelOperation)
                 } else if model.isDownloaded {
-                    Button("Delete", role: .destructive, action: delete)
+                    Button("删除", role: .destructive, action: delete)
                 } else {
                     Button(action: downloadModel) {
-                        Label("Download", systemImage: "arrow.down.circle")
+                        Label("下载", systemImage: "arrow.down.circle")
                     }
                     .disabled(!model.canRunOnDevice)
 
                     Button(action: importModel) {
-                        Label("Import", systemImage: "folder.badge.plus")
+                        Label("导入", systemImage: "folder.badge.plus")
                     }
                     .disabled(!model.canRunOnDevice)
                 }
@@ -304,17 +285,17 @@ private struct ModelManagementRow: View {
         var parts: [String] = []
 
         if model.isRecommended {
-            parts.append("recommended")
+            parts.append("推荐")
         }
 
         if model.isDownloaded {
             parts.append(SettingsViewModel.formatBytes(model.storageBytes))
         } else {
-            parts.append("not downloaded")
+            parts.append("未下载")
         }
 
         if !model.canRunOnDevice {
-            parts.append("memory limited")
+            parts.append("内存不足")
         }
 
         return parts.joined(separator: " · ")
