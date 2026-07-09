@@ -31,6 +31,16 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
         self.retryMalformedJSON = retryMalformedJSON
         self.minShotSeconds = max(0, minShotSeconds)
     }
+
+    /// Config for the malformed-JSON retry: deterministic (t=0) with a doubled token budget — the
+    /// most common decode failure is a token-truncated object, and retrying at the same budget
+    /// just truncates again.
+    var retryGenerationConfig: GenerationConfig {
+        var config = generationConfig
+        config.temperature = 0
+        config.maxTokens = max(config.maxTokens * 2, 3_000)
+        return config
+    }
 }
 
 public protocol ScriptTextGenerating: Sendable {
@@ -91,8 +101,22 @@ public actor LLMTextScriptGenerator: ScriptTextGenerating {
             switch event {
             case .token(let token):
                 output += token
-            case .finished:
-                return output
+            case .finished(let reason, _):
+                switch reason {
+                case .stop:
+                    return output
+                case .length:
+                    // Truncated at max tokens: return what we have (the JSON decoder's retry path
+                    // handles an incomplete object), but make the cause visible in logs.
+                    Log.scriptComposer.warning("Script generation hit the max-token limit; output may be truncated")
+                    return output
+                case .cancelled:
+                    throw CancellationError()
+                case .error:
+                    // The engine reports the real error by throwing right after this event — keep
+                    // consuming so it propagates instead of returning partial output as success.
+                    continue
+                }
             }
         }
 
@@ -223,7 +247,7 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
                             malformedOutput: error.output
                         ),
                         frames: preparedFrames,
-                        config: configuration.generationConfig
+                        config: configuration.retryGenerationConfig
                     )
                     return try decodeScript(retryOutput, sourceID: sourceID, transcript: transcript)
                 } catch is CancellationError {
@@ -487,7 +511,7 @@ public actor TextScriptComposer: TextScriptComposing {
                             originalPrompt: prompt,
                             malformedOutput: error.output
                         ),
-                        config: configuration.generationConfig
+                        config: configuration.retryGenerationConfig
                     )
                     return try decodeScript(retryOutput, sourceID: sourceID, transcript: transcript)
                 } catch is CancellationError {
@@ -706,55 +730,73 @@ private enum JSONScriptDecoder {
         id: String,
         allowsVisualFields: Bool = true
     ) throws -> Script {
-        let data = try extractJSONObject(from: output)
-        let payload: ScriptPayload
-        do {
-            payload = try JSONDecoder().decode(ScriptPayload.self, from: data)
-        } catch {
-            throw ScriptJSONDecodingError.decoderFailed(output, error)
-        }
-        let decoded = payload.shots.enumerated().compactMap { index, shot in
-            shot.storyboardShot(index: index)
-        }
-
-        // Reject pure empty-shell shots (only timestamps, no 台词 and no 画面): a model that returns
-        // those must not pass as a real script — fall through to retry / transcript fallback.
-        let substantive = decoded.filter { shot in
-            !(shot.narration?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                || !shot.visualDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Try every balanced JSON block in order: models sometimes emit a prose example object
+        // before/after the real one, and only the block that yields substantive shots counts.
+        let blocks = JSONEnvelope.candidates(output, open: "{", close: "}")
+        let candidates = blocks.isEmpty
+            ? [JSONEnvelope.slice(output, open: "{", close: "}")].compactMap { $0 }
+            : blocks
+        guard !candidates.isEmpty else {
+            throw ScriptJSONDecodingError.noJSONObject(output)
         }
 
-        let shots = allowsVisualFields ? substantive : substantive.map { shot in
-            StoryboardShot(
-                index: shot.index, startSeconds: shot.startSeconds, endSeconds: shot.endSeconds,
-                narration: shot.narration, visualDescription: "",
-                pacingNote: shot.pacingNote, onScreenText: shot.onScreenText
+        var firstDecodeError: Error?
+        var decodedButNoShots = false
+
+        for data in candidates {
+            let payload: ScriptPayload
+            do {
+                payload = try JSONDecoder().decode(ScriptPayload.self, from: data)
+            } catch {
+                if firstDecodeError == nil { firstDecodeError = error }
+                continue
+            }
+
+            let decoded = payload.shots.enumerated().compactMap { index, shot in
+                shot.storyboardShot(index: index)
+            }
+
+            // Reject pure empty-shell shots (only timestamps, no 台词 and no 画面): a model that
+            // returns those must not pass as a real script — retry / transcript fallback instead.
+            let substantive = decoded.filter { shot in
+                !(shot.narration?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    || !shot.visualDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            guard !substantive.isEmpty else {
+                decodedButNoShots = true
+                continue
+            }
+
+            let shots = allowsVisualFields ? substantive : substantive.map { shot in
+                StoryboardShot(
+                    index: shot.index, startSeconds: shot.startSeconds, endSeconds: shot.endSeconds,
+                    narration: shot.narration, visualDescription: "",
+                    pacingNote: shot.pacingNote, onScreenText: shot.onScreenText
+                )
+            }
+
+            return Script(
+                id: id,
+                videoSourceID: sourceID,
+                title: payload.title.trimmedOrDefault(DeterministicScriptFactory.defaultTitle(for: transcript)),
+                summary: payload.summary.trimmedOrDefault(DeterministicScriptFactory.defaultSummary(for: transcript)),
+                shots: shots,
+                createdAt: createdAt,
+                hookStructure: payload.hookStructure,
+                visualElements: allowsVisualFields ? payload.visualElements : [],
+                characters: allowsVisualFields ? payload.characters : []
             )
         }
 
-        guard !shots.isEmpty else {
+        if decodedButNoShots {
             throw ScriptJSONDecodingError.noShots(output)
         }
-
-        return Script(
-            id: id,
-            videoSourceID: sourceID,
-            title: payload.title.trimmedOrDefault(DeterministicScriptFactory.defaultTitle(for: transcript)),
-            summary: payload.summary.trimmedOrDefault(DeterministicScriptFactory.defaultSummary(for: transcript)),
-            shots: shots,
-            createdAt: createdAt,
-            hookStructure: payload.hookStructure,
-            visualElements: allowsVisualFields ? payload.visualElements : [],
-            characters: allowsVisualFields ? payload.characters : []
+        throw ScriptJSONDecodingError.decoderFailed(
+            output,
+            firstDecodeError ?? ScriptJSONDecodingError.noJSONObject(output)
         )
     }
 
-    private static func extractJSONObject(from output: String) throws -> Data {
-        guard let data = JSONEnvelope.slice(output, open: "{", close: "}") else {
-            throw ScriptJSONDecodingError.noJSONObject(output)
-        }
-        return data
-    }
 }
 
 private enum ScriptJSONDecodingError: Error, CustomStringConvertible {
@@ -818,10 +860,20 @@ private struct ScriptPayload: Decodable {
         _ container: KeyedDecodingContainer<CodingKeys>,
         forKey key: CodingKeys
     ) -> [String] {
-        guard let items = try? container.decodeIfPresent([FlexibleTextItem].self, forKey: key) else {
-            return []
+        if let items = try? container.decodeIfPresent([FlexibleTextItem].self, forKey: key) {
+            return items.map(\.text).filter { !$0.isEmpty }
         }
-        return items.map(\.text).filter { !$0.isEmpty }
+        // The model occasionally returns a single string instead of an array — recover it rather
+        // than silently dropping the whole field (e.g. all characters). Split only on hard list
+        // separators (newline/；); 、and ，legitimately appear INSIDE one description.
+        if let single = try? container.decodeIfPresent(FlexibleTextItem.self, forKey: key),
+           !single.text.isEmpty {
+            return single.text
+                .split(whereSeparator: { $0 == "\n" || $0 == "；" || $0 == ";" })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        return []
     }
 }
 

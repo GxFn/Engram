@@ -703,3 +703,61 @@ private let fixtureTranscript = [
 private func jpegFrame(timestamp: Double) -> SampledFrame {
     SampledFrame(timestampSeconds: timestamp, jpegData: Data([0xFF, 0xD8, 0xFF, 0xD9]))
 }
+
+@Test func qwenComposerSurvivesProseBracesAroundTheRealJSON() async throws {
+    // The old first-{ to last-} slice broke whenever explanation text contained braces; the decoder
+    // now tries each balanced block until one yields substantive shots.
+    let generator = RecordingVLMGenerator(responses: [
+        """
+        我先说明一下 {这只是解释性文字}，下面才是结果：
+        {"title": "真标题", "summary": "s", "shots": [
+          {"start": 0, "end": 1, "narration": "词", "visualDescription": "近景画面"}
+        ]}
+        """
+    ])
+    let composer = Qwen3VLScriptComposer(
+        generator: generator,
+        configuration: .init(maxKeyframeCount: 4),
+        dateProvider: { Date(timeIntervalSince1970: 0) },
+        idProvider: { "script-prose" }
+    )
+
+    let script = try await composer.compose(
+        sourceID: "video-prose",
+        transcript: [],
+        keyframes: [jpegFrame(timestamp: 1)]
+    )
+
+    #expect(script.title == "真标题")
+    #expect(script.shots.count == 1)
+    #expect(script.shots[0].visualDescription == "近景画面")
+}
+
+@Test func qwenComposerRecoversCharactersReturnedAsSingleString() async throws {
+    // The model occasionally emits characters as one string instead of an array — recover it
+    // (split only on hard separators; 、/，legitimately appear inside one description).
+    let generator = RecordingVLMGenerator(responses: [
+        """
+        {"title": "t", "summary": "s",
+         "characters": "男生A是留黑色短发、穿浅色短袖的青春男青年；女生B是梳双麻花辫的俏皮女青年",
+         "shots": [{"start": 0, "end": 1, "narration": "词", "visualDescription": "画面"}]}
+        """
+    ])
+    let composer = Qwen3VLScriptComposer(
+        generator: generator,
+        configuration: .init(maxKeyframeCount: 4),
+        dateProvider: { Date(timeIntervalSince1970: 0) },
+        idProvider: { "script-chars" }
+    )
+
+    let script = try await composer.compose(
+        sourceID: "video-chars",
+        transcript: [],
+        keyframes: [jpegFrame(timestamp: 1)]
+    )
+
+    #expect(script.characters == [
+        "男生A是留黑色短发、穿浅色短袖的青春男青年",
+        "女生B是梳双麻花辫的俏皮女青年",
+    ])
+}
