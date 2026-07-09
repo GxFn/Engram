@@ -2,11 +2,24 @@ import EngineKit
 import RAGCore
 import SwiftUI
 
+/// A single-clip focus for 问答 ("问这条视频"): scopes grounded answers to one saved clip.
+public struct AskFocus: Equatable, Sendable, Identifiable {
+    public let clipID: String
+    public let title: String
+    public var id: String { clipID }
+
+    public init(clipID: String, title: String) {
+        self.clipID = clipID
+        self.title = title
+    }
+}
+
 /// Ask surface — "问出来". During M1 this doubles as the engine debugging
 /// console: streaming tokens, engine badge, per-message metrics on long press.
 /// Citations attach in M2 once retrieval exists.
 public struct AskView: View {
     @State private var viewModel: AskViewModel
+    @Binding private var focus: AskFocus?
     @State private var draft = ""
     @State private var isShowingControls = false
     @FocusState private var composerFocused: Bool
@@ -17,6 +30,7 @@ public struct AskView: View {
         model: ModelIdentity,
         generationConfig: GenerationConfig = .default,
         retriever: (any Retriever)? = nil,
+        focus: Binding<AskFocus?> = .constant(nil),
         onCitationSelected: @escaping @MainActor (CitationRef) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: AskViewModel(
@@ -25,14 +39,17 @@ public struct AskView: View {
             generationConfig: generationConfig,
             retriever: retriever
         ))
+        _focus = focus
         self.onCitationSelected = onCitationSelected
     }
 
     public init(
         viewModel: AskViewModel,
+        focus: Binding<AskFocus?> = .constant(nil),
         onCitationSelected: @escaping @MainActor (CitationRef) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: viewModel)
+        _focus = focus
         self.onCitationSelected = onCitationSelected
     }
 
@@ -51,6 +68,8 @@ public struct AskView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .sheet(isPresented: $isShowingControls) { controlsSheet }
+        // Mirror the shell-driven focus into the view model (initial value + any later change).
+        .task(id: focus) { viewModel.setFocusedClip(focus?.clipID) }
     }
 
     private var header: some View {
@@ -63,12 +82,37 @@ public struct AskView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
             engineBar
+            if let activeFocus = focus {
+                focusChip(activeFocus)
+            }
         }
         // Match the native large-title metrics of the other tabs: 16pt leading, and the title text
         // sitting ~4pt below the compact bar (iOS positions its large title low in the title band).
         .padding(.horizontal)
         .padding(.top, 4)
         .padding(.bottom, 10)
+    }
+
+    /// Shows the active 问这条视频 focus with a one-tap way to clear it and return to library-wide Q&A.
+    private func focusChip(_ focus: AskFocus) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "scope")
+            Text("只问：\(focus.title)")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button {
+                self.focus = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("取消只问这条")
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.accentColor.opacity(0.15), in: Capsule())
+        .foregroundStyle(.tint)
     }
 
     private var engineBar: some View {

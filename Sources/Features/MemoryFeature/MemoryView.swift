@@ -289,15 +289,19 @@ public struct MemoryView: View {
     @State private var isShowingVideoPicker = false
     @State private var isShowingClipCapture = false
     private let kind: MemoryLibraryKind
+    /// Invoked by a detail view's 问这条 action to open 问答 focused on that clip (wired by the shell).
+    private let onAskAboutClip: (MemoryClip) -> Void
 
     public init(
         kind: MemoryLibraryKind = .clips,
         viewModel: MemoryViewModel = MemoryViewModel(),
-        navigationTarget: Binding<MemoryNavigationTarget?> = .constant(nil)
+        navigationTarget: Binding<MemoryNavigationTarget?> = .constant(nil),
+        onAskAboutClip: @escaping (MemoryClip) -> Void = { _ in }
     ) {
         self.kind = kind
         _viewModel = State(initialValue: viewModel)
         _navigationTarget = navigationTarget
+        self.onAskAboutClip = onAskAboutClip
     }
 
     private var items: [MemoryClip] {
@@ -318,7 +322,8 @@ public struct MemoryView: View {
                         MemoryDetailView(
                             item: item,
                             retry: { Task { await viewModel.retry(item) } },
-                            onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } }
+                            onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
+                            onAskAboutClip: onAskAboutClip
                         )
                     } label: {
                         MemoryRow(item: item)
@@ -410,7 +415,8 @@ public struct MemoryView: View {
                     item: item,
                     highlightedChunkID: target.chunkID,
                     retry: { Task { await viewModel.retry(item) } },
-                    onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } }
+                    onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
+                    onAskAboutClip: onAskAboutClip
                 )
             } else {
                 ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
@@ -638,6 +644,7 @@ private struct MemoryDetailView: View {
     var highlightedChunkID: String? = nil
     let retry: () -> Void
     var onSaveEdit: (String) -> Void = { _ in }
+    var onAskAboutClip: (MemoryClip) -> Void = { _ in }
 
     @State private var isEditing = false
     @State private var editDraft = ""
@@ -714,6 +721,16 @@ private struct MemoryDetailView: View {
         }
         .navigationTitle(item.title)
         .toolbar {
+            if canAsk {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        onAskAboutClip(item)
+                    } label: {
+                        Label("问这条", systemImage: "questionmark.bubble")
+                    }
+                    .accessibilityLabel("只问这条内容")
+                }
+            }
             if canEditContent {
                 ToolbarItem(placement: .automatic) {
                     Button {
@@ -750,6 +767,11 @@ private struct MemoryDetailView: View {
     /// scripts (their 台词 is auto-corrected during analysis), so they aren't free-text editable here.
     private var canEditContent: Bool {
         item.breakdown == nil && !(item.bodyText ?? "").isEmpty
+    }
+
+    /// Only indexed clips have retrievable content, so only they can be asked about.
+    private var canAsk: Bool {
+        item.state == .indexed
     }
 
     /// The local video file backing this breakdown, used to render per-shot frame thumbnails. Video

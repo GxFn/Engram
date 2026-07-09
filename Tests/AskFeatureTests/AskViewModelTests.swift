@@ -276,6 +276,54 @@ import Testing
 }
 
 @MainActor
+@Test func askViewModelFocusScopesGroundingToSingleClip() async {
+    let metrics = GenerationMetrics(firstTokenLatencyMillis: 3, tokensPerSecond: 4, outputTokenCount: 1)
+    let engine = FakeEngine(events: [.token("答案 [1]"), .finished(.stop, metrics)])
+    let thisCitation = CitationRef(chunkID: "a1", clipID: "this", snippet: "这条")
+    let otherCitation = CitationRef(chunkID: "b1", clipID: "other", snippet: "别条")
+    let results = [
+        RetrievedChunk(chunk: testChunk("a1", text: "本视频内容"), score: 0.05, citation: thisCitation),
+        RetrievedChunk(chunk: testChunk("b1", text: "其他视频内容"), score: 0.04, citation: otherCitation),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: results),
+        clipKinds: { ["this": true, "other": true] }
+    )
+    // 问这条视频: focus overrides even the 全部 scope, keeping only the focused clip's chunk.
+    viewModel.scope = .all
+    viewModel.setFocusedClip("this")
+
+    await viewModel.send("这条讲了什么")?.value
+
+    #expect(viewModel.messages[1].citations == [thisCitation])
+}
+
+@MainActor
+@Test func askViewModelClearingFocusRestoresLibraryWideGrounding() async {
+    let metrics = GenerationMetrics(firstTokenLatencyMillis: 3, tokensPerSecond: 4, outputTokenCount: 1)
+    let engine = FakeEngine(events: [.token("答案 [1] [2]"), .finished(.stop, metrics)])
+    let thisCitation = CitationRef(chunkID: "a1", clipID: "this", snippet: "这条")
+    let otherCitation = CitationRef(chunkID: "b1", clipID: "other", snippet: "别条")
+    let results = [
+        RetrievedChunk(chunk: testChunk("a1", text: "本视频内容"), score: 0.05, citation: thisCitation),
+        RetrievedChunk(chunk: testChunk("b1", text: "其他视频内容"), score: 0.04, citation: otherCitation),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: results)
+    )
+    viewModel.setFocusedClip("this")
+    viewModel.setFocusedClip(nil) // cleared → back to the whole library
+
+    await viewModel.send("讲了什么")?.value
+
+    #expect(viewModel.messages[1].citations == [thisCitation, otherCitation])
+}
+
+@MainActor
 @Test func askViewModelClearsCitationsWhenGroundedAnswerDeclinesSupport() async {
     let engine = FakeEngine(events: [
         .token("<think>\n</think>\n\n"),

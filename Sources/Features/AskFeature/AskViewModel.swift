@@ -114,6 +114,8 @@ public final class AskViewModel {
     /// Auxiliary Ask controls (answer style, scope, generation params).
     public var answerStyle: AnswerStyle = .standard
     public var scope: AskScope = .all
+    /// When set (via 问这条视频), grounding is limited to this single clip, overriding `scope`.
+    public private(set) var focusedClipID: String?
 
     public let engineName: String
     public let modelName: String
@@ -148,6 +150,11 @@ public final class AskViewModel {
         self.messages = messages
         self.isGenerating = false
         self.isRetrieving = false
+    }
+
+    /// Focuses grounded answers on a single clip (问这条视频), or clears the focus when nil.
+    public func setFocusedClip(_ clipID: String?) {
+        focusedClipID = clipID
     }
 
     /// Example prompts shown on the empty Ask screen to make the surface feel guided/smart.
@@ -280,9 +287,14 @@ public final class AskViewModel {
             }
 
             isRetrieving = true
+            // When focused on one clip, over-fetch so enough of that clip's chunks survive the
+            // post-filter (the retriever ranks across the whole library, not per-clip).
+            let topK = focusedClipID == nil
+                ? retrievalConfiguration.resultLimit
+                : max(retrievalConfiguration.resultLimit * 6, 48)
             let retrieved = try await retriever.retrieve(
                 question: question,
-                topK: retrievalConfiguration.resultLimit
+                topK: topK
             )
             isRetrieving = false
             let scored = retrieved.filter { $0.score >= retrievalConfiguration.minimumScore }
@@ -337,6 +349,10 @@ public final class AskViewModel {
     /// Filters retrieved chunks to the selected 剪藏/拆解 scope (via the injected kind resolver);
     /// returns them unchanged for `.all` or when no resolver is available.
     private func applyScope(to chunks: [RetrievedChunk]) async -> [RetrievedChunk] {
+        // 问这条视频: a single-clip focus overrides the 剪藏/拆解 scope — keep only this clip's chunks.
+        if let focusedClipID {
+            return chunks.filter { $0.citation.clipID == focusedClipID }
+        }
         guard scope != .all, let clipKinds else {
             return chunks
         }

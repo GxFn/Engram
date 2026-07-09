@@ -50,6 +50,8 @@ private struct RootContent: View {
     @AppStorage("onboarded") private var onboarded = false
     @State private var selectedTab: RootTab = .studio
     @State private var memoryNavigationTarget: MemoryNavigationTarget?
+    /// Set by a 问这条 action in the 拆解/剪藏 detail; scopes the 问答 tab to that one clip.
+    @State private var askFocus: AskFocus?
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -58,7 +60,8 @@ private struct RootContent: View {
                     MemoryView(
                         kind: .studio,
                         viewModel: dependencies.makeMemoryViewModel(),
-                        navigationTarget: $memoryNavigationTarget
+                        navigationTarget: $memoryNavigationTarget,
+                        onAskAboutClip: askAbout
                     )
                         .id(dependencies.aiRoutingSignature)
                         .toolbar { settingsToolbar }
@@ -75,7 +78,8 @@ private struct RootContent: View {
                     MemoryView(
                         kind: .clips,
                         viewModel: dependencies.makeMemoryViewModel(),
-                        navigationTarget: $memoryNavigationTarget
+                        navigationTarget: $memoryNavigationTarget,
+                        onAskAboutClip: askAbout
                     )
                         .id(dependencies.aiRoutingSignature)
                         .toolbar { settingsToolbar }
@@ -89,7 +93,10 @@ private struct RootContent: View {
 
             NavigationStack {
                 if let dependencies {
-                    AskView(viewModel: dependencies.makeAskViewModel()) { citation in
+                    AskView(
+                        viewModel: dependencies.makeAskViewModel(),
+                        focus: $askFocus
+                    ) { citation in
                         routeCitation(citation, dependencies: dependencies)
                     }
                     .id(consumerIdentity(for: dependencies))
@@ -138,6 +145,12 @@ private struct RootContent: View {
                 break
             }
         }
+    }
+
+    /// Opens the 问答 tab scoped to a single clip (问这条视频).
+    private func askAbout(_ clip: MemoryClip) {
+        askFocus = AskFocus(clipID: clip.id, title: clip.title)
+        selectedTab = .ask
     }
 
     /// Routes an Ask citation to the tab that owns its source, then pushes its detail.
