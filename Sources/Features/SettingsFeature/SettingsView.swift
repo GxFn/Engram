@@ -98,6 +98,11 @@ public struct SettingsView: View {
                 }
                 .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            if viewModel.cloudConfigIncomplete {
+                Label("云端配置不完整（需 Base URL、文本/视觉模型 ID 和 API Key）；补全前将全部使用本地模型。", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Text("兼容豆包 / DeepSeek / 通义 / GLM 等 OpenAI 接口；模型请填接入点 ID（豆包形如 ep-…）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)

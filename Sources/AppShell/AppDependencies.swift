@@ -46,6 +46,8 @@ public final class AppDependencies {
     // The single in-flight digest, so overlapping triggers coalesce and the slow cloud VLM request
     // it may run is shielded from view-lifecycle cancellation (-999) via a detached task.
     @ObservationIgnored private var digestTask: Task<Void, Never>?
+    // Debounces generation-parameter changes into one pipeline rebuild (sliders fire per tick).
+    @ObservationIgnored private var generationConfigRebuildTask: Task<Void, Never>?
     // Retained so AI routing (云端 ↔ 本地) can be re-resolved live, without an app relaunch,
     // when the user changes the mode or cloud credentials in Settings.
     @ObservationIgnored private let modelContainer: ModelContainer?
@@ -148,7 +150,10 @@ public final class AppDependencies {
     /// changes so each feature rebinds to the freshly resolved engine + services. Includes the
     /// cloud config signature so a model-endpoint edit (engine id stays "cloud") still re-creates.
     public var aiRoutingSignature: String {
-        "\(activeEngine.descriptor.id)|\(activeModel.id)|\(appliedAISignature)"
+        // Generation params are part of the routing identity: the digest pipeline bakes them into
+        // its composers, so tabs keyed on this signature must rebind when the user tunes them.
+        let config = "\(String(format: "%.2f", generationConfig.temperature))|\(String(format: "%.2f", generationConfig.topP))|\(generationConfig.maxTokens)"
+        return "\(activeEngine.descriptor.id)|\(activeModel.id)|\(appliedAISignature)|\(config)"
     }
 
     /// Re-resolves the text engine, vision generator, and retrieval services from the current
@@ -175,12 +180,18 @@ public final class AppDependencies {
 
         // Rebuild retrieval services so digest/拆解 use the newly resolved vision generator, then
         // drop the shared MemoryViewModel cache so 剪藏/拆解 rebind to the fresh ClipDigestService.
+        rebuildRetrievalServices()
+    }
+
+    /// Rebuilds the digest/retrieval stack from the CURRENT engine/model/generation config. Shared
+    /// by mode/credential changes (reloadAIRouting) and generation-parameter changes.
+    private func rebuildRetrievalServices() {
         guard let modelContainer,
               let services = try? RetrievalAssembly.makeServices(
                   modelContainer: modelContainer,
                   modelStore: modelStore,
-                  activeEngine: resolved.engine,
-                  activeModel: resolved.model,
+                  activeEngine: activeEngine,
+                  activeModel: activeModel,
                   generationConfig: generationConfig,
                   videoAnalyzer: videoAnalyzer,
                   visionGenerator: CloudAIResolver.makeVisionGenerator(defaults: defaults),
@@ -212,6 +223,20 @@ public final class AppDependencies {
     public func updateGenerationConfig(_ config: GenerationConfig) {
         generationConfig = GenerationConfigBounds.clamped(config)
         persistGenerationConfig()
+        // The digest pipeline bakes generationConfig into its composers at construction, so a tune
+        // used to be silent for 拆解 until relaunch. Debounced (sliders fire per tick — rebuilding
+        // SQLite-backed services each tick would thrash) and deferred past any in-flight digest so
+        // the service isn't swapped under an active run.
+        generationConfigRebuildTask?.cancel()
+        generationConfigRebuildTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self else { return }
+            if let digestTask = self.digestTask {
+                await digestTask.value
+            }
+            guard !Task.isCancelled else { return }
+            self.rebuildRetrievalServices()
+        }
     }
 
     public func makeSettingsViewModel() -> SettingsViewModel {

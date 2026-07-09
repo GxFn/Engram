@@ -78,6 +78,18 @@ public final class SettingsViewModel {
         visionBackendClient.save(visionBackend, nil)
     }
 
+    /// True in 云端 mode when any required field is missing. Cloud routing is all-or-nothing (a
+    /// partial config must not split text/vision across backends), so until complete the whole
+    /// pipeline runs on-device — Settings must say so instead of silently downgrading.
+    public var cloudConfigIncomplete: Bool {
+        visionBackend.kind == .cloud && (
+            visionBackend.cloudBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+                || visionBackend.cloudModel.trimmingCharacters(in: .whitespaces).isEmpty
+                || visionBackend.cloudTextModel.trimmingCharacters(in: .whitespaces).isEmpty
+                || !visionBackend.hasCloudKey
+        )
+    }
+
     /// Stores the API key in the Keychain (via the client) and only tracks whether one exists.
     public func setCloudAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

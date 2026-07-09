@@ -48,11 +48,23 @@ enum CloudAIResolver {
         return (baseURL, apiKey)
     }
 
-    /// Cloud vision generator (frame → text) when configured; nil means use on-device.
+    /// Cloud is ready only when EVERYTHING it needs is present: mode, base URL, key, and BOTH model
+    /// ids. Gating text/vision independently let a partial config silently split the pipeline
+    /// (e.g. text on cloud, vision on device) while the UI promises 云端 mode runs both on the
+    /// cloud endpoint — all-or-nothing keeps the mode honest.
+    static func cloudReady(defaults: UserDefaults?) -> Bool {
+        guard credentials(defaults: defaults) != nil else { return false }
+        let vision = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
+        let text = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
+        return !vision.trimmingCharacters(in: .whitespaces).isEmpty
+            && !text.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Cloud vision generator (frame → text) when fully configured; nil means use on-device.
     static func makeVisionGenerator(defaults: UserDefaults?) -> (any VisionScriptGenerating)? {
-        guard let (baseURL, apiKey) = credentials(defaults: defaults),
-              let model = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel),
-              !model.trimmingCharacters(in: .whitespaces).isEmpty else {
+        guard cloudReady(defaults: defaults),
+              let (baseURL, apiKey) = credentials(defaults: defaults),
+              let model = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) else {
             return nil
         }
         return OpenAICompatibleVLMGenerator(
@@ -60,11 +72,11 @@ enum CloudAIResolver {
         )
     }
 
-    /// Cloud text engine (scripting + Q&A) when configured; nil means use the on-device engine.
+    /// Cloud text engine (scripting + Q&A) when fully configured; nil means use on-device.
     static func makeLLMEngine(defaults: UserDefaults?) -> (any LLMEngine)? {
-        guard let (baseURL, apiKey) = credentials(defaults: defaults),
-              let model = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel),
-              !model.trimmingCharacters(in: .whitespaces).isEmpty else {
+        guard cloudReady(defaults: defaults),
+              let (baseURL, apiKey) = credentials(defaults: defaults),
+              let model = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) else {
             return nil
         }
         return OpenAICompatibleLLMEngine(
