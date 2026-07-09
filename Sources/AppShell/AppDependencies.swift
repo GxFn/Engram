@@ -506,13 +506,13 @@ public final class AppDependencies {
         }
 
         if clipNotificationObserver == nil {
-            let observer = ClipEnqueueNotificationObserver {
-                Task {
-                    do {
-                        try await clipDigestService.digestPending()
-                    } catch {
-                        Log.clip.error("Notification-triggered digest failed: \(String(describing: error), privacy: .public)")
-                    }
+            let observer = ClipEnqueueNotificationObserver { [weak self] in
+                // Route through the coalesced/shielded path: firing directly during a manual refresh
+                // ran a SECOND digest over the same queue — duplicate VLM cost and a spurious
+                // pending-file-missing error for the loser. (BG stays direct: folding it into the
+                // detached shield would fight OS suspension semantics.)
+                Task { @MainActor in
+                    await self?.digestPendingClips()
                 }
             }
             observer.start()

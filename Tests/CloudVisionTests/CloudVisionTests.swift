@@ -20,11 +20,14 @@ import VideoUnderstanding
 
     let messages = try #require(json["messages"] as? [[String: Any]])
     let content = try #require(messages.first?["content"] as? [[String: Any]])
-    #expect(content.count == 2)
+    // prompt, then a timestamp anchor interleaved before each image (frame↔分镜 alignment).
+    #expect(content.count == 3)
     #expect(content[0]["type"] as? String == "text")
     #expect(content[0]["text"] as? String == "分析这条视频")
-    #expect(content[1]["type"] as? String == "image_url")
-    let imageURL = try #require(content[1]["image_url"] as? [String: Any])
+    #expect(content[1]["type"] as? String == "text")
+    #expect((content[1]["text"] as? String)?.contains("1.0s") == true)
+    #expect(content[2]["type"] as? String == "image_url")
+    let imageURL = try #require(content[2]["image_url"] as? [String: Any])
     #expect((imageURL["url"] as? String)?.hasPrefix("data:image/jpeg;base64,") == true)
 }
 

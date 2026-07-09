@@ -144,6 +144,10 @@ public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
     ) throws -> Data {
         var content: [ChatContent] = [.text(prompt)]
         for frame in frames {
+            // Interleave a timestamp anchor before each image so the model knows WHICH moment each
+            // frame shows — a bare image pile forced it to align frames to the prompt's frame list
+            // by position alone, mis-attributing 画面 across 分镜.
+            content.append(.text("下一张是 \(String(format: "%.1f", frame.timestampSeconds))s 处的关键帧："))
             let base64 = frame.jpegData.base64EncodedString()
             content.append(.imageURL("data:image/jpeg;base64,\(base64)"))
         }

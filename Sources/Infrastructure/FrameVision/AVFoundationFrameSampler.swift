@@ -115,8 +115,20 @@ public struct AVFoundationFrameSampler: FrameSampler {
         }
 
         let vectors = signatures.compactMap { $0 }
-        let selected = SceneAwareFrameSelection.select(signatures: vectors, maxFrames: maxFrames)
-        return selected.sorted().map { frames[$0] }
+
+        // Drop near-solid frames (black dips, flashes, fades): in signature space they're extreme
+        // outliers, so farthest-point selection would PREFER them — wasting scarce frame budget on
+        // empty frames. Conservative threshold; never filter below the requested budget.
+        let eligible = vectors.indices.filter {
+            FrameSignatureExtractor.lumaVariance(vectors[$0]) >= 0.0015
+        }
+        let pool = eligible.count >= maxFrames ? eligible : Array(vectors.indices)
+
+        let selectedInPool = SceneAwareFrameSelection.select(
+            signatures: pool.map { vectors[$0] },
+            maxFrames: maxFrames
+        )
+        return selectedInPool.map { pool[$0] }.sorted().map { frames[$0] }
     }
 
     static func evenlySubsampled(_ frames: [SampledFrame], count: Int) -> [SampledFrame] {
@@ -173,8 +185,10 @@ enum SceneAwareFrameSelection {
     }
 }
 
-/// Cheap perceptual signature: a 16×16 grayscale thumbnail flattened to normalized luma.
-/// Enough to tell scenes apart for farthest-point selection; not a precise fingerprint.
+/// Cheap perceptual signature: a 16×16 RGB thumbnail flattened to normalized [r,g,b] per pixel.
+/// Color-aware (a red end-card vs a blue studio at the same brightness are distinct scenes the old
+/// grayscale signature couldn't tell apart); enough for farthest-point selection, not a precise
+/// fingerprint.
 enum FrameSignatureExtractor {
     static func signature(fromJPEG data: Data, side: Int = 16) -> [Float]? {
         guard !data.isEmpty,
@@ -190,21 +204,47 @@ enum FrameSignatureExtractor {
             return nil
         }
 
-        var pixels = [UInt8](repeating: 0, count: side * side)
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
         guard let context = CGContext(
             data: &pixels,
             width: side,
             height: side,
             bitsPerComponent: 8,
-            bytesPerRow: side,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
+            bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
             return nil
         }
 
         context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: side, height: side))
-        return pixels.map { Float($0) / 255.0 }
+        var vector = [Float]()
+        vector.reserveCapacity(side * side * 3)
+        for pixel in 0 ..< (side * side) {
+            let offset = pixel * 4
+            vector.append(Float(pixels[offset]) / 255.0)     // r
+            vector.append(Float(pixels[offset + 1]) / 255.0) // g
+            vector.append(Float(pixels[offset + 2]) / 255.0) // b
+        }
+        return vector
+    }
+
+    /// Luma variance over an [r,g,b,…] signature — near zero for solid/black/flash frames.
+    static func lumaVariance(_ signature: [Float]) -> Double {
+        guard signature.count >= 3 else { return 0 }
+        var lumas: [Double] = []
+        lumas.reserveCapacity(signature.count / 3)
+        var index = 0
+        while index + 2 < signature.count {
+            lumas.append(
+                0.299 * Double(signature[index])
+                    + 0.587 * Double(signature[index + 1])
+                    + 0.114 * Double(signature[index + 2])
+            )
+            index += 3
+        }
+        let mean = lumas.reduce(0, +) / Double(lumas.count)
+        return lumas.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(lumas.count)
     }
 }
 
