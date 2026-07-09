@@ -308,6 +308,7 @@ private struct ModelManagementRow: View {
             // belongs to its button (borderless let the download glyph read as part of 使用).
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .labelStyle(CompactLabelStyle())
         }
         .padding(.vertical, 4)
     }
@@ -334,5 +335,16 @@ private struct ModelManagementRow: View {
         parts.append(model.isDownloaded ? SettingsViewModel.formatBytes(model.storageBytes) : "未下载")
 
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Tightens the gap between a button's icon and title — the default Label spacing read too loose
+/// inside the small bordered pills.
+private struct CompactLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon
+            configuration.title
+        }
     }
 }
