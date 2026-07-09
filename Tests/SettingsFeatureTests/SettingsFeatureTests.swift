@@ -29,6 +29,30 @@ import Testing
 }
 
 @MainActor
+@Test func settingsRefreshDoesNotClobberCloudActiveModelInCloudMode() async {
+    // Regression: opening Settings in 云端 mode used to auto-select the recommended on-device model
+    // (because the "cloud" active model matches no local row), flipping 问答's 云端 AI to Qwen3-1.7B.
+    let registry = FakeModelRegistry(models: [managedModel(recommendedModel, isRecommended: true)])
+    var appliedModelIDs: [String] = []
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: "cloud",
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client,
+        visionBackendClient: VisionBackendClient(load: { VisionBackendSettings(kind: .cloud) }, save: { _, _ in }),
+        applyActiveModel: { appliedModelIDs.append($0.id) }
+    )
+
+    await viewModel.refresh()
+
+    #expect(appliedModelIDs.isEmpty)
+    #expect(viewModel.selectedModelID == "cloud")
+}
+
+@MainActor
 @Test func settingsGenerationConfigClampsAndPropagates() {
     var appliedConfigs: [GenerationConfig] = []
     let viewModel = SettingsViewModel(

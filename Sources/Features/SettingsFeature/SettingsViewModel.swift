@@ -114,7 +114,10 @@ public final class SettingsViewModel {
                 return $0.id < $1.id
             }
 
-            if selectedModel == nil, let recommendedModel {
+            // Only auto-pick a default on-device model in 本地 mode. In 云端 mode the active model is
+            // the cloud identity; auto-selecting the recommended local model here would clobber it —
+            // the bug where opening Settings then returning to 问答 flipped 云端 AI to Qwen3-1.7B.
+            if visionBackend.kind == .onDevice, selectedModel == nil, let recommendedModel {
                 selectModel(recommendedModel.model)
             }
         } catch {
