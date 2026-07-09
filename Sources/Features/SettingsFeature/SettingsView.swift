@@ -139,8 +139,6 @@ public struct SettingsView: View {
             }
         } header: {
             Text("本地模型")
-        } footer: {
-            Text("只列出你的设备能运行的模型。视觉模型（画面理解）需要更大内存，本机跑不动时请用云端 AI。")
         }
     }
 
@@ -284,7 +282,7 @@ private struct ModelManagementRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack {
+            HStack(spacing: 10) {
                 Button("使用", action: select)
                     .disabled(isActive)
 
@@ -303,8 +301,13 @@ private struct ModelManagementRow: View {
                     }
                     .disabled(!model.canRunOnDevice)
                 }
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderless)
+            // Bordered pills keep each action's icon + label grouped as one unit, so the icon clearly
+            // belongs to its button (borderless let the download glyph read as part of 使用).
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
         .padding(.vertical, 4)
     }
