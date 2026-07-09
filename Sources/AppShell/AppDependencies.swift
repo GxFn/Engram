@@ -354,11 +354,25 @@ public final class AppDependencies {
     }
 
     public func makeAskViewModel() -> AskViewModel {
-        AskViewModel(
+        // Resolves clipID -> isVideo so 问答 can scope answers to 剪藏 / 拆解 on demand.
+        let clipKinds: (@Sendable () async -> [String: Bool])?
+        if let service = clipDigestService {
+            clipKinds = {
+                let snapshots = (try? await service.memorySnapshots()) ?? []
+                return Dictionary(
+                    snapshots.map { ($0.id, $0.isVideo) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            }
+        } else {
+            clipKinds = nil
+        }
+        return AskViewModel(
             engine: activeEngine,
             model: activeModel,
             generationConfig: generationConfig,
-            retriever: retriever
+            retriever: retriever,
+            clipKinds: clipKinds
         )
     }
 

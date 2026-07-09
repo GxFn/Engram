@@ -252,6 +252,30 @@ import Testing
 }
 
 @MainActor
+@Test func askViewModelScopeFiltersGroundingToStudioClips() async {
+    let metrics = GenerationMetrics(firstTokenLatencyMillis: 3, tokensPerSecond: 4, outputTokenCount: 1)
+    let engine = FakeEngine(events: [.token("答案 [1]"), .finished(.stop, metrics)])
+    let clipCitation = CitationRef(chunkID: "c1", clipID: "clip", snippet: "文字")
+    let videoCitation = CitationRef(chunkID: "v1", clipID: "video", snippet: "视频")
+    let results = [
+        RetrievedChunk(chunk: testChunk("c1", text: "剪藏内容"), score: 0.05, citation: clipCitation),
+        RetrievedChunk(chunk: testChunk("v1", text: "拆解内容"), score: 0.04, citation: videoCitation),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: results),
+        clipKinds: { ["clip": false, "video": true] }
+    )
+    viewModel.scope = .studio
+
+    await viewModel.send("这条视频讲了什么")?.value
+
+    // Only the video clip survives the 拆解 scope; the 剪藏 chunk is filtered out.
+    #expect(viewModel.messages[1].citations == [videoCitation])
+}
+
+@MainActor
 @Test func askViewModelClearsCitationsWhenGroundedAnswerDeclinesSupport() async {
     let engine = FakeEngine(events: [
         .token("<think>\n</think>\n\n"),

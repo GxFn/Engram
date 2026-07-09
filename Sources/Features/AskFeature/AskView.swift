@@ -8,6 +8,7 @@ import SwiftUI
 public struct AskView: View {
     @State private var viewModel: AskViewModel
     @State private var draft = ""
+    @State private var isShowingControls = false
     @FocusState private var composerFocused: Bool
     private let onCitationSelected: @MainActor (CitationRef) -> Void
 
@@ -44,6 +45,7 @@ public struct AskView: View {
             composer
         }
         .navigationTitle("问答")
+        .sheet(isPresented: $isShowingControls) { controlsSheet }
     }
 
     private var header: some View {
@@ -71,9 +73,84 @@ public struct AskView: View {
                     .labelStyle(.titleAndIcon)
                     .symbolEffect(.variableColor, isActive: true)
             }
+
+            Button {
+                isShowingControls = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.subheadline)
+                    .foregroundStyle(controlsActive ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("问答设置")
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
+    }
+
+    /// Non-default style/scope highlights the controls button so an active filter is visible.
+    private var controlsActive: Bool {
+        viewModel.answerStyle != .standard || viewModel.scope != .all
+    }
+
+    private var controlsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("回答风格") {
+                    Picker("风格", selection: styleBinding) {
+                        ForEach(AskViewModel.AnswerStyle.allCases) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("问答范围") {
+                    Picker("范围", selection: scopeBinding) {
+                        ForEach(AskViewModel.AskScope.allCases) { scope in
+                            Text(scope.displayName).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("默认基于你保存的全部内容；可限定只问剪藏或只问拆解。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("生成参数") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        LabeledContent("发散度", value: String(format: "%.2f", viewModel.generationConfig.temperature))
+                        Slider(value: temperatureBinding, in: AskViewModel.temperatureRange)
+                    }
+                    Stepper(value: maxTokensBinding, in: AskViewModel.maxTokensRange, step: 128) {
+                        LabeledContent("回答长度", value: "\(viewModel.generationConfig.maxTokens)")
+                    }
+                }
+            }
+            .navigationTitle("问答设置")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { isShowingControls = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var styleBinding: Binding<AskViewModel.AnswerStyle> {
+        Binding(get: { viewModel.answerStyle }, set: { viewModel.answerStyle = $0 })
+    }
+
+    private var scopeBinding: Binding<AskViewModel.AskScope> {
+        Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 })
+    }
+
+    private var temperatureBinding: Binding<Double> {
+        Binding(get: { viewModel.generationConfig.temperature }, set: { viewModel.setTemperature($0) })
+    }
+
+    private var maxTokensBinding: Binding<Int> {
+        Binding(get: { viewModel.generationConfig.maxTokens }, set: { viewModel.setMaxTokens($0) })
     }
 
     private var messages: some View {

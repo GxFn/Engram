@@ -62,19 +62,69 @@ public final class AskViewModel {
         }
     }
 
+    /// Answer style, surfaced as an auxiliary Ask control; appended to the system persona.
+    public enum AnswerStyle: String, Sendable, CaseIterable, Identifiable {
+        case standard
+        case detailed
+        case concise
+        case casual
+
+        public var id: String { rawValue }
+
+        public var displayName: String {
+            switch self {
+            case .standard: "标准"
+            case .detailed: "详细"
+            case .concise: "简洁"
+            case .casual: "口语"
+            }
+        }
+
+        var promptSuffix: String {
+            switch self {
+            case .standard: ""
+            case .detailed: "回答尽量详尽，分点展开，给出理由与例子。"
+            case .concise: "回答简洁，直接给结论，能一句话说清就不展开。"
+            case .casual: "用轻松、口语化的语气回答，像朋友聊天。"
+            }
+        }
+    }
+
+    /// Which saved content the grounded answer may draw from (default = everything).
+    public enum AskScope: String, Sendable, CaseIterable, Identifiable {
+        case all
+        case clips
+        case studio
+
+        public var id: String { rawValue }
+
+        public var displayName: String {
+            switch self {
+            case .all: "全部"
+            case .clips: "剪藏"
+            case .studio: "拆解"
+            }
+        }
+    }
+
     public private(set) var messages: [DisplayMessage]
     public private(set) var isGenerating: Bool
     /// True while retrieving grounding before generation starts (drives the "检索中" hint).
     public private(set) var isRetrieving: Bool
+    /// Auxiliary Ask controls (answer style, scope, generation params).
+    public var answerStyle: AnswerStyle = .standard
+    public var scope: AskScope = .all
 
     public let engineName: String
     public let modelName: String
-    public let generationConfig: GenerationConfig
+    public private(set) var generationConfig: GenerationConfig
 
     @ObservationIgnored private let engine: any LLMEngine
     @ObservationIgnored private let model: ModelIdentity
     @ObservationIgnored private let retriever: (any Retriever)?
     @ObservationIgnored private let retrievalConfiguration: AskRetrievalConfiguration
+    // Resolves clipID -> isVideo so 限定范围 (剪藏/拆解) can filter retrieved chunks. nil = no scoping.
+    @ObservationIgnored private let clipKinds: (@Sendable () async -> [String: Bool])?
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private var loadedModelID: String?
 
@@ -84,12 +134,14 @@ public final class AskViewModel {
         generationConfig: GenerationConfig = .default,
         retriever: (any Retriever)? = nil,
         retrievalConfiguration: AskRetrievalConfiguration = .default,
+        clipKinds: (@Sendable () async -> [String: Bool])? = nil,
         messages: [DisplayMessage] = []
     ) {
         self.engine = engine
         self.model = model
         self.retriever = retriever
         self.retrievalConfiguration = retrievalConfiguration
+        self.clipKinds = clipKinds
         self.generationConfig = generationConfig
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
@@ -113,8 +165,27 @@ public final class AskViewModel {
     这是多轮对话。当我追问或质疑某个结论（例如某条“爆点”分析是否站得住）时，请认真思考：先回到我保存的资料和你上一轮的说法，一步步推敲、检查证据，能被说服就大方修正并给出有据的新结论，而不是重复原话。
     """
 
-    private nonisolated static func withSystemPrompt(_ messages: [ChatMessage]) -> [ChatMessage] {
-        [ChatMessage(role: .system, content: systemPrompt)] + messages
+    private func withSystemPrompt(_ tail: [ChatMessage]) -> [ChatMessage] {
+        let suffix = answerStyle.promptSuffix
+        let content = suffix.isEmpty ? Self.systemPrompt : "\(Self.systemPrompt)\n\(suffix)"
+        return [ChatMessage(role: .system, content: content)] + tail
+    }
+
+    /// Bounds for the auxiliary in-Ask generation controls (kept local so AskFeature doesn't depend
+    /// on SettingsFeature).
+    public static let temperatureRange: ClosedRange<Double> = 0...1.5
+    public static let maxTokensRange: ClosedRange<Int> = 128...2048
+
+    public func setTemperature(_ value: Double) {
+        var updated = generationConfig
+        updated.temperature = min(max(value, Self.temperatureRange.lowerBound), Self.temperatureRange.upperBound)
+        generationConfig = updated
+    }
+
+    public func setMaxTokens(_ value: Int) {
+        var updated = generationConfig
+        updated.maxTokens = min(max(value, Self.maxTokensRange.lowerBound), Self.maxTokensRange.upperBound)
+        generationConfig = updated
     }
 
     @discardableResult
@@ -214,7 +285,8 @@ public final class AskViewModel {
                 topK: retrievalConfiguration.resultLimit
             )
             isRetrieving = false
-            let grounded = retrieved.filter { $0.score >= retrievalConfiguration.minimumScore }
+            let scored = retrieved.filter { $0.score >= retrievalConfiguration.minimumScore }
+            let grounded = await applyScope(to: scored)
 
             guard !grounded.isEmpty else {
                 markNoSupportingClips(assistantID)
@@ -229,7 +301,7 @@ public final class AskViewModel {
             attachCitations(prompt.citations, to: assistantID)
 
             let stream = await engine.generate(GenerationRequest(
-                messages: Self.withSystemPrompt(
+                messages: withSystemPrompt(
                     // Prior turns (minus the just-added question + empty answer) give the model the
                     // dialogue so follow-ups / challenges to an earlier answer are reasoned in context.
                     priorConversationMessages(excludingLast: 2)
@@ -259,6 +331,21 @@ public final class AskViewModel {
             if !receivedTerminalEvent {
                 markAssistantError(assistantID, error: error)
             }
+        }
+    }
+
+    /// Filters retrieved chunks to the selected 剪藏/拆解 scope (via the injected kind resolver);
+    /// returns them unchanged for `.all` or when no resolver is available.
+    private func applyScope(to chunks: [RetrievedChunk]) async -> [RetrievedChunk] {
+        guard scope != .all, let clipKinds else {
+            return chunks
+        }
+        let kinds = await clipKinds()
+        return chunks.filter { chunk in
+            guard let isVideo = kinds[chunk.citation.clipID] else {
+                return false
+            }
+            return scope == .studio ? isVideo : !isVideo
         }
     }
 
@@ -352,7 +439,7 @@ public final class AskViewModel {
     }
 
     private func chatTranscript(appendingUserText text: String) -> [ChatMessage] {
-        Self.withSystemPrompt(
+        withSystemPrompt(
             priorConversationMessages(excludingLast: 0) + [ChatMessage(role: .user, content: text)]
         )
     }
