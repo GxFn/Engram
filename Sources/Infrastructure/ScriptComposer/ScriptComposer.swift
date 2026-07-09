@@ -10,9 +10,10 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
     public var maxFrameBytes: Int
     public var generationConfig: GenerationConfig
     public var retryMalformedJSON: Bool
-    /// 分镜 shorter than this are folded into a neighbour so noisy ASR splits (sub-word 0.1s
-    /// fragments) never survive as their own shot. Kept low so legitimate short sentences stay their
-    /// own 分镜 — the prompt does the sentence-level segmentation; this only cleans up broken bits.
+    /// Only a genuine sub-word ASR fragment (e.g. a 0.1s "我") shorter than this is folded into an
+    /// adjacent neighbour. Kept at fragment scale so legitimate fast-paced short sentences
+    /// (0.5–0.8s, the 爆款 case) stay their own 分镜 — the prompt does the sentence-level segmentation,
+    /// this only cleans up broken bits, and ShotMerger additionally requires temporal adjacency.
     public var minShotSeconds: Double
 
     public init(
@@ -20,7 +21,7 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
         maxFrameBytes: Int = 8_000_000,
         generationConfig: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 1_500),
         retryMalformedJSON: Bool = true,
-        minShotSeconds: Double = 0.8
+        minShotSeconds: Double = 0.35
     ) {
         self.maxKeyframeCount = max(0, min(maxKeyframeCount, 8))
         self.maxFrameBytes = max(1, maxFrameBytes)
