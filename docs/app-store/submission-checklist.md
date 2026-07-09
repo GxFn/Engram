@@ -39,6 +39,32 @@
 
 - [ ] **TestFlight 内测**跑通 → 再提交审核
 
+## F. 官方链接(真实入口)
+
+**中国区备案(火山引擎,最先办)**
+- 备案概览:https://www.volcengine.com/docs/6428/68720
+- 首次备案流程:https://www.volcengine.com/docs/6428/68739
+- 备案材料清单:https://www.volcengine.com/docs/6428/141349
+- 大模型 / 算法 / 人工智能备案说明:https://www.volcengine.com/docs/82379/1471389
+- 备案控制台(登录后办理):https://console.volcengine.com/beian
+- 工信部备案公示 / 查询:https://beian.miit.gov.cn
+- 方舟控制台(拿测试接入点 ep 与 Key):https://console.volcengine.com/ark
+
+**Apple**
+- App Store Connect:https://appstoreconnect.apple.com
+- 开发者账号:https://developer.apple.com/account
+- 证书 / 标识 / 描述文件:https://developer.apple.com/account/resources/certificates/list
+- 审核指南:https://developer.apple.com/app-store/review/guidelines/
+- App 隐私(营养标签)说明:https://developer.apple.com/app-store/app-privacy-details/
+- 截图规格:https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications/
+- TestFlight:https://developer.apple.com/testflight/
+
+**隐私政策托管**
+- GitHub Pages:https://pages.github.com
+
+## G. 备案后的代码跟进(拿到备案号后我来做)
+- [ ] 在 App 内显著位置(如「设置」底部)显示 ICP/App 备案号,并链接到 https://beian.miit.gov.cn(工信部硬性要求)
+
 ---
 
 参考文件:`privacy-policy.md`、`review-notes.md`(均在 `docs/app-store/`)。
