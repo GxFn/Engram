@@ -124,3 +124,36 @@ private actor DeepRecordingTextComposer: TextScriptComposing {
     #expect(VideoAnalyzer.frameBudget(base: 0, durationSeconds: 100) == 0)   // frames disabled stays disabled
     #expect(VideoAnalyzer.frameBudget(base: 6, durationSeconds: 0) == 6)     // unknown duration: base
 }
+
+@Test func videoAnalyzerContinuesVisionOnlyWhenTranscriptionFails() async throws {
+    // A silent/music video (no audio track) with frames + burned-in 字幕 must still produce a
+    // breakdown from vision, not hard-fail the whole 拆解 at the transcription gate.
+    let vision = DeepRecordingVisionComposer()
+    let frames = [SampledFrame(timestampSeconds: 1, jpegData: Data([0xFF, 0xD8, 0x01, 0xFF, 0xD9]))]
+    let analyzer = VideoAnalyzer(
+        transcriber: ThrowingDeepTranscriber(error: VideoUnderstandingError.noAudioTrack),
+        sampler: DeepRecordingFrameSampler(frames: frames),
+        visionComposer: vision,
+        textComposer: DeepRecordingTextComposer(),
+        deep: .init(thresholdSeconds: 300)
+    )
+    let source = VideoSource(
+        id: "silent",
+        localFileURL: URL(fileURLWithPath: "/tmp/s.mov"),
+        importedAt: Date(timeIntervalSince1970: 0),
+        durationSeconds: 30
+    )
+
+    let script = try await analyzer.analyze(source) { _ in }
+
+    #expect(await vision.calls.count == 1)
+    #expect(await vision.calls.first?.transcript.isEmpty == true) // proceeded with empty transcript
+    #expect(script.videoSourceID == "silent")
+}
+
+private struct ThrowingDeepTranscriber: Transcriber {
+    let error: Error
+    func transcribe(_ source: VideoSource) async throws -> [TranscriptSegment] {
+        throw error
+    }
+}

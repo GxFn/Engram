@@ -82,10 +82,9 @@ public struct VideoAnalyzer: VideoAnalyzing {
         onStage: @Sendable (ClipState) async -> Void
     ) async throws -> Script {
         await onStage(.transcribing)
-        let rawTranscript = try await transcriber.transcribe(source)
-        // Clean the raw ASR (typos/punctuation/run-ons) before scripting so 台词 is readable and the
-        // 爆点/剧本 analysis reasons over accurate text; falls back to raw on any failure.
-        let transcript = try await correctedTranscript(rawTranscript)
+        // Transcription is NOT a hard gate: a silent/music video with burned-in 字幕 can still yield
+        // a good vision-only breakdown from frames + OCR. Only cancellation propagates.
+        let transcript = try await resilientTranscript(source)
 
         await onStage(.scripting)
 
@@ -93,7 +92,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
         // captured in both 云端 and 本地 modes; empty when no recognizer or nothing detected.
         let onScreenText = await recognizeOnScreenText(source)
 
-        let duration = videoDuration(source: source, transcript: transcript)
+        let duration = videoDuration(source: source, transcript: transcript, onScreenText: onScreenText)
         if let deep, duration > deep.thresholdSeconds,
            let merged = try await analyzeDeep(source, transcript: transcript, onScreenText: onScreenText, duration: duration, config: deep) {
             return merged
@@ -103,6 +102,14 @@ public struct VideoAnalyzer: VideoAnalyzing {
             for: source,
             maxFrames: Self.frameBudget(base: maxFrames, durationSeconds: duration)
         )
+
+        // Nothing extractable at all (no speech, no frames, no on-screen text): fail cleanly rather
+        // than compose an empty-input script that would masquerade as a breakdown.
+        if transcript.isEmpty, keyframes.isEmpty, onScreenText.isEmpty {
+            throw VideoUnderstandingError.unreadableAsset(
+                "无法转写、无可用关键帧、也未识别到画面文字——没有可拆解的内容。"
+            )
+        }
 
         do {
             return try await visionComposer.compose(
@@ -118,6 +125,26 @@ public struct VideoAnalyzer: VideoAnalyzing {
                 "Vision script composition failed for \(source.id, privacy: .public); falling back to transcript-only: \(String(describing: error), privacy: .public)"
             )
             return try await textComposer.compose(sourceID: source.id, transcript: transcript)
+        }
+    }
+
+    /// Transcribes + corrects, degrading to an empty transcript on any non-cancellation failure
+    /// (no audio track, unsupported locale, speech assets still downloading, pre-iOS26 runtime):
+    /// the breakdown then proceeds vision-only from frames + OCR instead of hard-failing a whole
+    /// class of 爆款 (music/no-speech videos with burned-in 字幕).
+    private func resilientTranscript(_ source: VideoSource) async throws -> [TranscriptSegment] {
+        do {
+            let raw = try await transcriber.transcribe(source)
+            // Clean the raw ASR (typos/punctuation/run-ons) before scripting so 台词 is readable and
+            // the 爆点/剧本 analysis reasons over accurate text; falls back to raw on any failure.
+            return try await correctedTranscript(raw)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Log.clip.warning(
+                "Transcription failed for \(source.id, privacy: .public); continuing vision-only: \(String(describing: error), privacy: .public)"
+            )
+            return []
         }
     }
 
@@ -178,11 +205,20 @@ public struct VideoAnalyzer: VideoAnalyzing {
         return DeepScriptMerge.merge(partials, sourceID: source.id)
     }
 
-    private func videoDuration(source: VideoSource, transcript: [TranscriptSegment]) -> Double {
+    private func videoDuration(
+        source: VideoSource,
+        transcript: [TranscriptSegment],
+        onScreenText: [FrameText] = []
+    ) -> Double {
         if let duration = source.durationSeconds, duration.isFinite, duration > 0 {
             return duration
         }
-        return transcript.map(\.endSeconds).filter(\.isFinite).max() ?? 0
+        // OCR timestamps extend the proxy for silent videos (no transcript to infer duration from),
+        // so deep mode and the frame budget still scale for a music video with burned-in 字幕.
+        return max(
+            transcript.map(\.endSeconds).filter(\.isFinite).max() ?? 0,
+            onScreenText.map(\.timestampSeconds).filter(\.isFinite).max() ?? 0
+        )
     }
 
     private func sampledFrames(for source: VideoSource, maxFrames: Int) async throws -> [SampledFrame] {
