@@ -93,7 +93,14 @@ public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
             config: config
         )
 
-        let (data, response) = try await dataForRequest(request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await dataForRequest(request)
+        } catch let error as URLError where error.code == .cancelled {
+            // A cancelled transport call (-999) is a cancellation, not a vision failure — without
+            // this the composer's generic catch would save a misleading transcript-dump "success".
+            throw CancellationError()
+        }
         guard let http = response as? HTTPURLResponse else {
             throw CloudVLMError.invalidResponse
         }

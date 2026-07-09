@@ -101,7 +101,14 @@ public actor OpenAICompatibleLLMEngine: LLMEngine {
         request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try Self.requestBody(model: configuration.model, messages: messages, config: config)
 
-        let (data, response) = try await dataForRequest(request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await dataForRequest(request)
+        } catch let error as URLError where error.code == .cancelled {
+            // Map transport cancellation (-999) to CancellationError so the stream reports
+            // .finished(.cancelled) instead of surfacing a bogus generation failure.
+            throw CancellationError()
+        }
         guard let http = response as? HTTPURLResponse else {
             throw CloudVLMError.invalidResponse
         }

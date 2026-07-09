@@ -403,6 +403,12 @@ public actor ClipDigestService: ClipDigesting {
             )
             try queueStore.delete(item)
             Log.clip.info("Digested queued clip \(clip.id, privacy: .public)")
+        } catch is CancellationError {
+            // Cancellation (user navigation, BGTask expiry) is not a failure: keep the pending queue
+            // file and the non-terminal record state so the next digest run resumes this clip —
+            // marking it failed here permanently bricked an interrupted 拆解.
+            Log.clip.info("Digest cancelled for clip \(clip.id, privacy: .public); will resume on next run")
+            throw CancellationError()
         } catch {
             try await recordFailure(for: item, error: classify(error))
         }

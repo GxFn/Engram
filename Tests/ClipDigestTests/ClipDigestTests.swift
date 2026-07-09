@@ -299,6 +299,44 @@ import VideoUnderstanding
     #expect(textCalls[0].transcript == transcript)
 }
 
+@Test func digestVideoFileCancellationKeepsClipResumable() async throws {
+    // Regression: a cancelled digest (user navigation / BGTask expiry) used to be classified as a
+    // permanent failure and moved out of the queue — bricking the clip. Cancellation must propagate,
+    // leaving the record un-failed and the pending queue file in place for the next run.
+    let fixture = try DigestFixture()
+    let clip = Clip(
+        id: "video-cancelled",
+        source: .videoFile(URL(fileURLWithPath: "/tmp/cancelled.mov")),
+        title: nil,
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_050)
+    )
+    try fixture.store.enqueue(clip)
+
+    let analyzer = VideoAnalyzer(
+        transcriber: RecordingTranscriber(transcript: [
+            TranscriptSegment(startSeconds: 0, endSeconds: 2, text: "开头"),
+        ]),
+        sampler: RecordingFrameSampler(frames: []),
+        visionComposer: FailingVisionComposer(error: CancellationError()),
+        textComposer: RecordingTextComposer(script: fixtureScript(
+            sourceID: "video-cancelled",
+            title: "不该被用到",
+            visualDescription: ""
+        ))
+    )
+    let service = try fixture.makeService(fetcher: FailingFetcher(), videoAnalyzer: analyzer)
+
+    await #expect(throws: CancellationError.self) {
+        try await service.digestPending()
+    }
+
+    let snapshot = try await fixture.records.snapshot(id: "video-cancelled")
+    #expect(snapshot.state != .failed)
+    #expect(snapshot.failureReason == nil)
+    #expect(try fixture.store.pendingItems().count == 1)
+}
+
 @Test func digestVideoFileWithoutAnalyzerRecordsConfigurationFailure() async throws {
     let fixture = try DigestFixture()
     let videoURL = URL(fileURLWithPath: "/tmp/local-video.mov")
