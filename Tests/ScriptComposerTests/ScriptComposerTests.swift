@@ -289,8 +289,9 @@ import VideoUnderstanding
     #expect(script.title == "转写版脚本")
     #expect(script.shots[0].visualDescription == "")
     #expect(script.visualElements == [])
-    // The degradation annotation rebuilds the Script — characters must survive it (regression #1).
-    #expect(script.characters == ["主厨是短发年轻男性"])
+    // Transcript-only fallback has no frames to ground 人物 on, so characters are stripped rather
+    // than let a hallucinated appearance ("短发年轻男性" from audio alone) through (anti-fabrication).
+    #expect(script.characters == [])
     #expect(script.hookStructure == HookAnalysis(
         openingHook: "今天我们做一道快手菜。",
         retentionDevices: ["承诺快手结果"],

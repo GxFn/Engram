@@ -525,7 +525,8 @@ public actor TextScriptComposer: TextScriptComposing {
             sourceID: sourceID,
             transcript: transcript,
             createdAt: dateProvider(),
-            id: idProvider()
+            id: idProvider(),
+            allowsVisualFields: false // transcript-only: no frames to ground visual fields on
         )
     }
 }
@@ -692,12 +693,16 @@ private enum ScriptPromptBuilder {
 }
 
 private enum JSONScriptDecoder {
+    /// `allowsVisualFields` is false on the transcript-only path: without any frame input the model
+    /// cannot ground characters / visualElements / visualDescription, so we strip them rather than
+    /// let a hallucination through.
     static func decode(
         _ output: String,
         sourceID: String,
         transcript: [TranscriptSegment],
         createdAt: Date,
-        id: String
+        id: String,
+        allowsVisualFields: Bool = true
     ) throws -> Script {
         let data = try extractJSONObject(from: output)
         let payload: ScriptPayload
@@ -706,8 +711,23 @@ private enum JSONScriptDecoder {
         } catch {
             throw ScriptJSONDecodingError.decoderFailed(output, error)
         }
-        let shots = payload.shots.enumerated().compactMap { index, shot in
+        let decoded = payload.shots.enumerated().compactMap { index, shot in
             shot.storyboardShot(index: index)
+        }
+
+        // Reject pure empty-shell shots (only timestamps, no 台词 and no 画面): a model that returns
+        // those must not pass as a real script — fall through to retry / transcript fallback.
+        let substantive = decoded.filter { shot in
+            !(shot.narration?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                || !shot.visualDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        let shots = allowsVisualFields ? substantive : substantive.map { shot in
+            StoryboardShot(
+                index: shot.index, startSeconds: shot.startSeconds, endSeconds: shot.endSeconds,
+                narration: shot.narration, visualDescription: "",
+                pacingNote: shot.pacingNote, onScreenText: shot.onScreenText
+            )
         }
 
         guard !shots.isEmpty else {
@@ -722,8 +742,8 @@ private enum JSONScriptDecoder {
             shots: shots,
             createdAt: createdAt,
             hookStructure: payload.hookStructure,
-            visualElements: payload.visualElements,
-            characters: payload.characters
+            visualElements: allowsVisualFields ? payload.visualElements : [],
+            characters: allowsVisualFields ? payload.characters : []
         )
     }
 
