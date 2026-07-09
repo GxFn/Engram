@@ -10,8 +10,9 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
     public var maxFrameBytes: Int
     public var generationConfig: GenerationConfig
     public var retryMalformedJSON: Bool
-    /// 分镜 shorter than this are folded into a neighbour so noisy ASR splits (0.1s fragments) never
-    /// survive as their own shot. The prompt also asks the VLM not to fragment; this guarantees it.
+    /// 分镜 shorter than this are folded into a neighbour so noisy ASR splits (sub-word 0.1s
+    /// fragments) never survive as their own shot. Kept low so legitimate short sentences stay their
+    /// own 分镜 — the prompt does the sentence-level segmentation; this only cleans up broken bits.
     public var minShotSeconds: Double
 
     public init(
@@ -19,7 +20,7 @@ public struct ScriptComposerConfiguration: Sendable, Hashable {
         maxFrameBytes: Int = 8_000_000,
         generationConfig: GenerationConfig = .init(temperature: 0.2, topP: 0.9, maxTokens: 1_500),
         retryMalformedJSON: Bool = true,
-        minShotSeconds: Double = 1.2
+        minShotSeconds: Double = 0.8
     ) {
         self.maxKeyframeCount = max(0, min(maxKeyframeCount, 8))
         self.maxFrameBytes = max(1, maxFrameBytes)
@@ -526,7 +527,7 @@ private enum ScriptPromptBuilder {
           ]
         }
         要求：
-        - shots 按时间递增；每个分镜时长尽量≥1.5 秒，不要把同一句话拆成多个分镜；分镜边界优先落在一句话说完或画面明显切换处，不要机械照搬语音停顿；
+        - shots 按时间递增；每个完整句子、明显的语义节拍或说话人切换各自成为一个分镜，覆盖整条视频、不要漏掉任何一句台词；不要把多句台词并进同一个分镜，也不要把半句话拆成多个分镜；分镜边界落在一句话说完或画面明显切换处；
         - 每个 visualDescription 必须写实可拍、能直接生成画面，不要只复述台词，禁止“表情认真”“反应各异”这类笼统词；
         - 画面里出现的字幕/文字以“画面文字”为准，结合它们做分析，不要臆造或漏掉；
         - characters 里每个人物在各 shot 中保持同一称呼与外貌，方便下游生成一致的 AI 形象；

@@ -648,6 +648,7 @@ private struct MemoryDetailView: View {
 
     @State private var isEditing = false
     @State private var editDraft = ""
+    @State private var shareParcel: ShareParcel?
 
     var body: some View {
         List {
@@ -747,6 +748,13 @@ private struct MemoryDetailView: View {
                     Menu {
                         ShareLink("分享剧本", item: item.handoffText)
                         #if os(iOS)
+                        if breakdownVideoURL != nil, let shots = item.breakdown?.shots, !shots.isEmpty {
+                            Button {
+                                Task { await prepareShareWithFrames(shots) }
+                            } label: {
+                                Label("分享（附分镜截图）", systemImage: "photo.on.rectangle.angled")
+                            }
+                        }
                         Button {
                             UIPasteboard.general.string = item.handoffText
                         } label: {
@@ -761,6 +769,11 @@ private struct MemoryDetailView: View {
             }
         }
         .sheet(isPresented: $isEditing) { editSheet }
+        #if os(iOS)
+        .sheet(item: $shareParcel) { parcel in
+            ShareSheet(items: parcel.items)
+        }
+        #endif
     }
 
     /// Text/URL clips carry their content as editable body text; video breakdowns are structured
@@ -780,6 +793,22 @@ private struct MemoryDetailView: View {
         guard let url = item.sourceURL, url.isFileURL else { return nil }
         return url
     }
+
+    #if os(iOS)
+    /// Bundles the handoff script text with one frame per shot so 投喂 can carry reference stills
+    /// (for 豆包/即梦) alongside the text. Frames are decoded on demand from the local video.
+    private func prepareShareWithFrames(_ shots: [StoryboardShot]) async {
+        var items: [Any] = [item.handoffText]
+        if let url = breakdownVideoURL {
+            for shot in shots.sorted(by: { $0.index < $1.index }) {
+                if let image = await ShotThumbnailCache.shared.load(url: url, seconds: shot.startSeconds, maxSize: 1080) {
+                    items.append(image)
+                }
+            }
+        }
+        shareParcel = ShareParcel(items: items)
+    }
+    #endif
 
     private var editSheet: some View {
         NavigationStack {
@@ -1022,3 +1051,22 @@ private struct StateBadge: View {
         foreground.opacity(0.14)
     }
 }
+
+/// A prepared share payload (script text + shot stills) identified for `.sheet(item:)`.
+private struct ShareParcel: Identifiable {
+    let id = UUID()
+    let items: [Any]
+}
+
+#if os(iOS)
+/// Bridges UIActivityViewController so 投喂 can share mixed content (text + reference stills).
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+#endif
