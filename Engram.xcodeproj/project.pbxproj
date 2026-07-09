@@ -13,6 +13,7 @@
 		E0B200000000000000000B03 /* EngramClip.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = E0B200000000000000000F01 /* EngramClip.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E0B200000000000000000B04 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0B200000000000000000F05 /* ShareViewController.swift */; };
 		E0B200000000000000000B05 /* GetSelection.js in Resources */ = {isa = PBXBuildFile; fileRef = E0B200000000000000000F04 /* GetSelection.js */; };
+		E0B200000000000000000B06 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E0B200000000000000000F06 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +47,7 @@
 		E0B200000000000000000F03 /* EngramClip.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EngramClip.entitlements; sourceTree = "<group>"; };
 		E0B200000000000000000F04 /* GetSelection.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = GetSelection.js; sourceTree = "<group>"; };
 		E0B200000000000000000F05 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		E0B200000000000000000F06 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -102,6 +104,7 @@
 				E0B200000000000000000F03 /* EngramClip.entitlements */,
 				E0B200000000000000000F04 /* GetSelection.js */,
 				E0B200000000000000000F05 /* ShareViewController.swift */,
+				E0B200000000000000000F06 /* PrivacyInfo.xcprivacy */,
 			);
 			path = ShareExtension;
 			sourceTree = "<group>";
@@ -209,6 +212,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E0B200000000000000000B05 /* GetSelection.js in Resources */,
+				E0B200000000000000000B06 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
