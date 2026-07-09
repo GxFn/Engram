@@ -206,13 +206,14 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
                 id: idProvider()
             )
         } catch {
+            let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             Log.scriptComposer.error(
                 "Qwen3-VL script generation failed: \(String(describing: error), privacy: .public)"
             )
             return try await transcriptFallback(
                 sourceID: sourceID,
                 transcript: transcript,
-                reason: "VLM 不可用，已转写-only 兜底。"
+                reason: "画面理解失败：\(detail)"
             )
         }
     }
@@ -237,7 +238,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
         reason: String
     ) async throws -> Script {
         if let textFallback {
-            return try await textFallback.compose(sourceID: sourceID, transcript: transcript)
+            let script = try await textFallback.compose(sourceID: sourceID, transcript: transcript)
+            return Self.annotate(script, reason: reason)
         }
 
         return DeterministicScriptFactory.make(
@@ -249,6 +251,26 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             pacingNote: "转写-only 兜底",
             createdAt: dateProvider(),
             id: idProvider()
+        )
+    }
+
+    /// Prepends the degradation reason to a fallback script's summary so the UI shows *why* 画面理解
+    /// didn't run (e.g. HTTP 401 from the cloud VLM, or no sampled keyframes) instead of failing
+    /// silently into a transcript dump.
+    private nonisolated static func annotate(_ script: Script, reason: String) -> Script {
+        guard !script.summary.contains(reason) else {
+            return script
+        }
+        let summary = script.summary.isEmpty ? reason : "\(reason)\n\(script.summary)"
+        return Script(
+            id: script.id,
+            videoSourceID: script.videoSourceID,
+            title: script.title,
+            summary: summary,
+            shots: script.shots,
+            createdAt: script.createdAt,
+            hookStructure: script.hookStructure,
+            visualElements: script.visualElements
         )
     }
 }
@@ -288,6 +310,7 @@ public actor TextScriptComposer: TextScriptComposing {
 
     public func compose(sourceID: String, transcript: [TranscriptSegment]) async throws -> Script {
         let prompt = ScriptPromptBuilder.textPrompt(transcript: transcript)
+        var failureDetail = "文本模型暂不可用"
 
         do {
             let output = try await generator.generateScriptText(
@@ -301,6 +324,7 @@ public actor TextScriptComposer: TextScriptComposing {
             Log.scriptComposer.warning(
                 "Text script JSON decode failed: \(String(describing: error), privacy: .public)"
             )
+            failureDetail = "文本模型输出不是合法 JSON"
 
             if configuration.retryMalformedJSON {
                 do {
@@ -324,13 +348,14 @@ public actor TextScriptComposer: TextScriptComposing {
             Log.scriptComposer.error(
                 "Text script generation failed: \(String(describing: error), privacy: .public)"
             )
+            failureDetail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         }
 
         return DeterministicScriptFactory.make(
             sourceID: sourceID,
             transcript: transcript,
             title: "语音转写草稿",
-            summary: "文本模型暂不可用，已先根据语音转写生成单分镜草稿。",
+            summary: "剧本化未生效（\(failureDetail)），已根据语音转写生成单分镜草稿。",
             visualDescription: "",
             pacingNote: "仅基于语音转写，暂未使用画面理解。",
             createdAt: dateProvider(),
