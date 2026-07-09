@@ -48,28 +48,11 @@ private struct RootContent: View {
     @Environment(\.deps) private var dependencies
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboarded") private var onboarded = false
-    @State private var selectedTab: RootTab = .clips
+    @State private var selectedTab: RootTab = .studio
     @State private var memoryNavigationTarget: MemoryNavigationTarget?
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            NavigationStack {
-                if let dependencies {
-                    MemoryView(
-                        kind: .clips,
-                        viewModel: dependencies.makeMemoryViewModel(),
-                        navigationTarget: $memoryNavigationTarget
-                    )
-                        .id(dependencies.aiRoutingSignature)
-                        .toolbar { settingsToolbar }
-                } else {
-                    ContentUnavailableView("剪藏", systemImage: "tray.full")
-                        .toolbar { settingsToolbar }
-                }
-            }
-                .tabItem { Label("剪藏", systemImage: "tray.full") }
-                .tag(RootTab.clips)
-
             NavigationStack {
                 if let dependencies {
                     MemoryView(
@@ -86,6 +69,23 @@ private struct RootContent: View {
             }
                 .tabItem { Label("拆解", systemImage: "film.stack") }
                 .tag(RootTab.studio)
+
+            NavigationStack {
+                if let dependencies {
+                    MemoryView(
+                        kind: .clips,
+                        viewModel: dependencies.makeMemoryViewModel(),
+                        navigationTarget: $memoryNavigationTarget
+                    )
+                        .id(dependencies.aiRoutingSignature)
+                        .toolbar { settingsToolbar }
+                } else {
+                    ContentUnavailableView("剪藏", systemImage: "tray.full")
+                        .toolbar { settingsToolbar }
+                }
+            }
+                .tabItem { Label("剪藏", systemImage: "tray.full") }
+                .tag(RootTab.clips)
 
             NavigationStack {
                 if let dependencies {
