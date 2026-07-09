@@ -8,10 +8,12 @@ public struct InsightView: View {
     private enum Mode: Hashable {
         case library
         case dashboard
+        case reports
     }
 
     @State private var viewModel: HookLibraryViewModel
     @State private var mode: Mode = .library
+    @State private var presentedReport: InsightReport?
     private let onHookSelected: @MainActor (String) -> Void
 
     public init(
@@ -31,6 +33,7 @@ public struct InsightView: View {
                     Picker("视图", selection: $mode) {
                         Text("钩子库").tag(Mode.library)
                         Text("看板").tag(Mode.dashboard)
+                        Text("报告").tag(Mode.reports)
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
@@ -39,12 +42,23 @@ public struct InsightView: View {
                     switch mode {
                     case .library: library
                     case .dashboard: dashboard
+                    case .reports: reports
                     }
                 }
             }
         }
         .navigationTitle("洞察")
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            await viewModel.loadReports()
+        }
+        .navigationDestination(item: $presentedReport) { report in
+            InsightReportView(
+                report: report,
+                titleForClip: { viewModel.title(forClip: $0) },
+                onEvidenceSelected: onHookSelected
+            )
+        }
     }
 
     // MARK: - Library
@@ -198,6 +212,78 @@ public struct InsightView: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, 2)
+    }
+
+    // MARK: - Reports (LLM cross-video synthesis)
+
+    private var reports: some View {
+        List {
+            Section {
+                Button {
+                    Task {
+                        if let report = await viewModel.generateReport() {
+                            presentedReport = report
+                        }
+                    }
+                } label: {
+                    if viewModel.isGeneratingReport {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("归纳中…")
+                        }
+                    } else {
+                        Label("对当前 \(viewModel.filtered.count) 条生成洞察", systemImage: "wand.and.stars")
+                    }
+                }
+                .disabled(viewModel.isGeneratingReport || viewModel.filtered.count < 2)
+
+                if let error = viewModel.reportError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+            } footer: {
+                Text("先在『钩子库』按类型/收藏/搜索筛选，这里就只对筛选后的集合归纳；至少 2 条。")
+            }
+
+            if viewModel.reports.isEmpty {
+                Section {
+                    Text("还没有洞察报告。点上面生成第一份，会自动保存到这里，可随时回看。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section("历史报告") {
+                    ForEach(viewModel.reports) { report in
+                        Button {
+                            presentedReport = report
+                        } label: {
+                            reportRow(report)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onDelete { indexSet in
+                        let toDelete = indexSet.map { viewModel.reports[$0] }
+                        Task {
+                            for report in toDelete {
+                                await viewModel.deleteReport(report)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func reportRow(_ report: InsightReport) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(report.title)
+                .font(.body)
+                .lineLimit(1)
+            Text("\(report.scopeDescription) · \(report.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Empty

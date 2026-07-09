@@ -109,6 +109,63 @@ private struct TypePair: Equatable {
     let count: Int
 }
 
+@MainActor
+@Test func hookLibraryGeneratesSavesAndDeletesReport() async {
+    let entries = [
+        makeEntry(id: "1", title: "A", text: "x", type: .suspense, favorite: false),
+        makeEntry(id: "2", title: "B", text: "y", type: .resonance, favorite: false),
+    ]
+    let report = InsightReport(
+        id: "r1",
+        title: "报告",
+        scopeDescription: "全部 · 2 条",
+        sourceCount: 2,
+        createdAt: Date(timeIntervalSince1970: 0),
+        sections: [InsightSection(heading: "钩子套路", body: "归纳", evidenceClipIDs: ["1"])]
+    )
+    let store = ReportStore()
+    let viewModel = HookLibraryViewModel(client: HookLibraryClient(
+        loadHooks: { entries },
+        generateReport: { _, _ in report },
+        loadReports: { await store.all() },
+        saveReport: { await store.save($0) },
+        deleteReport: { await store.delete($0) }
+    ))
+    await viewModel.load()
+
+    let generated = await viewModel.generateReport()
+    #expect(generated?.id == "r1")
+    #expect(viewModel.reports.map(\.id) == ["r1"])
+    #expect(await store.all().map(\.id) == ["r1"])
+
+    await viewModel.deleteReport(report)
+    #expect(viewModel.reports.isEmpty)
+    #expect(await store.all().isEmpty)
+}
+
+@MainActor
+@Test func hookLibraryGenerateReportNeedsAtLeastTwoHooks() async {
+    let viewModel = HookLibraryViewModel(client: HookLibraryClient(
+        loadHooks: { [makeEntry(id: "1", title: "A", text: "x", type: .other, favorite: false)] }
+    ))
+    await viewModel.load()
+
+    let report = await viewModel.generateReport()
+
+    #expect(report == nil)
+    #expect(viewModel.reportError != nil)
+}
+
+private actor ReportStore {
+    private var reports: [InsightReport] = []
+    func all() -> [InsightReport] { reports }
+    func save(_ report: InsightReport) {
+        reports.removeAll { $0.id == report.id }
+        reports.insert(report, at: 0)
+    }
+    func delete(_ id: String) { reports.removeAll { $0.id == id } }
+}
+
 private func makeEntry(
     id: String,
     title: String,

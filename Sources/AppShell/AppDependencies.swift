@@ -11,6 +11,7 @@ import ModelStore
 import Observation
 import Persistence
 import RAGCore
+import ScriptComposer
 import ScriptCore
 import SettingsFeature
 import SwiftData
@@ -387,6 +388,9 @@ public final class AppDependencies {
         let service = clipDigestService
         nonisolated(unsafe) let capturedDefaults = defaults
         let favoritesKey = "favoriteHookClipIDs"
+        let reportsKey = "insightReports"
+        let engine = activeEngine
+        let model = activeModel
 
         let client = HookLibraryClient(
             loadHooks: {
@@ -418,9 +422,46 @@ public final class AppDependencies {
                     favorites.remove(clipID)
                 }
                 capturedDefaults?.set(Array(favorites), forKey: favoritesKey)
+            },
+            generateReport: { hooks, scope in
+                // Structured summary of the hooks (not raw video) → LLM synthesis; cheap.
+                let composer = InsightReportComposer(engine: engine, model: model)
+                return (try? await composer.compose(hooks: hooks, scopeDescription: scope)) ?? nil
+            },
+            loadReports: {
+                guard let data = capturedDefaults?.data(forKey: reportsKey),
+                      let reports = try? JSONDecoder().decode([InsightReport].self, from: data)
+                else {
+                    return []
+                }
+                return reports
+            },
+            saveReport: { report in
+                var reports = Self.storedReports(capturedDefaults, key: reportsKey)
+                reports.removeAll { $0.id == report.id }
+                reports.insert(report, at: 0)
+                if let data = try? JSONEncoder().encode(reports) {
+                    capturedDefaults?.set(data, forKey: reportsKey)
+                }
+            },
+            deleteReport: { id in
+                var reports = Self.storedReports(capturedDefaults, key: reportsKey)
+                reports.removeAll { $0.id == id }
+                if let data = try? JSONEncoder().encode(reports) {
+                    capturedDefaults?.set(data, forKey: reportsKey)
+                }
             }
         )
         return HookLibraryViewModel(client: client)
+    }
+
+    private nonisolated static func storedReports(_ defaults: UserDefaults?, key: String) -> [InsightReport] {
+        guard let data = defaults?.data(forKey: key),
+              let reports = try? JSONDecoder().decode([InsightReport].self, from: data)
+        else {
+            return []
+        }
+        return reports
     }
 
     public func makeBenchViewModel() -> BenchViewModel {

@@ -114,4 +114,65 @@ public final class HookLibraryViewModel {
         }
         await client.setFavorite(hook.clipID, newValue)
     }
+
+    // MARK: - Insight reports (P3)
+
+    public private(set) var reports: [InsightReport] = []
+    public private(set) var isGeneratingReport = false
+    public var reportError: String?
+
+    public func loadReports() async {
+        reports = await client.loadReports()
+    }
+
+    /// Generates a cross-video report over the *currently filtered* set (so the existing type /
+    /// favorite / search filters double as the scope selector), saves it, and returns it.
+    @discardableResult
+    public func generateReport() async -> InsightReport? {
+        guard !isGeneratingReport else {
+            return nil
+        }
+        let scope = filtered
+        guard scope.count >= 2 else {
+            reportError = "至少需要 2 条钩子才能归纳规律，先多拆几条或放宽筛选。"
+            return nil
+        }
+        isGeneratingReport = true
+        reportError = nil
+        defer { isGeneratingReport = false }
+
+        guard let report = await client.generateReport(scope, scopeDescription()) else {
+            reportError = "生成失败，请重试。"
+            return nil
+        }
+        await client.saveReport(report)
+        reports.insert(report, at: 0)
+        return report
+    }
+
+    public func deleteReport(_ report: InsightReport) async {
+        reports.removeAll { $0.id == report.id }
+        await client.deleteReport(report.id)
+    }
+
+    public func title(forClip clipID: String) -> String? {
+        hooks.first { $0.clipID == clipID }?.clipTitle
+    }
+
+    /// Human description of the current filter scope, stored on the report.
+    private func scopeDescription() -> String {
+        var parts: [String] = []
+        if let selectedType {
+            parts.append(selectedType.displayName)
+        }
+        if favoritesOnly {
+            parts.append("收藏")
+        }
+        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !keyword.isEmpty {
+            parts.append("“\(keyword)”")
+        }
+        let base = parts.isEmpty ? "全部" : parts.joined(separator: "·")
+        return "\(base) · \(filtered.count) 条"
+    }
 }

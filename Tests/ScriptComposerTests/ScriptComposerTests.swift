@@ -515,6 +515,38 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
     #expect(corrected == raw)
 }
 
+@Test func insightReportComposerParsesSectionsAndMapsEvidenceIndicesToClips() async throws {
+    let hooks = [
+        HookEntry(id: "a", clipID: "clipA", clipTitle: "A", text: "钩子A", hookType: .suspense, retentionDevices: ["悬念"], payoff: nil, whyItWorks: "", createdAt: Date(timeIntervalSince1970: 1)),
+        HookEntry(id: "b", clipID: "clipB", clipTitle: "B", text: "钩子B", hookType: .resonance, retentionDevices: [], payoff: nil, whyItWorks: "", createdAt: Date(timeIntervalSince1970: 2)),
+    ]
+    let json = #"{"title":"套路报告","sections":[{"heading":"钩子套路","body":"这批常用悬念开场","evidence":[0,1,5]},{"heading":"空段","body":"","evidence":[]}]}"#
+    let generator = RecordingTextGenerator(responses: [json])
+    let composer = InsightReportComposer(
+        generator: generator,
+        dateProvider: { Date(timeIntervalSince1970: 100) },
+        idProvider: { "report-1" }
+    )
+
+    let report = try await composer.compose(hooks: hooks, scopeDescription: "全部 · 2 条")
+
+    #expect(report?.title == "套路报告")
+    #expect(report?.sourceCount == 2)
+    // Empty-body section dropped; out-of-range evidence index (5) dropped.
+    #expect(report?.sections.count == 1)
+    #expect(report?.sections.first?.evidenceClipIDs == ["clipA", "clipB"])
+}
+
+@Test func insightReportComposerNeedsAtLeastTwoHooks() async throws {
+    let generator = RecordingTextGenerator(responses: ["{}"])
+    let composer = InsightReportComposer(generator: generator)
+    let single = [
+        HookEntry(id: "a", clipID: "a", clipTitle: "A", text: "x", hookType: .other, retentionDevices: [], payoff: nil, whyItWorks: "", createdAt: Date()),
+    ]
+    let report = try await composer.compose(hooks: single, scopeDescription: "x")
+    #expect(report == nil)
+}
+
 private actor RecordingTextGenerator: ScriptTextGenerating {
     struct Request: Sendable {
         let prompt: String
