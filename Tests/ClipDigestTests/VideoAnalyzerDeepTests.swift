@@ -157,3 +157,68 @@ private struct ThrowingDeepTranscriber: Transcriber {
         throw error
     }
 }
+
+@Test func videoAnalyzerKeepsFailedSegmentAsPlaceholderInsteadOfDroppingIt() async throws {
+    // A failed segment used to be silently skipped — 1/N of the video vanished from the breakdown
+    // while the result still looked like a clean success. It must survive as a transcript/字幕
+    // placeholder with real window timestamps, and the partial coverage must be visible.
+    let transcript = [
+        TranscriptSegment(startSeconds: 10, endSeconds: 12, text: "第一段台词"),
+        TranscriptSegment(startSeconds: 110, endSeconds: 112, text: "第二段台词"),
+    ]
+    let frames = [
+        SampledFrame(timestampSeconds: 20, jpegData: Data([0xFF, 0xD8, 0x00, 0xFF, 0xD9])),
+        SampledFrame(timestampSeconds: 120, jpegData: Data([0xFF, 0xD8, 0x01, 0xFF, 0xD9])),
+    ]
+    let analyzer = VideoAnalyzer(
+        transcriber: DeepRecordingTranscriber(transcript: transcript),
+        sampler: DeepRecordingFrameSampler(frames: frames),
+        visionComposer: FailingSegmentVisionComposer(failingSourceSuffix: "#seg1"),
+        textComposer: DeepRecordingTextComposer(),
+        deep: .init(thresholdSeconds: 150, segmentWindowSeconds: 100, maxSegments: 4, framesPerSegment: 2)
+    )
+    let source = VideoSource(
+        id: "vid",
+        localFileURL: URL(fileURLWithPath: "/tmp/v.mov"),
+        importedAt: Date(timeIntervalSince1970: 0),
+        durationSeconds: 200
+    )
+
+    let script = try await analyzer.analyze(source) { _ in }
+
+    #expect(script.shots.count == 2)
+    let placeholder = try #require(script.shots.last)
+    #expect(placeholder.startSeconds == 100)
+    #expect(placeholder.endSeconds == 200)
+    #expect(placeholder.narration == "第二段台词")            // the window's 台词 survives
+    #expect(script.summary.hasPrefix("部分片段画面理解失败（1/2")) // partial coverage is visible
+    #expect(script.title != "")                               // placeholder didn't hijack the title
+}
+
+private actor FailingSegmentVisionComposer: VisionScriptComposing {
+    private let failingSourceSuffix: String
+
+    init(failingSourceSuffix: String) {
+        self.failingSourceSuffix = failingSourceSuffix
+    }
+
+    func compose(
+        sourceID: String,
+        transcript: [TranscriptSegment],
+        keyframes: [SampledFrame],
+        onScreenText: [FrameText]
+    ) async throws -> Script {
+        if sourceID.hasSuffix(failingSourceSuffix) {
+            throw VideoUnderstandingError.visionUnavailable("segment down")
+        }
+        let start = transcript.first?.startSeconds ?? 0
+        return Script(
+            id: sourceID,
+            videoSourceID: sourceID,
+            title: "真标题",
+            summary: "第一段摘要。",
+            shots: [StoryboardShot(index: 0, startSeconds: start, endSeconds: start + 3, narration: transcript.first?.text, visualDescription: "d")],
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+    }
+}

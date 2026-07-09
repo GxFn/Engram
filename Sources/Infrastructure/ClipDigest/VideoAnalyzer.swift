@@ -177,13 +177,19 @@ public struct VideoAnalyzer: VideoAnalyzing {
         let allFrames = try await sampledFrames(for: source, maxFrames: totalFrames)
 
         var partials: [Script] = []
+        var failedSegments = 0
         for index in 0..<segmentCount {
             let start = duration * Double(index) / Double(segmentCount)
             let end = duration * Double(index + 1) / Double(segmentCount)
-            let segmentFrames = allFrames.filter { $0.timestampSeconds >= start && $0.timestampSeconds < end }
-            let segmentTranscript = transcript.filter { $0.startSeconds >= start && $0.startSeconds < end }
-            let segmentText = onScreenText.filter { $0.timestampSeconds >= start && $0.timestampSeconds < end }
-            guard !segmentFrames.isEmpty || !segmentTranscript.isEmpty else { continue }
+            // The last window is unbounded above: the duration proxy can undershoot the real asset
+            // length, and a half-open `< end` there dropped trailing frames/字幕 (end-cards, CTAs).
+            let isLast = index == segmentCount - 1
+            let inWindow: (Double) -> Bool = { time in time >= start && (isLast || time < end) }
+            let segmentFrames = allFrames.filter { inWindow($0.timestampSeconds) }
+            let segmentTranscript = transcript.filter { inWindow($0.startSeconds) }
+            let segmentText = onScreenText.filter { inWindow($0.timestampSeconds) }
+            // A silent window with only burned-in 字幕 still deserves a pass (OCR counts as content).
+            guard !segmentFrames.isEmpty || !segmentTranscript.isEmpty || !segmentText.isEmpty else { continue }
 
             do {
                 let partial = try await visionComposer.compose(
@@ -196,13 +202,77 @@ public struct VideoAnalyzer: VideoAnalyzing {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                failedSegments += 1
                 Log.clip.warning(
-                    "Deep segment \(index) composition failed for \(source.id, privacy: .public); skipping segment: \(String(describing: error), privacy: .public)"
+                    "Deep segment \(index) composition failed for \(source.id, privacy: .public); keeping transcript/字幕 placeholder: \(String(describing: error), privacy: .public)"
                 )
+                // Never silently drop 1/N of the video: keep the window's 台词+字幕 as a placeholder
+                // shot with REAL window timestamps (so merge ordering and the title anchor hold).
+                partials.append(Self.segmentPlaceholder(
+                    sourceID: source.id,
+                    start: start,
+                    end: end,
+                    transcript: segmentTranscript,
+                    onScreenText: segmentText
+                ))
             }
         }
 
-        return DeepScriptMerge.merge(partials, sourceID: source.id)
+        guard var merged = DeepScriptMerge.merge(partials, sourceID: source.id) else { return nil }
+        if failedSegments > 0 {
+            // Partial coverage must be visible, not a clean-looking success.
+            merged = Script(
+                id: merged.id,
+                videoSourceID: merged.videoSourceID,
+                title: merged.title,
+                summary: "部分片段画面理解失败（\(failedSegments)/\(segmentCount) 段仅保留转写与字幕）。\n\(merged.summary)",
+                shots: merged.shots,
+                createdAt: merged.createdAt,
+                hookStructure: merged.hookStructure,
+                visualElements: merged.visualElements,
+                characters: merged.characters
+            )
+        }
+        return merged
+    }
+
+    /// Transcript/字幕-only stand-in for a segment whose vision pass failed. Title/summary stay empty
+    /// so the placeholder can't hijack the merged title, and the shot carries the real window bounds.
+    private static func segmentPlaceholder(
+        sourceID: String,
+        start: Double,
+        end: Double,
+        transcript: [TranscriptSegment],
+        onScreenText: [FrameText]
+    ) -> Script {
+        let narration = transcript
+            .sorted { $0.startSeconds < $1.startSeconds }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        var captions: [String] = []
+        for text in onScreenText.sorted(by: { $0.timestampSeconds < $1.timestampSeconds }) {
+            for line in text.lines where !captions.contains(line) {
+                captions.append(line)
+            }
+        }
+        let shot = StoryboardShot(
+            index: 0,
+            startSeconds: start,
+            endSeconds: end,
+            narration: narration.isEmpty ? nil : narration,
+            visualDescription: "本段（\(Int(start))–\(Int(end))s）画面理解失败，仅保留转写与字幕。",
+            pacingNote: nil,
+            onScreenText: captions
+        )
+        return Script(
+            id: "\(sourceID)#fallback-\(Int(start))",
+            videoSourceID: sourceID,
+            title: "",
+            summary: "",
+            shots: [shot],
+            createdAt: Date()
+        )
     }
 
     private func videoDuration(
