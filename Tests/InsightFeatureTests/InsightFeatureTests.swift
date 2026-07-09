@@ -85,14 +85,45 @@ import Testing
     #expect(await recorder.calls == [FavoriteCall(clipID: "1", isFavorite: true)])
 }
 
-private func makeEntry(id: String, title: String, text: String, type: HookType, favorite: Bool) -> HookEntry {
+@MainActor
+@Test func hookLibraryDashboardAggregatesTypesAndDevices() async {
+    let entries = [
+        makeEntry(id: "1", title: "A", text: "x", type: .suspense, favorite: false, devices: ["制造悬念", "信息差"]),
+        makeEntry(id: "2", title: "B", text: "y", type: .suspense, favorite: false, devices: ["制造悬念"]),
+        makeEntry(id: "3", title: "C", text: "z", type: .resonance, favorite: false, devices: ["情绪共鸣"]),
+    ]
+    let viewModel = HookLibraryViewModel(client: HookLibraryClient(loadHooks: { entries }))
+    await viewModel.load()
+
+    #expect(viewModel.totalHooks == 3)
+    #expect(viewModel.typeDistribution.map { TypePair(type: $0.type, count: $0.count) }
+        == [TypePair(type: .suspense, count: 2), TypePair(type: .resonance, count: 1)])
+
+    let top = viewModel.topRetentionDevices()
+    #expect(top.first?.label == "制造悬念")
+    #expect(top.first?.count == 2)
+}
+
+private struct TypePair: Equatable {
+    let type: HookType
+    let count: Int
+}
+
+private func makeEntry(
+    id: String,
+    title: String,
+    text: String,
+    type: HookType,
+    favorite: Bool,
+    devices: [String] = []
+) -> HookEntry {
     HookEntry(
         id: id,
         clipID: id,
         clipTitle: title,
         text: text,
         hookType: type,
-        retentionDevices: [],
+        retentionDevices: devices,
         payoff: nil,
         whyItWorks: "",
         createdAt: Date(timeIntervalSince1970: 0),
