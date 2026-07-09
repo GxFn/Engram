@@ -101,8 +101,8 @@ private struct RootContent: View {
 
             NavigationStack {
                 if let dependencies {
-                    InsightView(viewModel: dependencies.makeHookLibraryViewModel()) { clipID in
-                        // A hook always comes from a video breakdown → open it in the 拆解 tab.
+                    InsightView(viewModel: dependencies.makeInsightViewModel()) { clipID in
+                        // Open a paradigm's source breakdown in the 拆解 tab.
                         selectedTab = .studio
                         memoryNavigationTarget = MemoryNavigationTarget(clipID: clipID, chunkID: "")
                     }

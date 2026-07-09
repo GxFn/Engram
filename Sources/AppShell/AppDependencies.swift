@@ -382,86 +382,87 @@ public final class AppDependencies {
         )
     }
 
-    public func makeHookLibraryViewModel() -> HookLibraryViewModel {
-        // Hooks are derived from video breakdowns (scriptJSON); favorites persist in UserDefaults.
-        // Single source of truth stays the breakdown — this is a rebuildable derived view.
+    public func makeInsightViewModel() -> InsightViewModel {
+        // 洞察 works on 分镜剧本 (video breakdowns). Breakdowns are derived live from scriptJSON
+        // (single source of truth); paradigms persist in UserDefaults. Distill/apply run on the
+        // active LLM engine over a compact structured summary (not raw video) — cheap.
         let service = clipDigestService
         nonisolated(unsafe) let capturedDefaults = defaults
-        let favoritesKey = "favoriteHookClipIDs"
-        let reportsKey = "insightReports"
+        let paradigmsKey = "scriptParadigms"
         let engine = activeEngine
         let model = activeModel
 
-        let client = HookLibraryClient(
-            loadHooks: {
+        let client = InsightClient(
+            loadBreakdowns: {
                 guard let service else {
                     return []
                 }
                 let snapshots = (try? await service.memorySnapshots()) ?? []
-                let favorites = Set(capturedDefaults?.stringArray(forKey: favoritesKey) ?? [])
-                return snapshots
-                    .compactMap { snapshot -> HookEntry? in
-                        guard let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
-                            return nil
-                        }
-                        return HookEntry.derive(
-                            clipID: snapshot.id,
-                            clipTitle: snapshot.title ?? "未命名",
-                            createdAt: snapshot.createdAt,
-                            script: script,
-                            isFavorite: favorites.contains(snapshot.id)
-                        )
+                var items: [BreakdownItem] = []
+                for snapshot in snapshots where snapshot.isVideo {
+                    guard let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
+                        continue
                     }
-                    .sorted { $0.createdAt > $1.createdAt }
-            },
-            setFavorite: { clipID, isFavorite in
-                var favorites = Set(capturedDefaults?.stringArray(forKey: favoritesKey) ?? [])
-                if isFavorite {
-                    favorites.insert(clipID)
-                } else {
-                    favorites.remove(clipID)
+                    items.append(BreakdownItem(
+                        id: snapshot.id,
+                        title: snapshot.title ?? "未命名",
+                        summary: script.summary,
+                        createdAt: snapshot.createdAt
+                    ))
                 }
-                capturedDefaults?.set(Array(favorites), forKey: favoritesKey)
+                return items.sorted { $0.createdAt > $1.createdAt }
             },
-            generateReport: { hooks, scope in
-                // Structured summary of the hooks (not raw video) → LLM synthesis; cheap.
-                let composer = InsightReportComposer(engine: engine, model: model)
-                return (try? await composer.compose(hooks: hooks, scopeDescription: scope)) ?? nil
-            },
-            loadReports: {
-                guard let data = capturedDefaults?.data(forKey: reportsKey),
-                      let reports = try? JSONDecoder().decode([InsightReport].self, from: data)
-                else {
-                    return []
+            generateParadigm: { clipIDs, scope in
+                guard let service else {
+                    return nil
                 }
-                return reports
+                let snapshots = (try? await service.memorySnapshots()) ?? []
+                let byID = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                var sources: [ParadigmSource] = []
+                for id in clipIDs {
+                    guard let snapshot = byID[id],
+                          let script = ScriptCoding.decode(json: snapshot.scriptJSON)
+                    else {
+                        continue
+                    }
+                    sources.append(ParadigmSource.from(clipID: id, title: snapshot.title ?? "未命名", script: script))
+                }
+                let composer = ScriptParadigmComposer(engine: engine, model: model)
+                return (try? await composer.compose(sources: sources, scopeDescription: scope)) ?? nil
             },
-            saveReport: { report in
-                var reports = Self.storedReports(capturedDefaults, key: reportsKey)
-                reports.removeAll { $0.id == report.id }
-                reports.insert(report, at: 0)
-                if let data = try? JSONEncoder().encode(reports) {
-                    capturedDefaults?.set(data, forKey: reportsKey)
+            loadParadigms: {
+                Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+            },
+            saveParadigm: { paradigm in
+                var paradigms = Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+                paradigms.removeAll { $0.id == paradigm.id }
+                paradigms.insert(paradigm, at: 0)
+                if let data = try? JSONEncoder().encode(paradigms) {
+                    capturedDefaults?.set(data, forKey: paradigmsKey)
                 }
             },
-            deleteReport: { id in
-                var reports = Self.storedReports(capturedDefaults, key: reportsKey)
-                reports.removeAll { $0.id == id }
-                if let data = try? JSONEncoder().encode(reports) {
-                    capturedDefaults?.set(data, forKey: reportsKey)
+            deleteParadigm: { id in
+                var paradigms = Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+                paradigms.removeAll { $0.id == id }
+                if let data = try? JSONEncoder().encode(paradigms) {
+                    capturedDefaults?.set(data, forKey: paradigmsKey)
                 }
+            },
+            applyParadigm: { paradigm, topic in
+                let composer = ScriptParadigmComposer(engine: engine, model: model)
+                return (try? await composer.apply(paradigm: paradigm, topic: topic)) ?? nil
             }
         )
-        return HookLibraryViewModel(client: client)
+        return InsightViewModel(client: client)
     }
 
-    private nonisolated static func storedReports(_ defaults: UserDefaults?, key: String) -> [InsightReport] {
+    private nonisolated static func storedParadigms(_ defaults: UserDefaults?, key: String) -> [ScriptParadigm] {
         guard let data = defaults?.data(forKey: key),
-              let reports = try? JSONDecoder().decode([InsightReport].self, from: data)
+              let paradigms = try? JSONDecoder().decode([ScriptParadigm].self, from: data)
         else {
             return []
         }
-        return reports
+        return paradigms
     }
 
     public func makeBenchViewModel() -> BenchViewModel {

@@ -515,36 +515,42 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
     #expect(corrected == raw)
 }
 
-@Test func insightReportComposerParsesSectionsAndMapsEvidenceIndicesToClips() async throws {
-    let hooks = [
-        HookEntry(id: "a", clipID: "clipA", clipTitle: "A", text: "钩子A", hookType: .suspense, retentionDevices: ["悬念"], payoff: nil, whyItWorks: "", createdAt: Date(timeIntervalSince1970: 1)),
-        HookEntry(id: "b", clipID: "clipB", clipTitle: "B", text: "钩子B", hookType: .resonance, retentionDevices: [], payoff: nil, whyItWorks: "", createdAt: Date(timeIntervalSince1970: 2)),
+@Test func paradigmComposerDistillsAndParsesBeats() async throws {
+    let sources = [
+        ParadigmSource(clipID: "1", title: "A", summary: "s1", hook: HookAnalysis(openingHook: "钩子", retentionDevices: ["悬念"], whyItWorks: "", hookType: .suspense), shotCount: 4),
+        ParadigmSource(clipID: "2", title: "B", summary: "s2", hook: nil, shotCount: 3),
     ]
-    let json = #"{"title":"套路报告","sections":[{"heading":"钩子套路","body":"这批常用悬念开场","evidence":[0,1,5]},{"heading":"空段","body":"","evidence":[]}]}"#
+    let json = #"{"name":"校园反差范式","applicableScene":"校园题材","beats":[{"stage":"开场","pattern":"悬念开场","note":"勾好奇"},{"stage":"空段","pattern":"","note":""}],"keyElements":["校园","反差"]}"#
     let generator = RecordingTextGenerator(responses: [json])
-    let composer = InsightReportComposer(
+    let composer = ScriptParadigmComposer(
         generator: generator,
-        dateProvider: { Date(timeIntervalSince1970: 100) },
-        idProvider: { "report-1" }
+        dateProvider: { Date(timeIntervalSince1970: 5) },
+        idProvider: { "p1" }
     )
 
-    let report = try await composer.compose(hooks: hooks, scopeDescription: "全部 · 2 条")
+    let paradigm = try await composer.compose(sources: sources, scopeDescription: "2 条剧本")
 
-    #expect(report?.title == "套路报告")
-    #expect(report?.sourceCount == 2)
-    // Empty-body section dropped; out-of-range evidence index (5) dropped.
-    #expect(report?.sections.count == 1)
-    #expect(report?.sections.first?.evidenceClipIDs == ["clipA", "clipB"])
+    #expect(paradigm?.name == "校园反差范式")
+    #expect(paradigm?.sourceClipIDs == ["1", "2"])
+    // Empty-pattern beat dropped.
+    #expect(paradigm?.beats.count == 1)
+    #expect(paradigm?.beats.first?.stage == "开场")
+    #expect(paradigm?.keyElements == ["校园", "反差"])
 }
 
-@Test func insightReportComposerNeedsAtLeastTwoHooks() async throws {
-    let generator = RecordingTextGenerator(responses: ["{}"])
-    let composer = InsightReportComposer(generator: generator)
-    let single = [
-        HookEntry(id: "a", clipID: "a", clipTitle: "A", text: "x", hookType: .other, retentionDevices: [], payoff: nil, whyItWorks: "", createdAt: Date()),
-    ]
-    let report = try await composer.compose(hooks: single, scopeDescription: "x")
-    #expect(report == nil)
+@Test func paradigmComposerNeedsAtLeastTwoSources() async throws {
+    let composer = ScriptParadigmComposer(generator: RecordingTextGenerator(responses: ["{}"]))
+    let single = [ParadigmSource(clipID: "1", title: "A", summary: "", hook: nil, shotCount: 0)]
+    let paradigm = try await composer.compose(sources: single, scopeDescription: "x")
+    #expect(paradigm == nil)
+}
+
+@Test func paradigmComposerAppliesToTopic() async throws {
+    let generator = RecordingTextGenerator(responses: ["分镜1：开场…"])
+    let composer = ScriptParadigmComposer(generator: generator)
+    let paradigm = ScriptParadigm(id: "p", name: "n", applicableScene: "", sourceClipIDs: [], createdAt: Date(), beats: [ParadigmBeat(stage: "开场", pattern: "x", note: "")], keyElements: [])
+    let scaffold = try await composer.apply(paradigm: paradigm, topic: "租房")
+    #expect(scaffold == "分镜1：开场…")
 }
 
 private actor RecordingTextGenerator: ScriptTextGenerating {

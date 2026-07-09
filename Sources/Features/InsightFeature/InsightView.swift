@@ -1,270 +1,160 @@
 import ScriptCore
 import SwiftUI
 
-/// 洞察 tab (v6). P1 surfaces the personal hook library; P2 adds a deterministic dashboard
-/// (type distribution / retention ranking / overview) — pure aggregates, no LLM. P3 adds
-/// cross-video LLM insight reports.
+/// 洞察 tab (v6, reworked): two focused pages — 洞察 (pick 分镜剧本 → distill a 剧本范式) and 范式
+/// (the saved paradigms, viewed and applied to a new topic). The insight object is the breakdown
+/// script; the product is a reusable, applicable paradigm.
 public struct InsightView: View {
     private enum Mode: Hashable {
-        case library
-        case dashboard
-        case reports
+        case distill
+        case paradigms
     }
 
-    @State private var viewModel: HookLibraryViewModel
-    @State private var mode: Mode = .library
-    @State private var presentedReport: InsightReport?
-    private let onHookSelected: @MainActor (String) -> Void
+    @State private var viewModel: InsightViewModel
+    @State private var mode: Mode = .distill
+    @State private var presentedParadigm: ScriptParadigm?
+    private let onOpenBreakdown: @MainActor (String) -> Void
 
     public init(
-        viewModel: HookLibraryViewModel,
-        onHookSelected: @escaping @MainActor (String) -> Void = { _ in }
+        viewModel: InsightViewModel,
+        onOpenBreakdown: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: viewModel)
-        self.onHookSelected = onHookSelected
+        self.onOpenBreakdown = onOpenBreakdown
     }
 
     public var body: some View {
-        Group {
-            if viewModel.hooks.isEmpty {
-                emptyState
-            } else {
-                VStack(spacing: 0) {
-                    Picker("视图", selection: $mode) {
-                        Text("钩子库").tag(Mode.library)
-                        Text("看板").tag(Mode.dashboard)
-                        Text("报告").tag(Mode.reports)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .padding(.top, 8)
+        VStack(spacing: 0) {
+            Picker("视图", selection: $mode) {
+                Text("洞察").tag(Mode.distill)
+                Text("范式").tag(Mode.paradigms)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.top, 8)
 
-                    switch mode {
-                    case .library: library
-                    case .dashboard: dashboard
-                    case .reports: reports
-                    }
-                }
+            switch mode {
+            case .distill: distill
+            case .paradigms: paradigmLibrary
             }
         }
         .navigationTitle("洞察")
-        .task {
-            await viewModel.load()
-            await viewModel.loadReports()
-        }
-        .navigationDestination(item: $presentedReport) { report in
-            InsightReportView(
-                report: report,
+        .task { await viewModel.load() }
+        .navigationDestination(item: $presentedParadigm) { paradigm in
+            ParadigmDetailView(
+                paradigm: paradigm,
                 titleForClip: { viewModel.title(forClip: $0) },
-                onEvidenceSelected: onHookSelected
+                onOpenSource: onOpenBreakdown,
+                apply: { await viewModel.apply(paradigm, topic: $0) }
             )
         }
     }
 
-    // MARK: - Library
+    // MARK: - 洞察: pick breakdowns → distill
 
-    private var library: some View {
-        VStack(spacing: 0) {
-            filterBar
-            Divider()
-            List {
-                Section {
-                    ForEach(viewModel.filtered) { hook in
-                        HookCardView(
-                            hook: hook,
-                            onOpen: { onHookSelected(hook.clipID) },
-                            onToggleFavorite: { Task { await viewModel.toggleFavorite(hook) } }
-                        )
-                    }
-                } header: {
-                    Text("钩子库 · \(viewModel.filtered.count)")
-                }
-            }
-            .listStyle(.plain)
-            .refreshable { await viewModel.load() }
-        }
-        .searchable(text: searchBinding, prompt: "搜钩子（关键词）")
-    }
-
-    private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                chip(title: "全部", isOn: viewModel.selectedType == nil && !viewModel.favoritesOnly) {
-                    viewModel.selectedType = nil
-                    viewModel.favoritesOnly = false
-                }
-                if viewModel.favoriteCount > 0 {
-                    chip(title: "★ 收藏", isOn: viewModel.favoritesOnly) {
-                        viewModel.favoritesOnly.toggle()
-                    }
-                }
-                ForEach(viewModel.presentTypes) { type in
-                    chip(title: type.displayName, isOn: viewModel.selectedType == type) {
-                        viewModel.selectedType = viewModel.selectedType == type ? nil : type
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-        }
-    }
-
-    private func chip(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    isOn ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12),
-                    in: Capsule()
-                )
-                .foregroundStyle(isOn ? Color.accentColor : Color.primary)
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Dashboard (deterministic, no LLM)
-
-    private var dashboard: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                overview
-
-                if !viewModel.typeDistribution.isEmpty {
-                    dashboardSection("钩子类型分布") {
-                        ForEach(viewModel.typeDistribution) { item in
-                            distributionRow(item)
-                        }
-                    }
-                }
-
-                let devices = viewModel.topRetentionDevices()
-                if !devices.isEmpty {
-                    dashboardSection("留人手法 Top") {
-                        ForEach(devices) { device in
-                            HStack {
-                                Text(device.label).font(.subheadline)
-                                Spacer()
-                                Text("\(device.count)").font(.subheadline).foregroundStyle(.secondary)
+    private var distill: some View {
+        Group {
+            if viewModel.breakdowns.isEmpty {
+                emptyBreakdowns
+            } else {
+                List {
+                    Section {
+                        ForEach(viewModel.breakdowns) { item in
+                            Button {
+                                viewModel.toggleSelection(item.id)
+                            } label: {
+                                breakdownRow(item)
                             }
-                            .padding(.vertical, 2)
+                            .buttonStyle(.plain)
                         }
+                    } header: {
+                        Text("选择要洞察的剧本")
+                    } footer: {
+                        Text("选 2 条以上爆款拆解，提炼它们共同的可复用剧本范式。")
                     }
                 }
-            }
-            .padding()
-        }
-        .refreshable { await viewModel.load() }
-    }
-
-    private var overview: some View {
-        HStack(spacing: 12) {
-            statTile(value: "\(viewModel.totalHooks)", label: "钩子")
-            statTile(value: "\(viewModel.favoriteCount)", label: "收藏")
-            if let span = viewModel.timeSpanText {
-                statTile(value: span, label: "跨度", wide: true)
+                .safeAreaInset(edge: .bottom) { generateBar }
             }
         }
     }
 
-    private func statTile(value: String, label: String, wide: Bool = false) -> some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(wide ? .subheadline.weight(.semibold) : .title2.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            Text(label).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func dashboardSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline)
-            content()
-        }
-    }
-
-    private func distributionRow(_ item: HookLibraryViewModel.TypeCount) -> some View {
-        let maxCount = viewModel.typeDistribution.first?.count ?? 1
-        let fraction = maxCount > 0 ? Double(item.count) / Double(maxCount) : 0
-        return Button {
-            viewModel.selectedType = item.type
-            viewModel.favoritesOnly = false
-            mode = .library
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(item.type.displayName).font(.subheadline)
-                    Spacer()
-                    Text("\(item.count)").font(.subheadline).foregroundStyle(.secondary)
+    private func breakdownRow(_ item: BreakdownItem) -> some View {
+        let selected = viewModel.selectedIDs.contains(item.id)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                .imageScale(.large)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.body).lineLimit(1)
+                if !item.summary.isEmpty {
+                    Text(item.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.25))
-                        .frame(width: max(6, geo.size.width * fraction), height: 6)
-                }
-                .frame(height: 6)
             }
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .padding(.vertical, 2)
     }
 
-    // MARK: - Reports (LLM cross-video synthesis)
-
-    private var reports: some View {
-        List {
-            Section {
-                Button {
-                    Task {
-                        if let report = await viewModel.generateReport() {
-                            presentedReport = report
-                        }
-                    }
-                } label: {
-                    if viewModel.isGeneratingReport {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("归纳中…")
-                        }
-                    } else {
-                        Label("对当前 \(viewModel.filtered.count) 条生成洞察", systemImage: "wand.and.stars")
-                    }
-                }
-                .disabled(viewModel.isGeneratingReport || viewModel.filtered.count < 2)
-
-                if let error = viewModel.reportError {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
-            } footer: {
-                Text("先在『钩子库』按类型/收藏/搜索筛选，这里就只对筛选后的集合归纳；至少 2 条。")
+    private var generateBar: some View {
+        VStack(spacing: 6) {
+            if let error = viewModel.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
-
-            if viewModel.reports.isEmpty {
-                Section {
-                    Text("还没有洞察报告。点上面生成第一份，会自动保存到这里，可随时回看。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            Button {
+                Task {
+                    if let paradigm = await viewModel.generateParadigm() {
+                        presentedParadigm = paradigm
+                        mode = .paradigms
+                    }
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    if viewModel.isGenerating {
+                        ProgressView().tint(.white)
+                        Text("提炼中…")
+                    } else {
+                        Image(systemName: "wand.and.stars")
+                        Text("提炼范式（已选 \(viewModel.selectedIDs.count) 条）")
+                    }
+                }
+                .font(.body.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    viewModel.canGenerate ? Color.accentColor : Color.secondary.opacity(0.3),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canGenerate)
+        }
+        .padding()
+        .background(.bar)
+    }
+
+    // MARK: - 范式: saved paradigms
+
+    private var paradigmLibrary: some View {
+        Group {
+            if viewModel.paradigms.isEmpty {
+                emptyParadigms
             } else {
-                Section("历史报告") {
-                    ForEach(viewModel.reports) { report in
+                List {
+                    ForEach(viewModel.paradigms) { paradigm in
                         Button {
-                            presentedReport = report
+                            presentedParadigm = paradigm
                         } label: {
-                            reportRow(report)
+                            paradigmRow(paradigm)
                         }
                         .buttonStyle(.plain)
                     }
                     .onDelete { indexSet in
-                        let toDelete = indexSet.map { viewModel.reports[$0] }
+                        let toDelete = indexSet.map { viewModel.paradigms[$0] }
                         Task {
-                            for report in toDelete {
-                                await viewModel.deleteReport(report)
+                            for paradigm in toDelete {
+                                await viewModel.deleteParadigm(paradigm)
                             }
                         }
                     }
@@ -273,30 +163,45 @@ public struct InsightView: View {
         }
     }
 
-    private func reportRow(_ report: InsightReport) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(report.title)
-                .font(.body)
-                .lineLimit(1)
-            Text("\(report.scopeDescription) · \(report.createdAt.formatted(date: .abbreviated, time: .shortened))")
+    private func paradigmRow(_ paradigm: ScriptParadigm) -> some View {
+        let subtitle = paradigm.applicableScene.isEmpty ? "\(paradigm.sourceClipIDs.count) 条剧本" : paradigm.applicableScene
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(paradigm.name).font(.body).lineLimit(1)
+            Text("\(subtitle) · \(paradigm.createdAt.formatted(date: .abbreviated, time: .omitted))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
 
-    // MARK: - Empty
+    // MARK: - Empty states
 
-    private var emptyState: some View {
+    private var emptyBreakdowns: some View {
+        emptyState(
+            icon: "film.stack",
+            title: "还没有可洞察的剧本",
+            message: "去『拆解』导入视频，拆出的分镜剧本会出现在这里，选几条就能提炼范式。"
+        )
+    }
+
+    private var emptyParadigms: some View {
+        emptyState(
+            icon: "sparkles.rectangle.stack",
+            title: "还没有剧本范式",
+            message: "切到『洞察』选 2 条以上剧本，提炼出一套可复用的范式，会保存到这里。"
+        )
+    }
+
+    private func emptyState(icon: String, title: String, message: String) -> some View {
         VStack(spacing: 16) {
-            Image(systemName: "sparkles.rectangle.stack")
+            Image(systemName: icon)
                 .font(.system(size: 40))
                 .foregroundStyle(.tint)
             VStack(spacing: 6) {
-                Text("钩子库还是空的")
-                    .font(.title3.weight(.semibold))
-                Text("去『拆解』导入视频，每条拆解的开场钩子会自动进这里，越拆越厚。")
+                Text(title).font(.title3.weight(.semibold))
+                Text(message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -304,9 +209,5 @@ public struct InsightView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 32)
-    }
-
-    private var searchBinding: Binding<String> {
-        Binding(get: { viewModel.searchText }, set: { viewModel.searchText = $0 })
     }
 }
