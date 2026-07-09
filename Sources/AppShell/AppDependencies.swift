@@ -31,14 +31,20 @@ public final class AppDependencies {
     public var activeModel: ModelIdentity
     public var generationConfig: GenerationConfig
 
-    @ObservationIgnored public let clipDigestService: ClipDigestService?
-    @ObservationIgnored public let retriever: (any Retriever)?
+    @ObservationIgnored public private(set) var clipDigestService: ClipDigestService?
+    @ObservationIgnored public private(set) var retriever: (any Retriever)?
     @ObservationIgnored private let deviceCapability: DeviceCapability
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private let clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling
     @ObservationIgnored private var clipNotificationObserver: ClipEnqueueNotificationObserver?
     // Shared so the 剪藏 and 拆解 tabs render the same store from one instance / one load.
     @ObservationIgnored private var cachedMemoryViewModel: MemoryViewModel?
+    // Retained so AI routing (云端 ↔ 本地) can be re-resolved live, without an app relaunch,
+    // when the user changes the mode or cloud credentials in Settings.
+    @ObservationIgnored private let modelContainer: ModelContainer?
+    @ObservationIgnored private let appGroupLocations: AppGroupLocations?
+    @ObservationIgnored private let retrievalEmbeddingEngine: (any EmbeddingEngine)?
+    @ObservationIgnored private let videoAnalyzer: (any VideoAnalyzing)?
 
     public init(
         engines: [any LLMEngine] = [MLXEngine()],
@@ -59,20 +65,15 @@ public final class AppDependencies {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
         // Cloud mode makes the cloud engine the active text engine (and vision runs on cloud too);
         // otherwise fall back to the on-device engine/model resolution.
-        let cloudLLMEngine = activeEngine == nil ? CloudAIResolver.makeLLMEngine(defaults: defaults) : nil
-        let resolvedModel: ModelIdentity
-        let resolvedEngine: any LLMEngine
-        if let cloudLLMEngine {
-            resolvedEngine = cloudLLMEngine
-            resolvedModel = CloudAIResolver.cloudModelIdentity
-        } else {
-            resolvedEngine = activeEngine
-                ?? Self.storedEngine(defaults: defaults, engines: resolvedEngines)
-                ?? resolvedEngines[0]
-            resolvedModel = activeModel
-                ?? Self.storedModel(defaults: defaults)
-                ?? deviceCapability.recommendedModel
-        }
+        let resolved = Self.resolveRouting(
+            defaults: defaults,
+            explicitEngine: activeEngine,
+            explicitModel: activeModel,
+            engines: resolvedEngines,
+            deviceCapability: deviceCapability
+        )
+        let resolvedEngine = resolved.engine
+        let resolvedModel = resolved.model
         let resolvedModelStore = modelStore
         let resolvedGenerationConfig = GenerationConfigBounds.clamped(
             generationConfig
@@ -104,6 +105,79 @@ public final class AppDependencies {
         self.deviceCapability = deviceCapability
         self.defaults = defaults
         self.clipDigestBackgroundScheduler = clipDigestBackgroundScheduler
+        self.modelContainer = modelContainer
+        self.appGroupLocations = appGroupLocations
+        self.retrievalEmbeddingEngine = retrievalEmbeddingEngine
+        self.videoAnalyzer = videoAnalyzer
+    }
+
+    /// Resolves the active text engine + model from the current settings: 云端 mode returns the
+    /// cloud engine when its credentials are configured; otherwise the on-device engine/model.
+    /// `explicitEngine`/`explicitModel` (used by tests and previews) take precedence over cloud.
+    private static func resolveRouting(
+        defaults: UserDefaults?,
+        explicitEngine: (any LLMEngine)?,
+        explicitModel: ModelIdentity?,
+        engines: [any LLMEngine],
+        deviceCapability: DeviceCapability
+    ) -> (engine: any LLMEngine, model: ModelIdentity) {
+        if explicitEngine == nil, let cloud = CloudAIResolver.makeLLMEngine(defaults: defaults) {
+            return (cloud, CloudAIResolver.cloudModelIdentity)
+        }
+        let engine = explicitEngine
+            ?? storedEngine(defaults: defaults, engines: engines)
+            ?? engines[0]
+        let model = explicitModel
+            ?? storedModel(defaults: defaults)
+            ?? deviceCapability.recommendedModel
+        return (engine, model)
+    }
+
+    /// Identity of the current AI routing, used by the shell to re-create tab views when the
+    /// user switches 云端/本地 so each feature rebinds to the freshly resolved engine + services.
+    public var aiRoutingSignature: String {
+        "\(activeEngine.descriptor.id)|\(activeModel.id)"
+    }
+
+    /// Re-resolves the text engine, vision generator, and retrieval services from the current
+    /// 云端/本地 settings so 问答 and 拆解 apply a mode/credential change without an app relaunch.
+    /// Cheap no-op when the resolved text engine + model are unchanged.
+    public func reloadAIRouting() {
+        let resolved = Self.resolveRouting(
+            defaults: defaults,
+            explicitEngine: nil,
+            explicitModel: nil,
+            engines: engines,
+            deviceCapability: deviceCapability
+        )
+        guard resolved.engine.descriptor.id != activeEngine.descriptor.id
+            || resolved.model.id != activeModel.id else {
+            return
+        }
+
+        activeEngine = resolved.engine
+        activeModel = resolved.model
+
+        // Rebuild retrieval services so digest/拆解 use the newly resolved vision generator, then
+        // drop the shared MemoryViewModel cache so 剪藏/拆解 rebind to the fresh ClipDigestService.
+        guard let modelContainer,
+              let services = try? RetrievalAssembly.makeServices(
+                  modelContainer: modelContainer,
+                  modelStore: modelStore,
+                  activeEngine: resolved.engine,
+                  activeModel: resolved.model,
+                  generationConfig: generationConfig,
+                  videoAnalyzer: videoAnalyzer,
+                  visionGenerator: CloudAIResolver.makeVisionGenerator(defaults: defaults),
+                  appGroupLocations: appGroupLocations,
+                  embeddingEngine: retrievalEmbeddingEngine
+              )
+        else {
+            return
+        }
+        retriever = services.retriever
+        clipDigestService = services.clipDigestService
+        cachedMemoryViewModel = nil
     }
 
     public func selectEngine(id: String) {
@@ -185,7 +259,7 @@ public final class AppDependencies {
                     hasCloudKey: hasKey
                 )
             },
-            save: { settings, newKey in
+            save: { [weak self] settings, newKey in
                 capturedDefaults?.set(settings.kind.rawValue, forKey: VisionBackendDefaultsKey.kind)
                 capturedDefaults?.set(settings.cloudBaseURL, forKey: VisionBackendDefaultsKey.cloudBaseURL)
                 capturedDefaults?.set(settings.cloudModel, forKey: VisionBackendDefaultsKey.cloudModel)
@@ -193,6 +267,8 @@ public final class AppDependencies {
                 if let newKey {
                     KeychainStore.set(newKey, for: VisionBackendKeychainAccount.cloudAPIKey)
                 }
+                // Apply a mode/credential change to the live dependency graph immediately.
+                Task { @MainActor in self?.reloadAIRouting() }
             }
         )
 

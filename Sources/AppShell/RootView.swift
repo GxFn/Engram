@@ -58,6 +58,7 @@ private struct RootContent: View {
                         viewModel: dependencies.makeMemoryViewModel(),
                         navigationTarget: $memoryNavigationTarget
                     )
+                        .id(dependencies.aiRoutingSignature)
                         .toolbar { settingsToolbar }
                 } else {
                     ContentUnavailableView("剪藏", systemImage: "tray.full")
@@ -74,6 +75,7 @@ private struct RootContent: View {
                         viewModel: dependencies.makeMemoryViewModel(),
                         navigationTarget: $memoryNavigationTarget
                     )
+                        .id(dependencies.aiRoutingSignature)
                         .toolbar { settingsToolbar }
                 } else {
                     ContentUnavailableView("拆解", systemImage: "film.stack")
@@ -109,6 +111,8 @@ private struct RootContent: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
+                // Re-apply any 云端/本地 change made while backgrounded (e.g. editing credentials).
+                dependencies?.reloadAIRouting()
                 Task { await dependencies?.digestPendingClips() }
             case .background:
                 dependencies?.scheduleClipDigest()
