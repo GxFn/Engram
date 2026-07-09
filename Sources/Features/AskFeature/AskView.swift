@@ -45,11 +45,6 @@ public struct AskView: View {
             composer
         }
         .navigationTitle("问答")
-        // Pin the title inline so it doesn't scroll/collapse with the messages — which also keeps
-        // the 云端 AI header bar below it fixed instead of riding up with the large-title collapse.
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
         .sheet(isPresented: $isShowingControls) { controlsSheet }
     }
 
