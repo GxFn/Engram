@@ -16,6 +16,7 @@ public struct EngineDescriptor: Sendable, Hashable {
 public enum EngineKind: String, Sendable, Codable, CaseIterable {
     case mlx
     case foundationModels
+    case cloud
 }
 
 /// Identity + resource envelope of one downloadable model artifact.

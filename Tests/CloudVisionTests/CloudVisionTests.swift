@@ -65,6 +65,44 @@ import VideoUnderstanding
     }
 }
 
+@Test func llmEngineEncodesStringContentMessages() throws {
+    let data = try OpenAICompatibleLLMEngine.requestBody(
+        model: "doubao-1.5-pro",
+        messages: [ChatMessage(role: .system, content: "系统"), ChatMessage(role: .user, content: "问题")],
+        config: GenerationConfig(temperature: 0.3, topP: 0.9, maxTokens: 800)
+    )
+    let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(json["model"] as? String == "doubao-1.5-pro")
+    #expect(json["max_tokens"] as? Int == 800)
+    let messages = try #require(json["messages"] as? [[String: Any]])
+    #expect(messages.count == 2)
+    #expect(messages[0]["role"] as? String == "system")
+    #expect(messages[0]["content"] as? String == "系统")
+    #expect(messages[1]["content"] as? String == "问题")
+}
+
+@Test func llmEngineGenerateStreamsParsedAnswer() async throws {
+    let responseJSON = #"{"choices":[{"message":{"content":"云端答案"}}]}"#
+    let engine = OpenAICompatibleLLMEngine(
+        configuration: .init(baseURL: URL(string: "https://example.com/api/v3")!, model: "m", apiKey: "k")
+    ) { request in
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer k")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data(responseJSON.utf8), response)
+    }
+
+    var text = ""
+    var finished = false
+    for try await event in await engine.generate(GenerationRequest(messages: [ChatMessage(role: .user, content: "q")], config: .default)) {
+        switch event {
+        case let .token(token): text += token
+        case .finished: finished = true
+        }
+    }
+    #expect(text == "云端答案")
+    #expect(finished)
+}
+
 @Test func endpointPreservesExplicitChatCompletionsPath() {
     let explicit = URL(string: "https://example.com/v1/chat/completions")!
     #expect(OpenAICompatibleVLMGenerator.endpoint(base: explicit) == explicit)
