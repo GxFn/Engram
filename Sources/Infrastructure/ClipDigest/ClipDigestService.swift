@@ -279,6 +279,34 @@ public actor ClipDigestService: ClipDigesting {
         Log.clip.info("Deleted clip \(id, privacy: .public)")
     }
 
+    /// Replaces a clip's indexed body text with a user-corrected version and re-indexes it, so 问答
+    /// draws on the corrected content. Preserves the existing script (video breakdown) and title.
+    public func updateClipText(id: String, text: String) async throws {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return
+        }
+        let snapshot = try await recordStore.snapshot(id: id)
+
+        try? await indexer.deleteClip(clipID: id)
+        let result = try await indexer.index(ClipDigestIndexingPayload(
+            clipID: id,
+            title: snapshot.title,
+            bodyText: normalized,
+            sourceURL: snapshot.url
+        ))
+
+        _ = try await recordStore.markIndexed(
+            id: id,
+            title: snapshot.title,
+            bodyText: normalized,
+            indexPreview: result.preview,
+            scriptJSON: snapshot.scriptJSON,
+            now: now()
+        )
+        Log.clip.info("Re-indexed edited clip \(id, privacy: .public)")
+    }
+
     private func digest(_ item: ClipQueueItem) async throws {
         var clip = item.clip
         var scriptJSON: String?

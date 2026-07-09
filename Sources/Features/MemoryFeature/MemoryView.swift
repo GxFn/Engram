@@ -95,6 +95,7 @@ public struct MemoryClient: Sendable {
     public let importVideo: @Sendable (URL) async throws -> Void
     public let addClip: @Sendable (MemoryCaptureInput) async throws -> Void
     public let deleteClip: @Sendable (String) async throws -> Void
+    public let editClip: @Sendable (String, String) async throws -> Void
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
@@ -102,7 +103,8 @@ public struct MemoryClient: Sendable {
         retryClip: @escaping @Sendable (String) async throws -> Void,
         importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in },
         addClip: @escaping @Sendable (MemoryCaptureInput) async throws -> Void = { _ in },
-        deleteClip: @escaping @Sendable (String) async throws -> Void = { _ in }
+        deleteClip: @escaping @Sendable (String) async throws -> Void = { _ in },
+        editClip: @escaping @Sendable (String, String) async throws -> Void = { _, _ in }
     ) {
         self.loadItems = loadItems
         self.digestPending = digestPending
@@ -110,6 +112,7 @@ public struct MemoryClient: Sendable {
         self.importVideo = importVideo
         self.addClip = addClip
         self.deleteClip = deleteClip
+        self.editClip = editClip
     }
 
     public static let empty = MemoryClient(
@@ -118,7 +121,8 @@ public struct MemoryClient: Sendable {
         retryClip: { _ in },
         importVideo: { _ in },
         addClip: { _ in },
-        deleteClip: { _ in }
+        deleteClip: { _ in },
+        editClip: { _, _ in }
     )
 }
 
@@ -256,6 +260,22 @@ public final class MemoryViewModel {
         }
     }
 
+    /// Saves user-corrected content for a clip and re-indexes it, so 问答 uses the fixed text.
+    public func editContent(_ item: MemoryClip, newText: String) async {
+        guard !isRefreshing else { return }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            try await client.editClip(item.id, trimmed)
+            items = try await client.loadItems()
+            errorMessage = nil
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -294,9 +314,11 @@ public struct MemoryView: View {
             } else {
                 List(items) { item in
                     NavigationLink {
-                        MemoryDetailView(item: item) {
-                            Task { await viewModel.retry(item) }
-                        }
+                        MemoryDetailView(
+                            item: item,
+                            retry: { Task { await viewModel.retry(item) } },
+                            onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } }
+                        )
                     } label: {
                         MemoryRow(item: item)
                     }
@@ -383,9 +405,12 @@ public struct MemoryView: View {
         .navigationTitle(kind.title)
         .navigationDestination(item: $navigationTarget) { target in
             if let item = viewModel.items.first(where: { $0.id == target.clipID }) {
-                MemoryDetailView(item: item, highlightedChunkID: target.chunkID) {
-                    Task { await viewModel.retry(item) }
-                }
+                MemoryDetailView(
+                    item: item,
+                    highlightedChunkID: target.chunkID,
+                    retry: { Task { await viewModel.retry(item) } },
+                    onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } }
+                )
             } else {
                 ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
             }
@@ -611,6 +636,10 @@ private struct MemoryDetailView: View {
     let item: MemoryClip
     var highlightedChunkID: String? = nil
     let retry: () -> Void
+    var onSaveEdit: (String) -> Void = { _ in }
+
+    @State private var isEditing = false
+    @State private var editDraft = ""
 
     var body: some View {
         List {
@@ -684,6 +713,17 @@ private struct MemoryDetailView: View {
         }
         .navigationTitle(item.title)
         .toolbar {
+            if canEditContent {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        editDraft = item.bodyText ?? ""
+                        isEditing = true
+                    } label: {
+                        Label("编辑", systemImage: "pencil")
+                    }
+                    .accessibilityLabel("编辑内容")
+                }
+            }
             if !item.handoffText.isEmpty {
                 ToolbarItem(placement: .automatic) {
                     Menu {
@@ -699,6 +739,40 @@ private struct MemoryDetailView: View {
                         Label("投喂", systemImage: "square.and.arrow.up")
                     }
                     .accessibilityLabel("复制或分享剧本，投喂到豆包/即梦")
+                }
+            }
+        }
+        .sheet(isPresented: $isEditing) { editSheet }
+    }
+
+    /// Text/URL clips carry their content as editable body text; video breakdowns are structured
+    /// scripts (their 台词 is auto-corrected during analysis), so they aren't free-text editable here.
+    private var canEditContent: Bool {
+        item.breakdown == nil && !(item.bodyText ?? "").isEmpty
+    }
+
+    private var editSheet: some View {
+        NavigationStack {
+            Form {
+                Section("内容") {
+                    TextEditor(text: $editDraft)
+                        .frame(minHeight: 220)
+                }
+                Text("订正后会重新索引，问答会基于修正后的内容。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("编辑内容")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { isEditing = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSaveEdit(editDraft)
+                        isEditing = false
+                    }
+                    .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

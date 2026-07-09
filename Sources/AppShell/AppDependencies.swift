@@ -343,6 +343,9 @@ public final class AppDependencies {
                 },
                 deleteClip: { id in
                     try await clipDigestService.deleteClip(id: id)
+                },
+                editClip: { id, text in
+                    try await clipDigestService.updateClipText(id: id, text: text)
                 }
             ))
         } else {

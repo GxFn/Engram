@@ -177,6 +177,41 @@ import VideoUnderstanding
 }
 
 @MainActor
+@Test func appShellMemoryBridgeEditsClipContentAndReindexes() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EngramAppShellEditTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let queueStore = ClipQueueStore(queueDirectory: root.appendingPathComponent("queue", isDirectory: true))
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let recordStore = ClipRecordStore(modelContainer: container)
+    let digestService = ClipDigestService(queueStore: queueStore, recordStore: recordStore)
+    try queueStore.enqueue(Clip(
+        id: "edit-me",
+        source: .text("原始内容有错字"),
+        title: "可编辑",
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_200)
+    ))
+
+    let dependencies = AppDependencies(
+        engines: [FakeEngine(id: "fake", displayName: "Fake")],
+        defaults: nil,
+        clipDigestService: digestService
+    )
+    let memory = dependencies.makeMemoryViewModel()
+    await memory.digestAndRefresh()
+    let item = try #require(memory.items.first)
+
+    await memory.editContent(item, newText: "订正后的内容")
+
+    #expect(memory.errorMessage == nil)
+    #expect(memory.items.first?.id == "edit-me")
+    #expect(memory.items.first?.bodyText == "订正后的内容")
+    #expect(memory.items.first?.state == .indexed)
+}
+
+@MainActor
 @Test func appShellMemoryBridgeImportsVideoAndShowsQueuedClip() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramAppShellVideoImportTests-\(UUID().uuidString)", isDirectory: true)
