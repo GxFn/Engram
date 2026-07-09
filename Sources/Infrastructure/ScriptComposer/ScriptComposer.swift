@@ -143,9 +143,21 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             keyframes: keyframes,
             onScreenText: onScreenText
         )
-        // Every return path funnels through here: attach deterministic OCR captions to their shots,
-        // then fold away sub-minimum-duration fragments so noisy ASR splits never survive.
-        return Self.finalize(script, onScreenText: onScreenText, minShotSeconds: configuration.minShotSeconds)
+        // Every return path funnels through the deterministic grounding pass (see finalize): clamp
+        // the timeline, ground 台词 in the transcript, attach OCR captions without orphans, fold
+        // fragments. upperBound is a proxy for the video duration (source not available here).
+        let upperBound = max(
+            transcript.map(\.endSeconds).filter(\.isFinite).max() ?? 0,
+            keyframes.map(\.timestampSeconds).filter(\.isFinite).max() ?? 0,
+            onScreenText.map(\.timestampSeconds).filter(\.isFinite).max() ?? 0
+        )
+        return Self.finalize(
+            script,
+            transcript: transcript,
+            onScreenText: onScreenText,
+            upperBound: upperBound,
+            minShotSeconds: configuration.minShotSeconds
+        )
     }
 
     private func composeVision(
@@ -301,27 +313,61 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
         )
     }
 
-    /// Attaches deterministic OCR captions to the shots covering their timestamps, then folds away
-    /// sub-`minShotSeconds` fragments. Captions are OCR's job (not the VLM's), so 字幕 survive
-    /// regardless of backend; merging stops 分镜 from mirroring noisy ASR splits.
-    nonisolated static func finalize(_ script: Script, onScreenText: [FrameText], minShotSeconds: Double) -> Script {
-        let withText = attachOnScreenText(to: script, onScreenText: onScreenText)
+    /// Deterministic grounding pass every compose result funnels through, in order:
+    /// (1) clamp shot timestamps into [0, upperBound] so hallucinated out-of-range times can't hijack
+    ///     caption/narration ownership; (2) ground each shot's 台词 in the authoritative corrected
+    ///     transcript by time window — the VLM must never be trusted to reproduce 台词 verbatim;
+    ///     (3) attach OCR captions with half-open windows so none are orphaned in timeline gaps;
+    ///     (4) fold sub-fragment shots. Order matters: clamp before windowing, merge last.
+    nonisolated static func finalize(
+        _ script: Script,
+        transcript: [TranscriptSegment],
+        onScreenText: [FrameText],
+        upperBound: Double,
+        minShotSeconds: Double
+    ) -> Script {
+        let clamped = clampTimeline(script, upperBound: upperBound)
+        let grounded = attachNarration(to: clamped, transcript: transcript)
+        let withText = attachOnScreenText(to: grounded, onScreenText: onScreenText)
         let merged = ShotMerger.merge(withText.shots, minSeconds: minShotSeconds)
         return replacingShots(withText, shots: merged)
     }
 
+    /// Grounds each shot's narration in the corrected transcript (verbatim, by half-open time window),
+    /// so 台词 is exactly what was said — never the VLM's paraphrase, additions, or dropped lines.
+    /// Runs only when a transcript exists; a shot whose window has no speech gets an empty narration
+    /// (a silent / visual-only 分镜 has no 台词 — we never fabricate one).
+    nonisolated static func attachNarration(to script: Script, transcript: [TranscriptSegment]) -> Script {
+        guard !transcript.isEmpty, !script.shots.isEmpty else { return script }
+        let sorted = script.shots.sorted { $0.startSeconds < $1.startSeconds }
+        let bounds = windows(sorted)
+        let shots = sorted.enumerated().map { position, shot -> StoryboardShot in
+            let (lower, upper) = bounds[position]
+            let spoken = transcript
+                .filter { $0.startSeconds >= lower && $0.startSeconds < upper }
+                .sorted { $0.startSeconds < $1.startSeconds }
+                .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            let narration = spoken.isEmpty ? nil : spoken
+            guard narration != shot.narration else { return shot }
+            return StoryboardShot(
+                index: shot.index, startSeconds: shot.startSeconds, endSeconds: shot.endSeconds,
+                narration: narration, visualDescription: shot.visualDescription,
+                pacingNote: shot.pacingNote, onScreenText: shot.onScreenText
+            )
+        }
+        return replacingShots(script, shots: shots)
+    }
+
     nonisolated static func attachOnScreenText(to script: Script, onScreenText: [FrameText]) -> Script {
         guard !onScreenText.isEmpty, !script.shots.isEmpty else { return script }
-        let sortedShots = script.shots.sorted { $0.startSeconds < $1.startSeconds }
-        let lastIndex = sortedShots.count - 1
-
-        let shots = sortedShots.enumerated().map { position, shot -> StoryboardShot in
-            // The last shot also absorbs any trailing frames past its end, so no caption is orphaned.
+        let sorted = script.shots.sorted { $0.startSeconds < $1.startSeconds }
+        let bounds = windows(sorted)
+        let shots = sorted.enumerated().map { position, shot -> StoryboardShot in
+            let (lower, upper) = bounds[position]
             let lines = onScreenText
-                .filter { text in
-                    text.timestampSeconds >= shot.startSeconds
-                        && (text.timestampSeconds < shot.endSeconds || position == lastIndex)
-                }
+                .filter { $0.timestampSeconds >= lower && $0.timestampSeconds < upper }
                 .flatMap(\.lines)
             guard !lines.isEmpty else { return shot }
 
@@ -330,16 +376,40 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             guard merged != shot.onScreenText else { return shot }
 
             return StoryboardShot(
-                index: shot.index,
-                startSeconds: shot.startSeconds,
-                endSeconds: shot.endSeconds,
-                narration: shot.narration,
-                visualDescription: shot.visualDescription,
-                pacingNote: shot.pacingNote,
-                onScreenText: merged
+                index: shot.index, startSeconds: shot.startSeconds, endSeconds: shot.endSeconds,
+                narration: shot.narration, visualDescription: shot.visualDescription,
+                pacingNote: shot.pacingNote, onScreenText: merged
             )
         }
         return replacingShots(script, shots: shots)
+    }
+
+    /// Clamps shot timestamps into [0, upperBound]. A VLM sometimes emits end=9999 or start beyond
+    /// the video; unclamped, such times would hijack the half-open ownership windows below.
+    private nonisolated static func clampTimeline(_ script: Script, upperBound: Double) -> Script {
+        guard upperBound.isFinite, upperBound > 0 else { return script }
+        let shots = script.shots.map { shot -> StoryboardShot in
+            let end = min(max(shot.endSeconds, 0), upperBound)
+            let start = min(max(shot.startSeconds, 0), end)
+            guard start != shot.startSeconds || end != shot.endSeconds else { return shot }
+            return StoryboardShot(
+                index: shot.index, startSeconds: start, endSeconds: end,
+                narration: shot.narration, visualDescription: shot.visualDescription,
+                pacingNote: shot.pacingNote, onScreenText: shot.onScreenText
+            )
+        }
+        return replacingShots(script, shots: shots)
+    }
+
+    /// Half-open ownership windows partitioning the whole timeline across sorted shots: the first
+    /// shot absorbs everything before the second's start (片头 titles/speech), the last extends to
+    /// +∞ (trailing captions/speech). Guarantees no frame or transcript segment is orphaned.
+    private nonisolated static func windows(_ sorted: [StoryboardShot]) -> [(Double, Double)] {
+        sorted.indices.map { i in
+            let lower = i == 0 ? -Double.greatestFiniteMagnitude : sorted[i].startSeconds
+            let upper = i == sorted.count - 1 ? Double.greatestFiniteMagnitude : sorted[i + 1].startSeconds
+            return (lower, upper)
+        }
     }
 
     private nonisolated static func replacingShots(_ script: Script, shots: [StoryboardShot]) -> Script {
@@ -530,7 +600,8 @@ private enum ScriptPromptBuilder {
         要求：
         - shots 按时间递增；每个完整句子、明显的语义节拍或说话人切换各自成为一个分镜，覆盖整条视频、不要漏掉任何一句台词；不要把多句台词并进同一个分镜，也不要把半句话拆成多个分镜；分镜边界落在一句话说完或画面明显切换处；
         - 每个 visualDescription 必须写实可拍、能直接生成画面，不要只复述台词，禁止“表情认真”“反应各异”这类笼统词；
-        - 画面里出现的字幕/文字以“画面文字”为准，结合它们做分析，不要臆造或漏掉；
+        - narration 只需大致对齐时间；系统会用权威语音转写逐字覆盖 narration，你不要改写/翻译/增删台词；请把精力放在画面理解上；
+        - “画面文字”是 OCR 识别的参考，可能夹带水印、@账号、点赞关注等 UI 文字，请结合关键帧图像判断哪些才是内容字幕，不要把 UI/水印当台词或据此扩写；
         - characters 里每个人物在各 shot 中保持同一称呼与外貌，方便下游生成一致的 AI 形象；
         - 不确定的真实姓名不要编造，可用“男生A”“女生B”等中性称呼。
         请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立，并给出人物形象与关键视觉元素。

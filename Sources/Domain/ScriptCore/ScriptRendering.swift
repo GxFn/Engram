@@ -27,6 +27,13 @@ public enum ScriptRendering {
 
             lines.append("画面: \(shot.visualDescription.trimmedForIndexing)")
 
+            // On-screen 字幕/OCR is collected + displayed but was absent from the retrieval index, so
+            // 问答 couldn't find a brand/slogan/name that only appears burned into the frame.
+            let captions = shot.onScreenText.map(\.trimmedForIndexing).filter { !$0.isEmpty }
+            if !captions.isEmpty {
+                lines.append("字幕: \(captions.joined(separator: " / "))")
+            }
+
             if let pacingNote = shot.pacingNote?.trimmedForIndexing, !pacingNote.isEmpty {
                 lines.append("节奏: \(pacingNote)")
             }

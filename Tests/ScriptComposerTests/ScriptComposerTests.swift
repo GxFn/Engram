@@ -21,12 +21,52 @@ import VideoUnderstanding
         FrameText(timestampSeconds: 4.0, lines: ["字幕2"]),
     ]
 
-    let result = Qwen3VLScriptComposer.finalize(script, onScreenText: ocr, minShotSeconds: 1.2)
+    let result = Qwen3VLScriptComposer.finalize(script, transcript: [], onScreenText: ocr, upperBound: 6, minShotSeconds: 1.2)
 
     // The 0.1s "我" fragment is folded away; each OCR caption lands on the shot covering its time.
     #expect(result.shots.count == 2)
     #expect(result.shots[0].onScreenText == ["字幕1"])
     #expect(result.shots[1].onScreenText == ["字幕2"])
+}
+
+@Test func finalizeGroundsNarrationInCorrectedTranscript() {
+    // The VLM's (possibly paraphrased/fabricated) narration is replaced verbatim by the transcript.
+    let script = Script(
+        id: "s", videoSourceID: "v", title: "t", summary: "",
+        shots: [
+            StoryboardShot(index: 0, startSeconds: 0, endSeconds: 3, narration: "模型润色版", visualDescription: "x"),
+            StoryboardShot(index: 1, startSeconds: 3, endSeconds: 6, narration: "模型给静默镜编的台词", visualDescription: "y"),
+        ],
+        createdAt: Date(timeIntervalSince1970: 0)
+    )
+    // Only shot 0's window has speech; shot 1 is silent.
+    let transcript = [TranscriptSegment(startSeconds: 0.5, endSeconds: 2.5, text: "真实台词")]
+
+    let result = Qwen3VLScriptComposer.finalize(script, transcript: transcript, onScreenText: [], upperBound: 6, minShotSeconds: 0.35)
+
+    #expect(result.shots[0].narration == "真实台词")   // grounded verbatim
+    #expect(result.shots[1].narration == nil)          // silent window → no fabricated 台词
+}
+
+@Test func finalizeRescuesOrphanCaptionsAndClampsHallucinatedTimeline() {
+    let script = Script(
+        id: "s", videoSourceID: "v", title: "t", summary: "",
+        shots: [
+            StoryboardShot(index: 0, startSeconds: 1, endSeconds: 2, narration: "a", visualDescription: "x"),
+            StoryboardShot(index: 1, startSeconds: 2, endSeconds: 9999, narration: "b", visualDescription: "y"), // 越界 end
+        ],
+        createdAt: Date(timeIntervalSince1970: 0)
+    )
+    let ocr = [
+        FrameText(timestampSeconds: 0.2, lines: ["片头标题"]), // before shot0.start — orphaned under the old window
+        FrameText(timestampSeconds: 5.0, lines: ["片中字幕"]),
+    ]
+
+    let result = Qwen3VLScriptComposer.finalize(script, transcript: [], onScreenText: ocr, upperBound: 8, minShotSeconds: 0.35)
+
+    #expect(result.shots.last?.endSeconds == 8)                    // end clamped to the video bound
+    #expect(result.shots[0].onScreenText.contains("片头标题"))      // 片头 caption rescued onto the first shot
+    #expect(result.shots[1].onScreenText.contains("片中字幕"))
 }
 
 @Test func qwenComposerMapsStrictJSONToScriptAndPromptShape() async throws {
