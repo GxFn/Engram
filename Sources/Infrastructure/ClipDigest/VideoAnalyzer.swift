@@ -16,6 +16,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
     private let sampler: any FrameSampler
     private let visionComposer: any VisionScriptComposing
     private let textComposer: any TextScriptComposing
+    private let corrector: (any TranscriptCorrecting)?
     private let maxFrames: Int
     private let deep: DeepModeConfiguration?
 
@@ -46,6 +47,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
         sampler: any FrameSampler,
         visionComposer: any VisionScriptComposing,
         textComposer: any TextScriptComposing,
+        corrector: (any TranscriptCorrecting)? = nil,
         maxFrames: Int = 6,
         deep: DeepModeConfiguration? = DeepModeConfiguration()
     ) {
@@ -53,6 +55,7 @@ public struct VideoAnalyzer: VideoAnalyzing {
         self.sampler = sampler
         self.visionComposer = visionComposer
         self.textComposer = textComposer
+        self.corrector = corrector
         self.maxFrames = max(0, min(maxFrames, 8))
         self.deep = deep
     }
@@ -62,7 +65,10 @@ public struct VideoAnalyzer: VideoAnalyzing {
         onStage: @Sendable (ClipState) async -> Void
     ) async throws -> Script {
         await onStage(.transcribing)
-        let transcript = try await transcriber.transcribe(source)
+        let rawTranscript = try await transcriber.transcribe(source)
+        // Clean the raw ASR (typos/punctuation/run-ons) before scripting so 台词 is readable and the
+        // 爆点/剧本 analysis reasons over accurate text; falls back to raw on any failure.
+        let transcript = try await correctedTranscript(rawTranscript)
 
         await onStage(.scripting)
 
@@ -88,6 +94,13 @@ public struct VideoAnalyzer: VideoAnalyzing {
             )
             return try await textComposer.compose(sourceID: source.id, transcript: transcript)
         }
+    }
+
+    private func correctedTranscript(_ raw: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+        guard let corrector else {
+            return raw
+        }
+        return try await corrector.correct(raw)
     }
 
     // MARK: - Deep (segmented map-reduce) path

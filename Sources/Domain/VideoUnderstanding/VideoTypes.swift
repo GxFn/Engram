@@ -55,6 +55,13 @@ public protocol Transcriber: Sendable {
     func transcribe(_ source: VideoSource) async throws -> [TranscriptSegment]
 }
 
+public protocol TranscriptCorrecting: Sendable {
+    /// Cleans raw ASR output (typos, homophones, missing punctuation, run-ons) without changing
+    /// meaning, preserving each segment's timing. Implementations return the original segments on
+    /// any non-cancellation failure so the pipeline never breaks.
+    func correct(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment]
+}
+
 public protocol FrameSampler: Sendable {
     func sampleKeyFrames(_ source: VideoSource, maxFrames: Int) async throws -> [SampledFrame]
 }

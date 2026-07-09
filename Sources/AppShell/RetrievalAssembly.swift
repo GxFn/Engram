@@ -123,6 +123,9 @@ enum RetrievalAssembly {
             sampler: AVFoundationFrameSampler(),
             visionComposer: visionComposer,
             textComposer: textComposer,
+            // Cleans the raw ASR with the active text engine before scripting (cheap, one call);
+            // gracefully returns the raw transcript if the model/network is unavailable.
+            corrector: LLMTranscriptCorrector(engine: activeEngine, model: activeModel),
             maxFrames: videoAnalyzerMaxFrames
         )
     }

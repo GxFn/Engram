@@ -474,6 +474,47 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
     }
 }
 
+@Test func transcriptCorrectorAppliesFixesAndPreservesTiming() async throws {
+    let generator = RecordingTextGenerator(responses: [
+        #"[{"i":0,"text":"我想组队。"},{"i":1,"text":"你知道他在干嘛吗？"}]"#,
+    ])
+    let corrector = LLMTranscriptCorrector(generator: generator)
+    let raw = [
+        TranscriptSegment(startSeconds: 0, endSeconds: 4, text: "我想组队"),
+        TranscriptSegment(startSeconds: 4, endSeconds: 8, text: "你知道他干嘛吗"),
+    ]
+
+    let corrected = try await corrector.correct(raw)
+
+    #expect(corrected.count == 2)
+    #expect(corrected[0].text == "我想组队。")
+    #expect(corrected[1].text == "你知道他在干嘛吗？")
+    // Timing is preserved; only text changes.
+    #expect(corrected[0].startSeconds == 0)
+    #expect(corrected[1].endSeconds == 8)
+}
+
+@Test func transcriptCorrectorKeepsRawWhenOutputIsNotJSON() async throws {
+    let generator = RecordingTextGenerator(responses: ["抱歉，我无法处理这个请求。"])
+    let corrector = LLMTranscriptCorrector(generator: generator)
+    let raw = [TranscriptSegment(startSeconds: 0, endSeconds: 4, text: "原始台词")]
+
+    let corrected = try await corrector.correct(raw)
+
+    #expect(corrected == raw)
+}
+
+@Test func transcriptCorrectorKeepsRawWhenGeneratorThrows() async throws {
+    struct CorrectionFailure: Error {}
+    let generator = RecordingTextGenerator(error: CorrectionFailure())
+    let corrector = LLMTranscriptCorrector(generator: generator)
+    let raw = [TranscriptSegment(startSeconds: 0, endSeconds: 4, text: "原始台词")]
+
+    let corrected = try await corrector.correct(raw)
+
+    #expect(corrected == raw)
+}
+
 private actor RecordingTextGenerator: ScriptTextGenerating {
     struct Request: Sendable {
         let prompt: String
