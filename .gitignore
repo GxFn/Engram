@@ -9,6 +9,13 @@
 xcuserdata/
 DerivedData/
 *.xcresult
+build/
+
+# Signing / secrets — never commit
+*.p12
+*.mobileprovision
+*.cer
+.env
 
 # Model weights are downloaded at runtime, never committed
 /Models/
