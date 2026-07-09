@@ -337,6 +337,44 @@ import VideoUnderstanding
     #expect(try fixture.store.pendingItems().count == 1)
 }
 
+@Test func digestVideoFileHardConfigErrorFailsRetryablyInsteadOfFakeSuccess() async throws {
+    // Regression: a cloud auth/config failure (401 / missing key) used to degrade into a
+    // transcript-only script saved as a green Indexed "success". It must surface as a retryable
+    // failure so the user can fix Settings and retry.
+    let fixture = try DigestFixture()
+    let clip = Clip(
+        id: "video-config-error",
+        source: .videoFile(URL(fileURLWithPath: "/tmp/config-error.mov")),
+        title: nil,
+        note: nil,
+        createdAt: Date(timeIntervalSince1970: 1_800_000_060)
+    )
+    try fixture.store.enqueue(clip)
+
+    let analyzer = VideoAnalyzer(
+        transcriber: RecordingTranscriber(transcript: [
+            TranscriptSegment(startSeconds: 0, endSeconds: 2, text: "开头"),
+        ]),
+        sampler: RecordingFrameSampler(frames: []),
+        visionComposer: FailingVisionComposer(
+            error: VideoUnderstandingError.visionConfigurationInvalid("HTTP 401 unauthorized")
+        ),
+        textComposer: RecordingTextComposer(script: fixtureScript(
+            sourceID: "video-config-error",
+            title: "不该被用到",
+            visualDescription: ""
+        ))
+    )
+    let service = try fixture.makeService(fetcher: FailingFetcher(), videoAnalyzer: analyzer)
+
+    try await service.digestPending()
+
+    let snapshot = try await fixture.records.snapshot(id: "video-config-error")
+    #expect(snapshot.state == .failed)
+    #expect(snapshot.failureReason?.contains("配置无效") == true)
+    #expect(snapshot.failureRetryable == true)
+}
+
 @Test func digestVideoFileWithoutAnalyzerRecordsConfigurationFailure() async throws {
     let fixture = try DigestFixture()
     let videoURL = URL(fileURLWithPath: "/tmp/local-video.mov")

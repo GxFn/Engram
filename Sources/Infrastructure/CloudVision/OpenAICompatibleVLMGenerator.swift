@@ -78,7 +78,11 @@ public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
         config: GenerationConfig
     ) async throws -> String {
         guard !configuration.apiKey.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw CloudVLMError.missingAPIKey
+            // Hard configuration failure: surfaced as a retryable digest failure (fix Settings →
+            // Retry), never silently degraded into a transcript-only "success".
+            throw VideoUnderstandingError.visionConfigurationInvalid(
+                CloudVLMError.missingAPIKey.errorDescription ?? "云端 AI 未配置 API Key"
+            )
         }
 
         var request = URLRequest(url: Self.endpoint(base: configuration.baseURL))
@@ -107,6 +111,12 @@ public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
         guard (200..<300).contains(http.statusCode) else {
             let snippet = String(String(decoding: data, as: UTF8.self).prefix(500))
             Log.scriptComposer.error("Cloud VLM HTTP \(http.statusCode, privacy: .public)")
+            if http.statusCode == 401 || http.statusCode == 403 {
+                // Auth rejection is a configuration problem the user must fix — see missingAPIKey.
+                throw VideoUnderstandingError.visionConfigurationInvalid(
+                    "云端 AI 鉴权失败（HTTP \(http.statusCode)）：\(snippet)"
+                )
+            }
             throw CloudVLMError.statusCode(http.statusCode, snippet)
         }
 

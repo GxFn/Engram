@@ -234,6 +234,22 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             return try decodeScript(output, sourceID: sourceID, transcript: transcript)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as VideoUnderstandingError {
+            if case .visionConfigurationInvalid = error {
+                // Hard configuration failure (missing key / auth rejection): the user must fix
+                // Settings — degrading to a transcript-only "success" would hide it behind a green
+                // Indexed state. Propagates to the digest as a retryable failure.
+                throw error
+            }
+            let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            Log.scriptComposer.error(
+                "Qwen3-VL script generation failed: \(String(describing: error), privacy: .public)"
+            )
+            return try await transcriptFallback(
+                sourceID: sourceID,
+                transcript: transcript,
+                reason: "画面理解失败：\(detail)"
+            )
         } catch let error as ScriptJSONDecodingError {
             Log.scriptComposer.warning(
                 "Qwen3-VL script JSON decode failed: \(String(describing: error), privacy: .public)"
@@ -267,7 +283,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
                 visualDescription: "模型输出不可解析，已根据转写生成兜底分镜。",
                 pacingNote: "坏 JSON 兜底",
                 createdAt: dateProvider(),
-                id: idProvider()
+                id: idProvider(),
+                degradationNote: "模型输出不是合法 JSON，已转写兜底。"
             )
         } catch {
             let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -314,7 +331,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             visualDescription: "转写-only 兜底：未使用画面理解。",
             pacingNote: "转写-only 兜底",
             createdAt: dateProvider(),
-            id: idProvider()
+            id: idProvider(),
+            degradationNote: reason
         )
     }
 
@@ -323,7 +341,7 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
     /// silently into a transcript dump.
     private nonisolated static func annotate(_ script: Script, reason: String) -> Script {
         guard !script.summary.contains(reason) else {
-            return script
+            return script.withDegradationNote(script.degradationNote ?? reason)
         }
         let summary = script.summary.isEmpty ? reason : "\(reason)\n\(script.summary)"
         return Script(
@@ -335,7 +353,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             createdAt: script.createdAt,
             hookStructure: script.hookStructure,
             visualElements: script.visualElements,
-            characters: script.characters
+            characters: script.characters,
+            degradationNote: reason
         )
     }
 
@@ -448,7 +467,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             createdAt: script.createdAt,
             hookStructure: script.hookStructure,
             visualElements: script.visualElements,
-            characters: script.characters
+            characters: script.characters,
+            degradationNote: script.degradationNote
         )
     }
 }
@@ -537,7 +557,8 @@ public actor TextScriptComposer: TextScriptComposing {
             visualDescription: "",
             pacingNote: "仅基于语音转写，暂未使用画面理解。",
             createdAt: dateProvider(),
-            id: idProvider()
+            id: idProvider(),
+            degradationNote: "剧本化未生效（\(failureDetail)），已转写草稿兜底。"
         )
     }
 
@@ -1025,7 +1046,8 @@ private enum DeterministicScriptFactory {
         visualDescription: String,
         pacingNote: String,
         createdAt: Date,
-        id: String
+        id: String,
+        degradationNote: String? = nil
     ) -> Script {
         let timing = timingRange(for: transcript)
         let narration = transcript
@@ -1050,7 +1072,8 @@ private enum DeterministicScriptFactory {
                     pacingNote: pacingNote
                 )
             ],
-            createdAt: createdAt
+            createdAt: createdAt,
+            degradationNote: degradationNote
         )
     }
 

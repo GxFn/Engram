@@ -99,6 +99,10 @@ public struct Script: Sendable, Hashable, Codable {
     /// Recurring on-screen people with a consistent appearance description, so a downstream
     /// generator (豆包/即梦) can render the same 形象 across shots. Empty when transcript-only.
     public let characters: [String]
+    /// Non-nil when this breakdown was produced degraded (vision failed → transcript-only, bad
+    /// JSON fallback, partial deep coverage, …). Carries the human-readable reason so the UI can
+    /// mark the result instead of letting it masquerade as a full 拆解. nil = clean.
+    public let degradationNote: String?
 
     public init(
         id: String,
@@ -109,7 +113,8 @@ public struct Script: Sendable, Hashable, Codable {
         createdAt: Date,
         hookStructure: HookAnalysis? = nil,
         visualElements: [String] = [],
-        characters: [String] = []
+        characters: [String] = [],
+        degradationNote: String? = nil
     ) {
         self.id = id
         self.videoSourceID = videoSourceID
@@ -120,6 +125,24 @@ public struct Script: Sendable, Hashable, Codable {
         self.hookStructure = hookStructure
         self.visualElements = visualElements
         self.characters = characters
+        self.degradationNote = degradationNote
+    }
+
+    /// Same script, different degradation marker — the fallback paths rebuild via this so the
+    /// marker survives every downstream Script reconstruction.
+    public func withDegradationNote(_ note: String?) -> Script {
+        Script(
+            id: id,
+            videoSourceID: videoSourceID,
+            title: title,
+            summary: summary,
+            shots: shots,
+            createdAt: createdAt,
+            hookStructure: hookStructure,
+            visualElements: visualElements,
+            characters: characters,
+            degradationNote: note
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -132,6 +155,7 @@ public struct Script: Sendable, Hashable, Codable {
         case hookStructure
         case visualElements
         case characters
+        case degradationNote
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +170,7 @@ public struct Script: Sendable, Hashable, Codable {
         hookStructure = try container.decodeIfPresent(HookAnalysis.self, forKey: .hookStructure)
         visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
         characters = try container.decodeIfPresent([String].self, forKey: .characters) ?? []
+        degradationNote = try container.decodeIfPresent(String.self, forKey: .degradationNote)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -160,6 +185,7 @@ public struct Script: Sendable, Hashable, Codable {
         try container.encodeIfPresent(hookStructure, forKey: .hookStructure)
         try container.encode(visualElements, forKey: .visualElements)
         try container.encode(characters, forKey: .characters)
+        try container.encodeIfPresent(degradationNote, forKey: .degradationNote)
     }
 }
 

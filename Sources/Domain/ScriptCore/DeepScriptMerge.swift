@@ -50,7 +50,9 @@ public enum DeepScriptMerge {
             createdAt: anchor.createdAt,
             hookStructure: hook,
             visualElements: elements,
-            characters: characters
+            characters: characters,
+            // Any degraded segment marks the whole merged breakdown.
+            degradationNote: ordered.compactMap(\.degradationNote).first
         )
     }
 

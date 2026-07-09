@@ -44,21 +44,36 @@ import VideoUnderstanding
     #expect(output.contains("\"title\""))
 }
 
-@Test func generateThrowsMissingAPIKeyForBlankKey() async {
+@Test func generateMapsBlankKeyToConfigurationFailure() async {
+    // Hard config errors surface as VideoUnderstandingError.visionConfigurationInvalid so the
+    // pipeline records a retryable failure instead of degrading to a transcript-only "success".
     let generator = OpenAICompatibleVLMGenerator(
         configuration: .init(baseURL: URL(string: "https://example.com")!, model: "m", apiKey: "   ")
     )
-    await #expect(throws: CloudVLMError.missingAPIKey) {
+    await #expect(throws: VideoUnderstandingError.self) {
         _ = try await generator.generate(prompt: "p", frames: [], config: .default)
     }
 }
 
-@Test func generateThrowsOnNon2xxStatus() async {
+@Test func generateMapsAuthRejectionToConfigurationFailure() async {
     let generator = OpenAICompatibleVLMGenerator(
         configuration: .init(baseURL: URL(string: "https://example.com")!, model: "m", apiKey: "k")
     ) { request in
         let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
         return (Data("unauthorized".utf8), response)
+    }
+    await #expect(throws: VideoUnderstandingError.self) {
+        _ = try await generator.generate(prompt: "p", frames: [], config: .default)
+    }
+}
+
+@Test func generateThrowsCloudErrorOnNonAuthServerStatus() async {
+    // Non-auth server errors (5xx) stay CloudVLMError: transient, handled by transcript fallback.
+    let generator = OpenAICompatibleVLMGenerator(
+        configuration: .init(baseURL: URL(string: "https://example.com")!, model: "m", apiKey: "k")
+    ) { request in
+        let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+        return (Data("server down".utf8), response)
     }
     await #expect(throws: CloudVLMError.self) {
         _ = try await generator.generate(prompt: "p", frames: [], config: .default)

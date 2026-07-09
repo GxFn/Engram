@@ -93,5 +93,9 @@ public enum VideoUnderstandingError: Error, Sendable, Hashable, Codable {
     case noAudioTrack
     case transcriptionUnavailable(String)
     case visionUnavailable(String)
+    /// Hard vision-backend configuration failure (missing API key, auth rejection): the user must
+    /// fix Settings, so this must surface as a retryable failure — degrading to a transcript-only
+    /// "success" would hide the misconfiguration behind a green Indexed state.
+    case visionConfigurationInvalid(String)
     case unreadableAsset(String)
 }

@@ -120,12 +120,31 @@ public struct VideoAnalyzer: VideoAnalyzing {
             )
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as VideoUnderstandingError {
+            if case .visionConfigurationInvalid = error {
+                // Don't swallow a hard config error into a transcript fallback here either — this
+                // second swallow is what used to turn a 401 into a green "Indexed" transcript dump.
+                throw error
+            }
+            return try await degradedTextFallback(source: source, transcript: transcript, error: error)
         } catch {
-            Log.clip.warning(
-                "Vision script composition failed for \(source.id, privacy: .public); falling back to transcript-only: \(String(describing: error), privacy: .public)"
-            )
-            return try await textComposer.compose(sourceID: source.id, transcript: transcript)
+            return try await degradedTextFallback(source: source, transcript: transcript, error: error)
         }
+    }
+
+    /// Transcript-only fallback for a failed vision pass, explicitly marked degraded so the result
+    /// can't masquerade as a full 拆解.
+    private func degradedTextFallback(
+        source: VideoSource,
+        transcript: [TranscriptSegment],
+        error: Error
+    ) async throws -> Script {
+        Log.clip.warning(
+            "Vision script composition failed for \(source.id, privacy: .public); falling back to transcript-only: \(String(describing: error), privacy: .public)"
+        )
+        let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        let script = try await textComposer.compose(sourceID: source.id, transcript: transcript)
+        return script.withDegradationNote(script.degradationNote ?? "画面理解失败，已转写-only：\(detail)")
     }
 
     /// Transcribes + corrects, degrading to an empty transcript on any non-cancellation failure
@@ -201,6 +220,10 @@ public struct VideoAnalyzer: VideoAnalyzing {
                 partials.append(partial)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as VideoUnderstandingError where isConfigurationFailure(error) {
+                // A hard config error fails every segment identically — abort the whole deep pass
+                // so the digest records one retryable failure instead of N placeholder segments.
+                throw error
             } catch {
                 failedSegments += 1
                 Log.clip.warning(
@@ -221,19 +244,26 @@ public struct VideoAnalyzer: VideoAnalyzing {
         guard var merged = DeepScriptMerge.merge(partials, sourceID: source.id) else { return nil }
         if failedSegments > 0 {
             // Partial coverage must be visible, not a clean-looking success.
+            let note = "部分片段画面理解失败（\(failedSegments)/\(segmentCount) 段仅保留转写与字幕）。"
             merged = Script(
                 id: merged.id,
                 videoSourceID: merged.videoSourceID,
                 title: merged.title,
-                summary: "部分片段画面理解失败（\(failedSegments)/\(segmentCount) 段仅保留转写与字幕）。\n\(merged.summary)",
+                summary: "\(note)\n\(merged.summary)",
                 shots: merged.shots,
                 createdAt: merged.createdAt,
                 hookStructure: merged.hookStructure,
                 visualElements: merged.visualElements,
-                characters: merged.characters
+                characters: merged.characters,
+                degradationNote: note
             )
         }
         return merged
+    }
+
+    private func isConfigurationFailure(_ error: VideoUnderstandingError) -> Bool {
+        if case .visionConfigurationInvalid = error { return true }
+        return false
     }
 
     /// Transcript/字幕-only stand-in for a segment whose vision pass failed. Title/summary stay empty

@@ -677,6 +677,25 @@ private struct MemoryDetailView: View {
             }
 
             if let breakdown = item.breakdown {
+                // A degraded breakdown (vision failed → transcript-only, bad-JSON fallback, partial
+                // deep coverage) must be visibly marked — it used to look identical to a full 拆解.
+                if let note = breakdown.degradationNote, !note.isEmpty {
+                    Section {
+                        Label {
+                            Text(note)
+                                .font(.footnote)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        Text("这是降级结果，非完整拆解。可删除后重新导入，或修复设置后重试。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("画面理解未完全生效")
+                    }
+                }
+
                 if let hook = breakdown.hookStructure {
                     Section("爆点结构") {
                         HookStructureView(hook: hook)

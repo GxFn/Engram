@@ -494,6 +494,13 @@ public actor ClipDigestService: ClipDigesting {
                 retryable: true,
                 underlyingDescription: String(describing: error)
             )
+        case let .visionConfigurationInvalid(message):
+            // Fix Settings (key/endpoint) → Retry; deliberately NOT degraded to transcript-only.
+            return ClassifiedDigestFailure(
+                reason: "云端 AI 配置无效：\(message)",
+                retryable: true,
+                underlyingDescription: String(describing: error)
+            )
         case let .unreadableAsset(message):
             return ClassifiedDigestFailure(
                 reason: "Video asset unreadable: \(message)",
