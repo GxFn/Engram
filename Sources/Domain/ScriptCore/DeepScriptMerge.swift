@@ -35,15 +35,9 @@ public enum DeepScriptMerge {
 
         let hook = ordered.compactMap(\.hookStructure).first
 
-        var seen = Set<String>()
-        var elements: [String] = []
-        for element in ordered.flatMap(\.visualElements) {
-            let trimmed = element.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty, seen.insert(trimmed).inserted {
-                elements.append(trimmed)
-            }
-        }
-        elements = Array(elements.prefix(12))
+        let elements = Array(dedupedUnion(ordered.flatMap(\.visualElements)).prefix(12))
+        // Characters accumulate across segments too, so a long video keeps one consistent 形象 set.
+        let characters = Array(dedupedUnion(ordered.flatMap(\.characters)).prefix(8))
 
         return Script(
             id: anchor.id,
@@ -53,8 +47,21 @@ public enum DeepScriptMerge {
             shots: mergedShots,
             createdAt: anchor.createdAt,
             hookStructure: hook,
-            visualElements: elements
+            visualElements: elements,
+            characters: characters
         )
+    }
+
+    private static func dedupedUnion(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, seen.insert(trimmed).inserted {
+                result.append(trimmed)
+            }
+        }
+        return result
     }
 
     private static func firstNonEmpty(_ values: [String]) -> String? {

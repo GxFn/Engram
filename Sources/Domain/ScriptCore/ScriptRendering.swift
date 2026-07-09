@@ -8,6 +8,10 @@ public enum ScriptRendering {
             blocks.append(hookBlock)
         }
 
+        if let charactersBlock = charactersBlock(script.characters) {
+            blocks.append(charactersBlock)
+        }
+
         if let visualElementsBlock = visualElementsBlock(script.visualElements) {
             blocks.append(visualElementsBlock)
         }
@@ -55,6 +59,15 @@ public enum ScriptRendering {
         lines.append("为什么成立: \(hook.whyItWorks.trimmedForIndexing)")
 
         return lines.joined(separator: "\n")
+    }
+
+    private static func charactersBlock(_ characters: [String]) -> String? {
+        let profiles = characters.map(\.trimmedForIndexing).filter { !$0.isEmpty }
+        guard !profiles.isEmpty else {
+            return nil
+        }
+
+        return "## 人物\n" + profiles.map { "- \($0)" }.joined(separator: "\n")
     }
 
     private static func visualElementsBlock(_ elements: [String]) -> String? {

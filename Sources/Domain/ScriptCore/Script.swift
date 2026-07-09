@@ -57,6 +57,9 @@ public struct Script: Sendable, Hashable, Codable {
     public let createdAt: Date
     public let hookStructure: HookAnalysis?
     public let visualElements: [String]
+    /// Recurring on-screen people with a consistent appearance description, so a downstream
+    /// generator (豆包/即梦) can render the same 形象 across shots. Empty when transcript-only.
+    public let characters: [String]
 
     public init(
         id: String,
@@ -66,7 +69,8 @@ public struct Script: Sendable, Hashable, Codable {
         shots: [StoryboardShot],
         createdAt: Date,
         hookStructure: HookAnalysis? = nil,
-        visualElements: [String] = []
+        visualElements: [String] = [],
+        characters: [String] = []
     ) {
         self.id = id
         self.videoSourceID = videoSourceID
@@ -76,6 +80,7 @@ public struct Script: Sendable, Hashable, Codable {
         self.createdAt = createdAt
         self.hookStructure = hookStructure
         self.visualElements = visualElements
+        self.characters = characters
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -87,6 +92,7 @@ public struct Script: Sendable, Hashable, Codable {
         case createdAt
         case hookStructure
         case visualElements
+        case characters
     }
 
     public init(from decoder: Decoder) throws {
@@ -100,6 +106,7 @@ public struct Script: Sendable, Hashable, Codable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         hookStructure = try container.decodeIfPresent(HookAnalysis.self, forKey: .hookStructure)
         visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
+        characters = try container.decodeIfPresent([String].self, forKey: .characters) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -113,6 +120,7 @@ public struct Script: Sendable, Hashable, Codable {
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(hookStructure, forKey: .hookStructure)
         try container.encode(visualElements, forKey: .visualElements)
+        try container.encode(characters, forKey: .characters)
     }
 }
 

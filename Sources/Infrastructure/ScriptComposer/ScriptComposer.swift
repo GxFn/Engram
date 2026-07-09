@@ -420,12 +420,13 @@ private enum FramePreparer {
 private enum ScriptPromptBuilder {
     static func visionPrompt(transcript: [TranscriptSegment], keyframes: [SampledFrame]) -> String {
         """
-        你是 Engram 的端侧中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成爆款拆解分镜。
+        你是 Engram 的中文短视频剧本师。根据已附加的关键帧图片和下面的转写，生成可直接用于 AI 生图/生视频的爆款拆解分镜。
         只输出一个合法 JSON 对象，不要 Markdown，不要解释。字段严格如下：
         {
           "title": "中文标题",
           "summary": "一句中文摘要",
-          "visualElements": ["人物/场景/道具/风格标签，3-8 个；信息不足时返回空数组"],
+          "characters": ["每个元素是描述一个人物的一句中文（依次含称呼、性别年龄、发型发色、气质、服装），例：男生A是留黑色短发、穿浅色短袖的阳光男青年；共 2-5 个元素，判断不了就返回空数组"],
+          "visualElements": ["场景/道具/风格/色调标签，3-8 个"],
           "hookStructure": {
             "openingHook": "前 3 秒钩子",
             "retentionDevices": ["留人手法"],
@@ -438,13 +439,16 @@ private enum ScriptPromptBuilder {
               "start": 0.0,
               "end": 1.0,
               "narration": "台词或旁白，可为空",
-              "visualDescription": "画面、人物、动作、场景",
-              "pacingNote": "节奏建议，可为空"
+              "visualDescription": "直接具体、可直接喂 AI 生图的一段画面：景别(特写/近景/中景/全景) + 出场人物(引用上面的称呼)及其表情/动作/位置 + 场景与背景 + 关键道具 + 光线/色调/风格",
+              "pacingNote": "节奏/运镜建议，可为空"
             }
           ]
         }
-        要求：shots 按时间递增；visualDescription 必须描述画面，不要只复述转写；不确定的人名不要编造。
-        请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立，并列出关键视觉元素。
+        要求：
+        - shots 按时间递增；每个 visualDescription 必须写实可拍、能直接生成画面，不要只复述台词，禁止“表情认真”“反应各异”这类笼统词；
+        - characters 里每个人物在各 shot 中保持同一称呼与外貌，方便下游生成一致的 AI 形象；
+        - 不确定的真实姓名不要编造，可用“男生A”“女生B”等中性称呼。
+        请分析这条为什么可能爆：前 3 秒钩子、留人手法、爆点/反转、CTA、为什么成立，并给出人物形象与关键视觉元素。
 
         转写：
         \(transcriptLines(transcript))
@@ -462,6 +466,7 @@ private enum ScriptPromptBuilder {
         {
           "title": "中文标题",
           "summary": "一句中文摘要",
+          "characters": [],
           "visualElements": [],
           "hookStructure": {
             "openingHook": "基于转写判断的前 3 秒钩子",
@@ -549,7 +554,8 @@ private enum JSONScriptDecoder {
             shots: shots,
             createdAt: createdAt,
             hookStructure: payload.hookStructure,
-            visualElements: payload.visualElements
+            visualElements: payload.visualElements,
+            characters: payload.characters
         )
     }
 
@@ -595,6 +601,7 @@ private struct ScriptPayload: Decodable {
     let title: String
     let summary: String
     let visualElements: [String]
+    let characters: [String]
     let hookStructure: HookAnalysis?
     let shots: [ShotPayload]
 
@@ -602,6 +609,7 @@ private struct ScriptPayload: Decodable {
         case title
         case summary
         case visualElements
+        case characters
         case hookStructure
         case shots
     }
@@ -610,12 +618,68 @@ private struct ScriptPayload: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
+        visualElements = Self.flexibleStringList(container, forKey: .visualElements)
+        characters = Self.flexibleStringList(container, forKey: .characters)
         // Lenient: a malformed or partial hookStructure degrades to nil/partial instead of
         // failing the whole script decode and dropping otherwise-good shots.
         let hookPayload = (try? container.decodeIfPresent(HookPayload.self, forKey: .hookStructure)) ?? nil
         hookStructure = hookPayload?.hookAnalysis()
         shots = try container.decodeIfPresent([ShotPayload].self, forKey: .shots) ?? []
+    }
+
+    /// Decodes a list whose items may be plain strings OR small objects (the model occasionally
+    /// returns `{"称呼":"男生A", …}` for a character); objects are flattened to one joined string.
+    /// Never throws, so a formatting drift can't fail the whole script decode and drop good shots.
+    private static func flexibleStringList(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> [String] {
+        guard let items = try? container.decodeIfPresent([FlexibleTextItem].self, forKey: key) else {
+            return []
+        }
+        return items.map(\.text).filter { !$0.isEmpty }
+    }
+}
+
+private struct FlexibleTextItem: Decodable {
+    let text: String
+
+    init(from decoder: Decoder) throws {
+        let single = try decoder.singleValueContainer()
+        if let string = try? single.decode(String.self) {
+            text = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let object = try? single.decode([String: FlexibleScalar].self) {
+            text = object.values
+                .map(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: "，")
+        } else {
+            text = ""
+        }
+    }
+}
+
+private enum FlexibleScalar: Decodable {
+    case value(String)
+
+    var text: String {
+        switch self {
+        case let .value(string):
+            return string
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            self = .value(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else if let number = try? container.decode(Double.self) {
+            self = .value(number == number.rounded() ? String(Int(number)) : String(number))
+        } else if let bool = try? container.decode(Bool.self) {
+            self = .value(bool ? "true" : "false")
+        } else {
+            self = .value("")
+        }
     }
 }
 

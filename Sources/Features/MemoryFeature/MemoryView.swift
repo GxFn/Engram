@@ -645,6 +645,15 @@ private struct MemoryDetailView: View {
                     }
                 }
 
+                if !breakdown.characters.isEmpty {
+                    Section("人物") {
+                        ForEach(Array(breakdown.characters.enumerated()), id: \.offset) { _, profile in
+                            Text(profile)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+
                 if !breakdown.visualElements.isEmpty {
                     Section("视觉元素") {
                         Text(breakdown.visualElements.joined(separator: "、"))
