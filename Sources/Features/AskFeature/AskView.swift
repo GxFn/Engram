@@ -64,8 +64,10 @@ public struct AskView: View {
                 .accessibilityAddTraits(.isHeader)
             engineBar
         }
+        // Match the native large-title metrics of the other tabs: 16pt leading, and the title text
+        // sitting ~4pt below the compact bar (iOS positions its large title low in the title band).
         .padding(.horizontal)
-        .padding(.top, 8)
+        .padding(.top, 4)
         .padding(.bottom, 10)
     }
 
