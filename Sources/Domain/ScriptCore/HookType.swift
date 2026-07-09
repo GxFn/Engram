@@ -30,12 +30,23 @@ public enum HookType: String, Sendable, Hashable, CaseIterable {
     }
 
     /// Maps a model-emitted string (Chinese label or English rawValue, possibly noisy) to a case.
+    /// Falls back to substring matching so common variants ("悬念型"、"情绪冲击钩子"、"Suspense") don't
+    /// all collapse into `.other` and erase the classification signal.
     public static func from(_ raw: String) -> HookType {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let byRaw = HookType(rawValue: trimmed) {
             return byRaw
         }
-        return HookType.allCases.first { $0.displayName == trimmed } ?? .other
+        if let byName = HookType.allCases.first(where: { $0.displayName == trimmed }) {
+            return byName
+        }
+        let lowered = trimmed.lowercased()
+        // Business cases only (.other excluded); no display name is a substring of another, so the
+        // first containment hit is unambiguous.
+        return HookType.allCases.first { candidate in
+            candidate != .other
+                && (trimmed.contains(candidate.displayName) || lowered.contains(candidate.rawValue.lowercased()))
+        } ?? .other
     }
 }
 

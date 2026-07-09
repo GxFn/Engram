@@ -95,24 +95,30 @@ public actor ScriptParadigmComposer {
             let hookType = source.hook?.hookType.displayName ?? "未知"
             let hook = source.hook?.openingHook ?? ""
             let retention = source.hook?.retentionDevices.joined(separator: "、") ?? ""
-            return "[\(index)] 标题:\(source.title) | 摘要:\(source.summary) | 钩子类型:\(hookType) | 钩子:\(hook) | 留人:\(retention) | 分镜数:\(source.shotCount)"
+            let payoff = source.hook?.payoff ?? ""
+            let cta = source.hook?.callToAction ?? ""
+            let why = source.hook?.whyItWorks ?? ""
+            let characters = source.characters.joined(separator: "；")
+            let visuals = source.visualElements.joined(separator: "、")
+            let shots = source.sampleShotLines.joined(separator: " / ")
+            return "[\(index)] 标题:\(source.title) | 摘要:\(source.summary) | 钩子类型:\(hookType) | 钩子:\(hook) | 留人:\(retention) | 爆点:\(payoff) | 收尾CTA:\(cta) | 为何成立:\(why) | 人物:\(characters) | 视觉:\(visuals) | 分镜数:\(source.shotCount) | 代表分镜:\(shots)"
         }.joined(separator: "\n")
 
         return """
         你是短视频剧本方法论分析师。下面是我拆解过的 \(sources.count) 条爆款视频的分镜剧本（已结构化）。请提炼出它们共同的、可复用的"剧本范式"——一套我能直接套用去起号的模板，而不是逐条分析。
-        只输出一个合法 JSON 对象，不要 Markdown、不要解释。结构：
+        只输出一个合法 JSON 对象，不要 Markdown、不要解释。结构（示例值仅示意写法，内容必须来自下面的剧本）：
         {
           "name": "范式名称（一句话，如“校园反差爆款范式”）",
           "applicableScene": "适用场景（什么题材/风格适合套这套）",
           "beats": [
-            {"stage": "开场钩子", "pattern": "这一段的可复用套路", "note": "要点/为什么这样有效"},
-            {"stage": "留人", "pattern": "", "note": ""},
-            {"stage": "爆点", "pattern": "", "note": ""},
-            {"stage": "收尾", "pattern": "", "note": ""}
+            {"stage": "开场钩子", "pattern": "第一句直接抛出反常识结论", "note": "3 秒内制造疑问，观众为找答案停留"},
+            {"stage": "留人", "pattern": "每隔几秒一个小悬念或转折", "note": "拆成连续期待，降低划走率"},
+            {"stage": "爆点", "pattern": "中后段揭示与开头呼应的反转", "note": "兑现开场承诺，形成闭环"},
+            {"stage": "收尾", "pattern": "一句行动号召并埋下集钩子", "note": "转化关注，制造追更"}
           ],
           "keyElements": ["跨这批共有的关键要素：人物/场景/节奏/风格，3-6 个"]
         }
-        要求：pattern 与 note 要具体、可执行、能直接套用；只基于给定剧本归纳共性，不要编造语料外的内容。
+        要求：每个 beat 的 pattern 与 note 必须具体、可执行、能直接套用，禁止空字符串或套话；只基于给定剧本的钩子/留人/爆点/CTA/人物/视觉/代表分镜归纳，某一段依据不足就写“依据不足”，不要编造。
 
         剧本：
         \(lines)
@@ -164,7 +170,10 @@ public actor ScriptParadigmComposer {
                 note: beat.note.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
-        guard !beats.isEmpty else {
+        // A paradigm needs at least an opening + one more stage to be a usable template — a single
+        // surviving beat means the model echoed the schema, and saving that shell as a "提炼成功"
+        // pollutes the library. nil → the UI reports 提炼失败 instead.
+        guard beats.count >= 2 else {
             return nil
         }
 

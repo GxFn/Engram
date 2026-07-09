@@ -587,7 +587,7 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
         ParadigmSource(clipID: "1", title: "A", summary: "s1", hook: HookAnalysis(openingHook: "钩子", retentionDevices: ["悬念"], whyItWorks: "", hookType: .suspense), shotCount: 4),
         ParadigmSource(clipID: "2", title: "B", summary: "s2", hook: nil, shotCount: 3),
     ]
-    let json = #"{"name":"校园反差范式","applicableScene":"校园题材","beats":[{"stage":"开场","pattern":"悬念开场","note":"勾好奇"},{"stage":"空段","pattern":"","note":""}],"keyElements":["校园","反差"]}"#
+    let json = #"{"name":"校园反差范式","applicableScene":"校园题材","beats":[{"stage":"开场","pattern":"悬念开场","note":"勾好奇"},{"stage":"收尾","pattern":"反转收束","note":"闭环"},{"stage":"空段","pattern":"","note":""}],"keyElements":["校园","反差"]}"#
     let generator = RecordingTextGenerator(responses: [json])
     let composer = ScriptParadigmComposer(
         generator: generator,
@@ -599,10 +599,25 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
 
     #expect(paradigm?.name == "校园反差范式")
     #expect(paradigm?.sourceClipIDs == ["1", "2"])
-    // Empty-pattern beat dropped.
-    #expect(paradigm?.beats.count == 1)
+    // Empty-pattern beat dropped; the two substantive beats survive.
+    #expect(paradigm?.beats.count == 2)
     #expect(paradigm?.beats.first?.stage == "开场")
     #expect(paradigm?.keyElements == ["校园", "反差"])
+}
+
+@Test func paradigmComposerRejectsSingleBeatShell() async throws {
+    // A model that echoes the schema with one surviving beat isn't a usable 范式 — reject rather
+    // than save an empty shell into the library.
+    let sources = [
+        ParadigmSource(clipID: "1", title: "A", summary: "s1", hook: nil, shotCount: 2),
+        ParadigmSource(clipID: "2", title: "B", summary: "s2", hook: nil, shotCount: 3),
+    ]
+    let json = #"{"name":"壳","applicableScene":"","beats":[{"stage":"开场钩子","pattern":"这一段的可复用套路","note":""},{"stage":"留人","pattern":"","note":""}],"keyElements":[]}"#
+    let composer = ScriptParadigmComposer(generator: RecordingTextGenerator(responses: [json, json]))
+
+    let paradigm = try await composer.compose(sources: sources)
+
+    #expect(paradigm == nil)
 }
 
 @Test func paradigmComposerNeedsAtLeastTwoSources() async throws {

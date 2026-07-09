@@ -53,20 +53,38 @@ public struct ParadigmBeat: Sendable, Hashable, Codable, Identifiable {
 }
 
 /// Compact per-breakdown material fed to the paradigm distiller — built by the shell from a Script
-/// so the composer never touches raw video / full text (keeps distillation cheap).
+/// so the composer never touches raw video / full text (keeps distillation cheap). Carries every
+/// structured field the paradigm's beats/keyElements are asked to generalize over (爆点/CTA/人物/
+/// 视觉/代表分镜) — with only hook-opening material the model had to fabricate half the skeleton.
 public struct ParadigmSource: Sendable, Hashable {
     public let clipID: String
     public let title: String
     public let summary: String
     public let hook: HookAnalysis?
     public let shotCount: Int
+    public let characters: [String]
+    public let visualElements: [String]
+    /// A few representative shots (first/middle/last) as "台词|字幕" lines, trimmed.
+    public let sampleShotLines: [String]
 
-    public init(clipID: String, title: String, summary: String, hook: HookAnalysis?, shotCount: Int) {
+    public init(
+        clipID: String,
+        title: String,
+        summary: String,
+        hook: HookAnalysis?,
+        shotCount: Int,
+        characters: [String] = [],
+        visualElements: [String] = [],
+        sampleShotLines: [String] = []
+    ) {
         self.clipID = clipID
         self.title = title
         self.summary = summary
         self.hook = hook
         self.shotCount = shotCount
+        self.characters = characters
+        self.visualElements = visualElements
+        self.sampleShotLines = sampleShotLines
     }
 
     public static func from(clipID: String, title: String, script: Script) -> ParadigmSource {
@@ -75,7 +93,29 @@ public struct ParadigmSource: Sendable, Hashable {
             title: title,
             summary: script.summary,
             hook: script.hookStructure,
-            shotCount: script.shots.count
+            shotCount: script.shots.count,
+            characters: script.characters,
+            visualElements: script.visualElements,
+            sampleShotLines: representativeShotLines(script.shots)
         )
+    }
+
+    /// First / middle / last shot as compact grounding lines — enough for the distiller to see the
+    /// actual opening, mid-point and close instead of inventing them.
+    static func representativeShotLines(_ shots: [StoryboardShot]) -> [String] {
+        let sorted = shots.sorted { $0.index < $1.index }
+        guard !sorted.isEmpty else { return [] }
+        var picks: [StoryboardShot] = [sorted[0]]
+        if sorted.count > 2 { picks.append(sorted[sorted.count / 2]) }
+        if sorted.count > 1, let last = sorted.last { picks.append(last) }
+
+        return picks.map { shot in
+            let narration = (shot.narration ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let caption = shot.onScreenText.first ?? ""
+            let text = [String(narration.prefix(40)), String(caption.prefix(20))]
+                .filter { !$0.isEmpty }
+                .joined(separator: "｜字幕:")
+            return "分镜\(shot.index + 1): \(text.isEmpty ? "（无台词）" : text)"
+        }
     }
 }
