@@ -191,9 +191,10 @@ private struct RootContent: View {
     }
 
     private func consumerIdentity(for dependencies: AppDependencies) -> String {
+        // Build on aiRoutingSignature (engine|model|cloud-config) so the Ask tab also re-creates on a
+        // cloud-endpoint change, then add the generation params it uniquely depends on.
         [
-            dependencies.activeEngine.descriptor.id,
-            dependencies.activeModel.id,
+            dependencies.aiRoutingSignature,
             String(format: "%.3f", dependencies.generationConfig.temperature),
             String(format: "%.3f", dependencies.generationConfig.topP),
             "\(dependencies.generationConfig.maxTokens)",

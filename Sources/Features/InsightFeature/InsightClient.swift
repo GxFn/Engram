@@ -21,7 +21,7 @@ public struct BreakdownItem: Sendable, Hashable, Identifiable {
 /// persisted by the shell.
 public struct InsightClient: Sendable {
     public let loadBreakdowns: @Sendable () async -> [BreakdownItem]
-    public let generateParadigm: @Sendable (_ clipIDs: [String], _ scopeDescription: String) async -> ScriptParadigm?
+    public let generateParadigm: @Sendable (_ clipIDs: [String]) async -> ScriptParadigm?
     public let loadParadigms: @Sendable () async -> [ScriptParadigm]
     public let saveParadigm: @Sendable (ScriptParadigm) async -> Void
     public let deleteParadigm: @Sendable (_ id: String) async -> Void
@@ -29,7 +29,7 @@ public struct InsightClient: Sendable {
 
     public init(
         loadBreakdowns: @escaping @Sendable () async -> [BreakdownItem] = { [] },
-        generateParadigm: @escaping @Sendable (_ clipIDs: [String], _ scopeDescription: String) async -> ScriptParadigm? = { _, _ in nil },
+        generateParadigm: @escaping @Sendable (_ clipIDs: [String]) async -> ScriptParadigm? = { _ in nil },
         loadParadigms: @escaping @Sendable () async -> [ScriptParadigm] = { [] },
         saveParadigm: @escaping @Sendable (ScriptParadigm) async -> Void = { _ in },
         deleteParadigm: @escaping @Sendable (_ id: String) async -> Void = { _ in },

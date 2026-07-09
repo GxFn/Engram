@@ -102,14 +102,7 @@ public actor LLMTranscriptCorrector: TranscriptCorrecting {
     }
 
     private static func extractJSONArray(from output: String) -> Data? {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let start = trimmed.firstIndex(of: "["),
-              let end = trimmed.lastIndex(of: "]"),
-              start <= end
-        else {
-            return nil
-        }
-        return Data(trimmed[start ... end].utf8)
+        JSONEnvelope.slice(output, open: "[", close: "]")
     }
 }
 

@@ -26,6 +26,7 @@ public final class AppDependencies {
         static let temperature = "generation.temperature"
         static let topP = "generation.topP"
         static let maxTokens = "generation.maxTokens"
+        static let scriptParadigms = "scriptParadigms"
     }
 
     public let engines: [any LLMEngine]
@@ -388,9 +389,7 @@ public final class AppDependencies {
         // active LLM engine over a compact structured summary (not raw video) — cheap.
         let service = clipDigestService
         nonisolated(unsafe) let capturedDefaults = defaults
-        let paradigmsKey = "scriptParadigms"
-        let engine = activeEngine
-        let model = activeModel
+        let composer = ScriptParadigmComposer(engine: activeEngine, model: activeModel)
 
         let client = InsightClient(
             loadBreakdowns: {
@@ -412,7 +411,7 @@ public final class AppDependencies {
                 }
                 return items.sorted { $0.createdAt > $1.createdAt }
             },
-            generateParadigm: { clipIDs, scope in
+            generateParadigm: { clipIDs in
                 guard let service else {
                     return nil
                 }
@@ -427,30 +426,28 @@ public final class AppDependencies {
                     }
                     sources.append(ParadigmSource.from(clipID: id, title: snapshot.title ?? "未命名", script: script))
                 }
-                let composer = ScriptParadigmComposer(engine: engine, model: model)
-                return (try? await composer.compose(sources: sources, scopeDescription: scope)) ?? nil
+                return (try? await composer.compose(sources: sources)) ?? nil
             },
             loadParadigms: {
-                Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+                Self.storedParadigms(capturedDefaults, key: DefaultsKey.scriptParadigms)
             },
             saveParadigm: { paradigm in
-                var paradigms = Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+                var paradigms = Self.storedParadigms(capturedDefaults, key: DefaultsKey.scriptParadigms)
                 paradigms.removeAll { $0.id == paradigm.id }
                 paradigms.insert(paradigm, at: 0)
                 if let data = try? JSONEncoder().encode(paradigms) {
-                    capturedDefaults?.set(data, forKey: paradigmsKey)
+                    capturedDefaults?.set(data, forKey: DefaultsKey.scriptParadigms)
                 }
             },
             deleteParadigm: { id in
-                var paradigms = Self.storedParadigms(capturedDefaults, key: paradigmsKey)
+                var paradigms = Self.storedParadigms(capturedDefaults, key: DefaultsKey.scriptParadigms)
                 paradigms.removeAll { $0.id == id }
                 if let data = try? JSONEncoder().encode(paradigms) {
-                    capturedDefaults?.set(data, forKey: paradigmsKey)
+                    capturedDefaults?.set(data, forKey: DefaultsKey.scriptParadigms)
                 }
             },
             applyParadigm: { paradigm, topic in
-                let composer = ScriptParadigmComposer(engine: engine, model: model)
-                return (try? await composer.apply(paradigm: paradigm, topic: topic)) ?? nil
+                (try? await composer.apply(paradigm: paradigm, topic: topic)) ?? nil
             }
         )
         return InsightViewModel(client: client)

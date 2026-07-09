@@ -270,7 +270,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             shots: script.shots,
             createdAt: script.createdAt,
             hookStructure: script.hookStructure,
-            visualElements: script.visualElements
+            visualElements: script.visualElements,
+            characters: script.characters
         )
     }
 }
@@ -562,16 +563,10 @@ private enum JSONScriptDecoder {
     }
 
     private static func extractJSONObject(from output: String) throws -> Data {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let start = trimmed.firstIndex(of: "{"),
-            let end = trimmed.lastIndex(of: "}"),
-            start <= end
-        else {
+        guard let data = JSONEnvelope.slice(output, open: "{", close: "}") else {
             throw ScriptJSONDecodingError.noJSONObject(output)
         }
-
-        return Data(trimmed[start ... end].utf8)
+        return data
     }
 }
 

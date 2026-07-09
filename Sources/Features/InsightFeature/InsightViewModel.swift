@@ -50,7 +50,7 @@ public final class InsightViewModel {
 
         // Preserve library order for stable, readable evidence.
         let orderedIDs = breakdowns.map(\.id).filter { selectedIDs.contains($0) }
-        guard let paradigm = await client.generateParadigm(orderedIDs, "\(orderedIDs.count) 条剧本") else {
+        guard let paradigm = await client.generateParadigm(orderedIDs) else {
             errorMessage = "提炼失败，请重试。"
             return nil
         }

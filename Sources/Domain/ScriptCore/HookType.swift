@@ -4,9 +4,7 @@ import Foundation
 /// 剧本范式. Stored as its stable English rawValue but decoded leniently from either the rawValue
 /// or the Chinese display name (the model emits the Chinese label), with anything unknown folding
 /// to `.other` so a classifier drift never breaks decode.
-public enum HookType: String, Sendable, Hashable, CaseIterable, Identifiable {
-    public var id: String { rawValue }
-
+public enum HookType: String, Sendable, Hashable, CaseIterable {
     case suspense
     case resonance
     case contrast

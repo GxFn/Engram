@@ -29,7 +29,7 @@ import Testing
     let store = ParadigmStore()
     let viewModel = InsightViewModel(client: InsightClient(
         loadBreakdowns: { breakdowns },
-        generateParadigm: { ids, _ in ids == ["1", "2"] ? paradigm : nil },
+        generateParadigm: { ids in ids == ["1", "2"] ? paradigm : nil },
         loadParadigms: { await store.all() },
         saveParadigm: { await store.save($0) },
         deleteParadigm: { await store.delete($0) }

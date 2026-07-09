@@ -185,6 +185,7 @@ import VideoUnderstanding
           "title": "转写版脚本",
           "summary": "只根据转写生成。",
           "visualElements": [],
+          "characters": ["主厨是短发年轻男性"],
           "hookStructure": {
             "openingHook": "今天我们做一道快手菜。",
             "retentionDevices": ["承诺快手结果"],
@@ -225,6 +226,8 @@ import VideoUnderstanding
     #expect(script.title == "转写版脚本")
     #expect(script.shots[0].visualDescription == "")
     #expect(script.visualElements == [])
+    // The degradation annotation rebuilds the Script — characters must survive it (regression #1).
+    #expect(script.characters == ["主厨是短发年轻男性"])
     #expect(script.hookStructure == HookAnalysis(
         openingHook: "今天我们做一道快手菜。",
         retentionDevices: ["承诺快手结果"],
@@ -528,7 +531,7 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
         idProvider: { "p1" }
     )
 
-    let paradigm = try await composer.compose(sources: sources, scopeDescription: "2 条剧本")
+    let paradigm = try await composer.compose(sources: sources)
 
     #expect(paradigm?.name == "校园反差范式")
     #expect(paradigm?.sourceClipIDs == ["1", "2"])
@@ -541,7 +544,7 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
 @Test func paradigmComposerNeedsAtLeastTwoSources() async throws {
     let composer = ScriptParadigmComposer(generator: RecordingTextGenerator(responses: ["{}"]))
     let single = [ParadigmSource(clipID: "1", title: "A", summary: "", hook: nil, shotCount: 0)]
-    let paradigm = try await composer.compose(sources: single, scopeDescription: "x")
+    let paradigm = try await composer.compose(sources: single)
     #expect(paradigm == nil)
 }
 

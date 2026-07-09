@@ -41,7 +41,7 @@ public actor ScriptParadigmComposer {
     }
 
     /// Distills a paradigm from selected breakdowns.
-    public func compose(sources: [ParadigmSource], scopeDescription: String) async throws -> ScriptParadigm? {
+    public func compose(sources: [ParadigmSource]) async throws -> ScriptParadigm? {
         guard sources.count >= 2 else {
             return nil // need at least two scripts to find a shared paradigm
         }
@@ -185,14 +185,7 @@ public actor ScriptParadigmComposer {
     }
 
     private static func extractJSONObject(from output: String) -> Data? {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let start = trimmed.firstIndex(of: "{"),
-              let end = trimmed.lastIndex(of: "}"),
-              start <= end
-        else {
-            return nil
-        }
-        return Data(trimmed[start ... end].utf8)
+        JSONEnvelope.slice(output, open: "{", close: "}")
     }
 }
 
