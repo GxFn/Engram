@@ -220,6 +220,38 @@ import Testing
 }
 
 @MainActor
+@Test func askViewModelGroundedFollowUpCarriesPriorConversation() async {
+    let metrics = GenerationMetrics(firstTokenLatencyMillis: 3, tokensPerSecond: 4, outputTokenCount: 1)
+    let engine = FakeEngine(events: [
+        .token("第一轮回答 [1]"),
+        .finished(.stop, metrics),
+    ])
+    let citations = [
+        RetrievedChunk(
+            chunk: testChunk("one", text: "First retrieved chunk"),
+            score: 0.04,
+            citation: CitationRef(chunkID: "one", clipID: "clip-one", snippet: "First")
+        ),
+    ]
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        retriever: FakeRetriever(results: citations)
+    )
+
+    await viewModel.send("第一个问题")?.value
+    await viewModel.send("这个爆点站得住吗")?.value
+
+    // The second grounded turn must carry the earlier question + answer so a challenge is reasoned
+    // in context, plus the fresh grounding for the new question.
+    let prompt = await engine.lastPrompt().joined(separator: "\n")
+    #expect(prompt.contains("第一个问题"))
+    #expect(prompt.contains("第一轮回答"))
+    #expect(prompt.contains("这个爆点站得住吗"))
+    #expect(await engine.generateCallCount() == 2)
+}
+
+@MainActor
 @Test func askViewModelClearsCitationsWhenGroundedAnswerDeclinesSupport() async {
     let engine = FakeEngine(events: [
         .token("<think>\n</think>\n\n"),

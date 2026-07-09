@@ -106,10 +106,11 @@ public final class AskViewModel {
         "把最近的视频拆解列成选题清单",
     ]
 
-    /// Friendly assistant persona shared by grounded + direct chat, so answers read as a helpful
-    /// guide over the user's saved content rather than a verbatim quote of the source material.
+    /// Friendly, reasoning-capable assistant persona shared by grounded + direct chat, so answers
+    /// read as a thinking guide over the user's saved content, not a verbatim quote of the source.
     nonisolated static let systemPrompt = """
     你是 Engram 的智能助手，帮我理解和用好我保存的内容（剪藏的文字、链接，以及视频拆解等）。请友好、自然、有条理地回答：用你自己的话把要点讲清楚，可以归纳、解释或举例，需要时分点，不要照抄原文。基于我给你的资料作答，用到某条时在句尾标注它的编号 [n]；如果资料不足以回答，就坦诚说明，并给我下一步可以怎么问或该保存什么的建议，不要编造。
+    这是多轮对话。当我追问或质疑某个结论（例如某条“爆点”分析是否站得住）时，请认真思考：先回到我保存的资料和你上一轮的说法，一步步推敲、检查证据，能被说服就大方修正并给出有据的新结论，而不是重复原话。
     """
 
     private nonisolated static func withSystemPrompt(_ messages: [ChatMessage]) -> [ChatMessage] {
@@ -228,7 +229,12 @@ public final class AskViewModel {
             attachCitations(prompt.citations, to: assistantID)
 
             let stream = await engine.generate(GenerationRequest(
-                messages: Self.withSystemPrompt([ChatMessage(role: .user, content: prompt.text)]),
+                messages: Self.withSystemPrompt(
+                    // Prior turns (minus the just-added question + empty answer) give the model the
+                    // dialogue so follow-ups / challenges to an earlier answer are reasoned in context.
+                    priorConversationMessages(excludingLast: 2)
+                        + [ChatMessage(role: .user, content: prompt.text)]
+                ),
                 config: generationConfig
             ))
             for try await event in stream {
@@ -346,25 +352,34 @@ public final class AskViewModel {
     }
 
     private func chatTranscript(appendingUserText text: String) -> [ChatMessage] {
-        let previousMessages = messages.compactMap { message -> ChatMessage? in
-            guard message.errorMessage == nil else {
-                return nil
-            }
+        Self.withSystemPrompt(
+            priorConversationMessages(excludingLast: 0) + [ChatMessage(role: .user, content: text)]
+        )
+    }
 
-            let content = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else {
-                return nil
+    /// Prior dialogue as chat messages (skipping errored/empty turns), dropping the trailing
+    /// `count` display messages and capping to the most recent `limit` so multi-turn context
+    /// stays well within the model's window.
+    private func priorConversationMessages(excludingLast count: Int, limit: Int = 8) -> [ChatMessage] {
+        messages
+            .dropLast(count)
+            .compactMap { message -> ChatMessage? in
+                guard message.errorMessage == nil else {
+                    return nil
+                }
+                let content = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !content.isEmpty else {
+                    return nil
+                }
+                switch message.role {
+                case .user:
+                    return ChatMessage(role: .user, content: content)
+                case .assistant:
+                    return ChatMessage(role: .assistant, content: content)
+                }
             }
-
-            switch message.role {
-            case .user:
-                return ChatMessage(role: .user, content: content)
-            case .assistant:
-                return ChatMessage(role: .assistant, content: content)
-            }
-        }
-
-        return Self.withSystemPrompt(previousMessages + [ChatMessage(role: .user, content: text)])
+            .suffix(limit)
+            .map { $0 }
     }
 
     private func appendAssistantText(_ text: String, to id: UUID) {
