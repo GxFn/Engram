@@ -41,6 +41,43 @@ public struct ManagedModel: Identifiable, Sendable, Hashable {
     }
 }
 
+/// What a local model is for — surfaced in Settings so users see each model's role, and so the app
+/// can tell when a device can only do text (no vision model fits → recommend the cloud backend for
+/// 画面理解/拆解).
+public enum ModelPurpose: Sendable, Hashable {
+    case language   // text LLM — 问答 / 剧本文本
+    case vision     // VLM — 视频画面理解 (拆解)
+    case retrieval  // embedding — 内容检索
+
+    public var displayName: String {
+        switch self {
+        case .language: return "语言"
+        case .vision: return "视觉"
+        case .retrieval: return "检索"
+        }
+    }
+
+    /// One-line description of what this model powers in the app.
+    public var usage: String {
+        switch self {
+        case .language: return "问答与剧本文本"
+        case .vision: return "视频画面理解"
+        case .retrieval: return "内容检索"
+        }
+    }
+}
+
+extension ManagedModel {
+    /// Classifies the model by its family so the UI can show its role and detect a vision-capable
+    /// device. Families come from `ModelCatalog` (qwen3 / qwen3-vl / qwen3-embedding).
+    public var purpose: ModelPurpose {
+        let family = model.family.lowercased()
+        if family.contains("vl") { return .vision }
+        if family.contains("embedding") { return .retrieval }
+        return .language
+    }
+}
+
 public struct ModelDownloadProgress: Sendable, Equatable {
     public let completedUnitCount: Int64
     public let totalUnitCount: Int64?

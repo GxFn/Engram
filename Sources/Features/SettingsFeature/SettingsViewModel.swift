@@ -93,6 +93,18 @@ public final class SettingsViewModel {
         models.first { $0.id == recommendedModelID }
     }
 
+    /// Only the models this device can actually run — Settings hides the ones that don't fit so the
+    /// list reflects what's usable here, not the whole catalog.
+    public var runnableModels: [ManagedModel] {
+        models.filter(\.canRunOnDevice)
+    }
+
+    /// True when at least one vision model fits this device. When false, on-device AI is text-only,
+    /// so 画面理解 (拆解) needs the cloud backend — Settings surfaces that recommendation.
+    public var canRunVisionLocally: Bool {
+        models.contains { $0.canRunOnDevice && $0.purpose == .vision }
+    }
+
     public var memorySummary: String {
         Self.formatBytes(physicalMemoryBytes)
     }

@@ -53,6 +53,73 @@ import Testing
 }
 
 @MainActor
+@Test func settingsRunnableModelsHidesModelsThatDoNotFit() async {
+    let visionModel = ModelIdentity(
+        id: "lmstudio-community/Qwen3-VL", family: "qwen3-vl",
+        quantization: "4bit", contextLength: 1_024, estimatedMemoryBytes: 2_500_000_000
+    )
+    let registry = FakeModelRegistry(models: [
+        managedModel(recommendedModel, canRunOnDevice: true, isRecommended: true),
+        managedModel(visionModel, canRunOnDevice: false, isRecommended: false),
+    ])
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: recommendedModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 4 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client
+    )
+
+    await viewModel.refresh()
+
+    // The vision model that doesn't fit is hidden from the list, but still tells us the device
+    // can't do vision locally → Settings recommends the cloud backend.
+    #expect(viewModel.runnableModels.map(\.id) == [recommendedModel.id])
+    #expect(viewModel.canRunVisionLocally == false)
+}
+
+@MainActor
+@Test func settingsCanRunVisionLocallyTrueWhenVisionModelFits() async {
+    let visionModel = ModelIdentity(
+        id: "lmstudio-community/Qwen3-VL", family: "qwen3-vl",
+        quantization: "4bit", contextLength: 1_024, estimatedMemoryBytes: 2_500_000_000
+    )
+    let registry = FakeModelRegistry(models: [
+        managedModel(recommendedModel, canRunOnDevice: true, isRecommended: true),
+        managedModel(visionModel, canRunOnDevice: true, isRecommended: false),
+    ])
+    let viewModel = SettingsViewModel(
+        engines: [fakeEngine],
+        selectedModelID: recommendedModel.id,
+        selectedEngineID: fakeEngine.id,
+        generationConfig: .default,
+        physicalMemoryBytes: 16 * 1_024 * 1_024 * 1_024,
+        recommendedModelID: recommendedModel.id,
+        client: registry.client
+    )
+
+    await viewModel.refresh()
+
+    #expect(viewModel.runnableModels.count == 2)
+    #expect(viewModel.canRunVisionLocally == true)
+}
+
+@Test func modelPurposeClassifiesByFamily() {
+    func purpose(of family: String) -> ModelPurpose {
+        managedModel(
+            ModelIdentity(id: "x/\(family)", family: family, quantization: "4bit",
+                          contextLength: 1_024, estimatedMemoryBytes: 1_000),
+            isRecommended: false
+        ).purpose
+    }
+    #expect(purpose(of: "qwen3") == .language)
+    #expect(purpose(of: "qwen3-vl") == .vision)
+    #expect(purpose(of: "qwen3-embedding") == .retrieval)
+}
+
+@MainActor
 @Test func settingsGenerationConfigClampsAndPropagates() {
     var appliedConfigs: [GenerationConfig] = []
     let viewModel = SettingsViewModel(

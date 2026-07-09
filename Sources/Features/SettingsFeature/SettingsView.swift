@@ -71,18 +71,18 @@ public struct SettingsView: View {
 
     private var cloudSection: some View {
         Section("云端 AI 服务") {
-            TextField("Base URL（如 https://ark.cn-beijing.volces.com/api/v3）", text: cloudBaseURLBinding)
+            TextField("Base URL", text: cloudBaseURLBinding)
                 .textContentType(.URL)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
-            TextField("文本模型（如 doubao-1.5-pro）", text: cloudTextModelBinding)
+            TextField("文本模型 ID", text: cloudTextModelBinding)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
-            TextField("视觉模型（如 doubao-vision-pro）", text: cloudModelBinding)
+            TextField("视觉模型 ID", text: cloudModelBinding)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -98,7 +98,7 @@ public struct SettingsView: View {
                 }
                 .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            Text("需自备账号与 API Key。兼容豆包/DeepSeek/通义千问/GLM 等 OpenAI 兼容接口；文本用于剧本化与问答，视觉用于画面理解。")
+            Text("兼容豆包 / DeepSeek / 通义 / GLM 等 OpenAI 接口；模型请填接入点 ID（豆包形如 ep-…）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -111,11 +111,15 @@ public struct SettingsView: View {
                 LabeledContent("推荐模型", value: recommendedModel.displayName)
             }
 
+            if !viewModel.canRunVisionLocally {
+                visionUnavailableHint
+            }
+
             if viewModel.isRefreshing && viewModel.models.isEmpty {
                 ProgressView()
             }
 
-            ForEach(viewModel.models) { model in
+            ForEach(viewModel.runnableModels) { model in
                 ModelManagementRow(
                     model: model,
                     isActive: model.id == viewModel.selectedModelID,
@@ -136,8 +140,29 @@ public struct SettingsView: View {
         } header: {
             Text("本地模型")
         } footer: {
-            Text("根据你的设备内存推荐合适的模型；标「内存不足」的机型跑不动，已禁用下载。")
+            Text("只列出你的设备能运行的模型。视觉模型（画面理解）需要更大内存，本机跑不动时请用云端 AI。")
         }
+    }
+
+    /// Shown when no vision model fits this device: on-device AI is text-only, so 画面理解 (拆解) must
+    /// use the cloud. Offers a one-tap switch to 云端 mode.
+    private var visionUnavailableHint: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text("本机内存只够跑语言模型，做不了视频画面理解（拆解需要视觉模型）。建议用云端 AI。")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Button("切换到云端 AI") {
+                viewModel.selectVisionBackend(.cloud)
+            }
+            .font(.callout.weight(.semibold))
+        }
+        .padding(.vertical, 4)
     }
 
     private var generationSection: some View {
@@ -226,10 +251,13 @@ private struct ModelManagementRow: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.displayName)
-                        .font(.body.weight(.semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(model.displayName)
+                            .font(.body.weight(.semibold))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        purposeTag
+                    }
 
                     Text(statusSummary)
                         .font(.caption)
@@ -281,22 +309,26 @@ private struct ModelManagementRow: View {
         .padding(.vertical, 4)
     }
 
+    private var purposeTag: some View {
+        Text(model.purpose.displayName)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.secondary.opacity(0.15), in: Capsule())
+            .foregroundStyle(.secondary)
+            .fixedSize()
+    }
+
+    // Leads with the model's usage (its 用途); only runnable models reach this row, so no
+    // "内存不足" state is shown here — the section filters those out.
     private var statusSummary: String {
-        var parts: [String] = []
+        var parts: [String] = [model.purpose.usage]
 
         if model.isRecommended {
             parts.append("推荐")
         }
 
-        if model.isDownloaded {
-            parts.append(SettingsViewModel.formatBytes(model.storageBytes))
-        } else {
-            parts.append("未下载")
-        }
-
-        if !model.canRunOnDevice {
-            parts.append("内存不足")
-        }
+        parts.append(model.isDownloaded ? SettingsViewModel.formatBytes(model.storageBytes) : "未下载")
 
         return parts.joined(separator: " · ")
     }
