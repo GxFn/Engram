@@ -33,7 +33,9 @@ import Testing
     #expect(viewModel.messages[1].finishReason == .stop)
     #expect(viewModel.messages[1].metrics?.outputTokenCount == 2)
     #expect(await engine.loadedModelIDs() == [testModel.id])
-    #expect(await engine.lastPrompt() == ["Hello?"])
+    let sentPrompt = await engine.lastPrompt()
+    #expect(sentPrompt.last == "Hello?")
+    #expect(sentPrompt.first?.contains("你是 Engram 的智能助手") == true)
 }
 
 @MainActor
@@ -207,8 +209,9 @@ import Testing
     await task.value
 
     let prompt = await engine.lastPrompt().joined(separator: "\n")
-    #expect(prompt.contains("仅基于这些内容回答，引用编号"))
-    #expect(prompt.contains("拆解内容:"))
+    #expect(prompt.contains("你是 Engram 的智能助手"))
+    #expect(prompt.contains("请据此回答我的问题"))
+    #expect(prompt.contains("资料:"))
     #expect(prompt.contains("[1] First retrieved chunk"))
     #expect(prompt.contains("[2] Second retrieved chunk"))
     #expect(prompt.contains("What did I save?"))

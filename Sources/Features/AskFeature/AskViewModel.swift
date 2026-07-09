@@ -24,7 +24,7 @@ public struct AskRetrievalConfiguration: Sendable, Hashable {
 @MainActor
 @Observable
 public final class AskViewModel {
-    public nonisolated static let noSupportingClipsMessage = "你的拆解库里没有相关内容"
+    public nonisolated static let noSupportingClipsMessage = "我在你保存的内容里没找到相关的内容"
 
     public struct DisplayMessage: Identifiable, Sendable {
         public enum Role: Sendable {
@@ -105,6 +105,16 @@ public final class AskViewModel {
         "有哪些讲同一个主题的内容？",
         "把最近的视频拆解列成选题清单",
     ]
+
+    /// Friendly assistant persona shared by grounded + direct chat, so answers read as a helpful
+    /// guide over the user's saved content rather than a verbatim quote of the source material.
+    nonisolated static let systemPrompt = """
+    你是 Engram 的智能助手，帮我理解和用好我保存的内容（剪藏的文字、链接，以及视频拆解等）。请友好、自然、有条理地回答：用你自己的话把要点讲清楚，可以归纳、解释或举例，需要时分点，不要照抄原文。基于我给你的资料作答，用到某条时在句尾标注它的编号 [n]；如果资料不足以回答，就坦诚说明，并给我下一步可以怎么问或该保存什么的建议，不要编造。
+    """
+
+    private nonisolated static func withSystemPrompt(_ messages: [ChatMessage]) -> [ChatMessage] {
+        [ChatMessage(role: .system, content: systemPrompt)] + messages
+    }
 
     @discardableResult
     public func send(_ rawText: String) -> Task<Void, Never>? {
@@ -218,7 +228,7 @@ public final class AskViewModel {
             attachCitations(prompt.citations, to: assistantID)
 
             let stream = await engine.generate(GenerationRequest(
-                messages: [ChatMessage(role: .user, content: prompt.text)],
+                messages: Self.withSystemPrompt([ChatMessage(role: .user, content: prompt.text)]),
                 config: generationConfig
             ))
             for try await event in stream {
@@ -325,12 +335,12 @@ public final class AskViewModel {
         }.joined(separator: "\n\n")
 
         return """
-        以下是你的视频拆解库中的相关片段。仅基于这些内容回答，引用编号。不要使用拆解库外的信息；如果不足以回答，就回答“\(Self.noSupportingClipsMessage)”。
+        下面是从我保存的内容里找到的相关资料。请据此回答我的问题：可以归纳、解释、举例，用自然的话讲清楚，并在用到某条资料时于句尾标注它的编号 [n]。如果这些资料不足以回答，就直说没找到相关内容，并建议我可以怎么问或该保存些什么，不要编造。
 
-        拆解内容:
+        资料:
         \(numberedChunks)
 
-        问题:
+        我的问题:
         \(question)
         """
     }
@@ -354,7 +364,7 @@ public final class AskViewModel {
             }
         }
 
-        return previousMessages + [ChatMessage(role: .user, content: text)]
+        return Self.withSystemPrompt(previousMessages + [ChatMessage(role: .user, content: text)])
     }
 
     private func appendAssistantText(_ text: String, to id: UUID) {
