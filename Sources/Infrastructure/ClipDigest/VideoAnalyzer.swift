@@ -263,7 +263,8 @@ public struct VideoAnalyzer: VideoAnalyzing {
                 hookStructure: merged.hookStructure,
                 visualElements: merged.visualElements,
                 characters: merged.characters,
-                degradationNote: note
+                degradationNote: note,
+                userContext: merged.userContext
             )
         }
         return merged

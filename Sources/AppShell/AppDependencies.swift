@@ -375,6 +375,21 @@ public final class AppDependencies {
                 },
                 editClip: { id, text in
                     try await clipDigestService.updateClipText(id: id, text: text)
+                },
+                updateScript: { id, transform in
+                    try await clipDigestService.updateScript(id: id, transform: transform)
+                },
+                reanalyzeScript: { [refinerEngine = activeEngine, refinerModel = activeModel] id in
+                    // Re-derives 爆点结构/标题/摘要 from the corrected 台词+字幕+用户背景 via the active
+                    // text engine (cloud or on-device) — a cheap text call, no video re-processing.
+                    let snapshots = try await clipDigestService.memorySnapshots()
+                    guard let snapshot = snapshots.first(where: { $0.id == id }),
+                          let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
+                        throw MemoryClientError.editingUnavailable
+                    }
+                    let refiner = ScriptAnalysisRefiner(engine: refinerEngine, model: refinerModel)
+                    let refined = try await refiner.refine(script)
+                    return try await clipDigestService.updateScript(id: id) { _ in refined }
                 }
             ))
         } else {

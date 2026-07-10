@@ -307,6 +307,41 @@ public actor ClipDigestService: ClipDigesting {
         Log.clip.info("Re-indexed edited clip \(id, privacy: .public)")
     }
 
+    /// Applies a structured edit (manual correction or AI re-analysis) to a clip's breakdown:
+    /// re-encodes scriptJSON, re-renders the indexable text, and re-indexes — so 问答/洞察/投喂 all
+    /// see the corrected script. Returns the updated script for immediate UI display.
+    public func updateScript(id: String, transform: @Sendable (Script) -> Script) async throws -> Script {
+        let snapshot = try await recordStore.snapshot(id: id)
+        guard let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
+            throw ClipDigestServiceError.unsupportedEmptyText("clip \(id) has no breakdown to edit")
+        }
+
+        let updated = transform(script)
+        guard let json = ScriptCoding.encode(updated) else {
+            throw ClipDigestServiceError.unsupportedEmptyText("re-encoding breakdown for \(id) failed")
+        }
+        let bodyText = ScriptRendering.indexableText(updated)
+
+        try? await indexer.deleteClip(clipID: id)
+        let result = try await indexer.index(ClipDigestIndexingPayload(
+            clipID: id,
+            title: updated.title.isEmpty ? snapshot.title : updated.title,
+            bodyText: bodyText,
+            sourceURL: snapshot.url
+        ))
+
+        _ = try await recordStore.markIndexed(
+            id: id,
+            title: updated.title.isEmpty ? snapshot.title : updated.title,
+            bodyText: bodyText,
+            indexPreview: result.preview,
+            scriptJSON: json,
+            now: now()
+        )
+        Log.clip.info("Re-indexed edited breakdown \(id, privacy: .public)")
+        return updated
+    }
+
     private func digest(_ item: ClipQueueItem) async throws {
         var clip = item.clip
         var scriptJSON: String?
@@ -364,9 +399,17 @@ public actor ClipDigestService: ClipDigesting {
                         )
                     }
                 }
-                clip.title = clip.title ?? script.title
-                clip.bodyText = ScriptRendering.indexableText(script)
-                scriptJSON = try ClipRecordScriptJSON.encode(script)
+                // A re-digest (Retry) replaces scriptJSON wholesale — graft the user's 背景说明
+                // from the previous breakdown so their supplied context survives regeneration.
+                var enriched = script
+                if script.userContext == nil,
+                   let previous = try? await recordStore.snapshot(id: clip.id),
+                   let context = ScriptCoding.decode(json: previous.scriptJSON)?.userContext {
+                    enriched = script.withUserContext(context)
+                }
+                clip.title = clip.title ?? enriched.title
+                clip.bodyText = ScriptRendering.indexableText(enriched)
+                scriptJSON = try ClipRecordScriptJSON.encode(enriched)
                 _ = try await recordStore.updateFetchedBody(
                     id: clip.id,
                     title: clip.title,

@@ -354,7 +354,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             hookStructure: script.hookStructure,
             visualElements: script.visualElements,
             characters: script.characters,
-            degradationNote: reason
+            degradationNote: reason,
+            userContext: script.userContext
         )
     }
 
@@ -468,7 +469,8 @@ public actor Qwen3VLScriptComposer: VisionScriptComposing {
             hookStructure: script.hookStructure,
             visualElements: script.visualElements,
             characters: script.characters,
-            degradationNote: script.degradationNote
+            degradationNote: script.degradationNote,
+            userContext: script.userContext
         )
     }
 }

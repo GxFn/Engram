@@ -796,3 +796,50 @@ private func jpegFrame(timestamp: Double) -> SampledFrame {
         "女生B是梳双麻花辫的俏皮女青年",
     ])
 }
+
+@Test func analysisRefinerRewritesUnderstandingFromFactsAndContext() async throws {
+    // The refiner re-derives 爆点结构/标题/摘要 from corrected 台词+字幕+用户背景 — shots and
+    // perception fields stay untouched, and the prompt must carry the user's background.
+    let generator = RecordingTextGenerator(responses: [
+        #"{"title":"电竞转会梗","summary":"选手离开京东加入T1。","hookStructure":{"openingHook":"直接宣布离队","hookType":"悬念","retentionDevices":["转会悬念"],"payoff":"最后一句反转：四个陪玩是四个世界冠军","whyItWorks":"电竞粉丝秒懂的梗"}}"#,
+    ])
+    let refiner = ScriptAnalysisRefiner(generator: generator)
+    let script = Script(
+        id: "s", videoSourceID: "v", title: "旧标题", summary: "旧摘要",
+        shots: [
+            StoryboardShot(index: 0, startSeconds: 0, endSeconds: 3, narration: "我不会再留在京东了", visualDescription: "近景", onScreenText: ["不用说了"]),
+            StoryboardShot(index: 1, startSeconds: 3, endSeconds: 6, narration: "什么叫四个陪玩", visualDescription: "特写"),
+        ],
+        createdAt: Date(timeIntervalSince1970: 0),
+        hookStructure: HookAnalysis(openingHook: "旧钩子", retentionDevices: [], whyItWorks: "旧"),
+        userContext: "电竞梗：Peyz 从京东队转会 T1，T1 有四个世界冠军"
+    )
+
+    let refined = try await refiner.refine(script)
+
+    #expect(refined.title == "电竞转会梗")
+    #expect(refined.hookStructure?.payoff == "最后一句反转：四个陪玩是四个世界冠军")
+    #expect(refined.shots == script.shots)                       // perception fields untouched
+    #expect(refined.userContext == script.userContext)           // background survives
+    let prompt = try #require(await generator.requests.first?.prompt)
+    #expect(prompt.contains("Peyz 从京东队转会 T1"))               // context reaches the model
+    #expect(prompt.contains("台词:我不会再留在京东了"))
+    #expect(prompt.contains("字幕:不用说了"))
+    #expect(prompt.contains("识别不是编造"))
+}
+
+@Test func analysisRefinerKeepsOriginalWhenOutputIsEmptyShell() async throws {
+    let generator = RecordingTextGenerator(responses: [#"{"title":"","summary":""}"#])
+    let refiner = ScriptAnalysisRefiner(generator: generator)
+    let script = Script(
+        id: "s", videoSourceID: "v", title: "原标题", summary: "原摘要",
+        shots: [StoryboardShot(index: 0, startSeconds: 0, endSeconds: 3, narration: "词", visualDescription: "画")],
+        createdAt: Date(timeIntervalSince1970: 0),
+        hookStructure: HookAnalysis(openingHook: "原钩子", retentionDevices: [], whyItWorks: "原")
+    )
+
+    let refined = try await refiner.refine(script)
+
+    #expect(refined.title == "原标题")
+    #expect(refined.hookStructure?.openingHook == "原钩子")
+}

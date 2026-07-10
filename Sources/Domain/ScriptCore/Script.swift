@@ -87,6 +87,11 @@ public struct StoryboardShot: Sendable, Hashable, Codable {
     }
 }
 
+extension StoryboardShot: Identifiable {
+    /// Shots are uniquely indexed within a script (re-indexed from 0 by every merge/finalize pass).
+    public var id: Int { index }
+}
+
 public struct Script: Sendable, Hashable, Codable {
     public let id: String
     public let videoSourceID: String
@@ -103,6 +108,9 @@ public struct Script: Sendable, Hashable, Codable {
     /// JSON fallback, partial deep coverage, …). Carries the human-readable reason so the UI can
     /// mark the result instead of letting it masquerade as a full 拆解. nil = clean.
     public let degradationNote: String?
+    /// User-authored background for this video (the 梗/题材/人物 the model can't know). Feeds the
+    /// AI re-analysis and future re-digests, and is indexed for 问答. nil = none provided.
+    public let userContext: String?
 
     public init(
         id: String,
@@ -114,7 +122,8 @@ public struct Script: Sendable, Hashable, Codable {
         hookStructure: HookAnalysis? = nil,
         visualElements: [String] = [],
         characters: [String] = [],
-        degradationNote: String? = nil
+        degradationNote: String? = nil,
+        userContext: String? = nil
     ) {
         self.id = id
         self.videoSourceID = videoSourceID
@@ -126,6 +135,7 @@ public struct Script: Sendable, Hashable, Codable {
         self.visualElements = visualElements
         self.characters = characters
         self.degradationNote = degradationNote
+        self.userContext = userContext
     }
 
     /// Same script, different degradation marker — the fallback paths rebuild via this so the
@@ -141,7 +151,25 @@ public struct Script: Sendable, Hashable, Codable {
             hookStructure: hookStructure,
             visualElements: visualElements,
             characters: characters,
-            degradationNote: note
+            degradationNote: note,
+            userContext: userContext
+        )
+    }
+
+    /// Same script, different user-authored background note.
+    public func withUserContext(_ context: String?) -> Script {
+        Script(
+            id: id,
+            videoSourceID: videoSourceID,
+            title: title,
+            summary: summary,
+            shots: shots,
+            createdAt: createdAt,
+            hookStructure: hookStructure,
+            visualElements: visualElements,
+            characters: characters,
+            degradationNote: degradationNote,
+            userContext: context
         )
     }
 
@@ -156,6 +184,7 @@ public struct Script: Sendable, Hashable, Codable {
         case visualElements
         case characters
         case degradationNote
+        case userContext
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,6 +200,7 @@ public struct Script: Sendable, Hashable, Codable {
         visualElements = try container.decodeIfPresent([String].self, forKey: .visualElements) ?? []
         characters = try container.decodeIfPresent([String].self, forKey: .characters) ?? []
         degradationNote = try container.decodeIfPresent(String.self, forKey: .degradationNote)
+        userContext = try container.decodeIfPresent(String.self, forKey: .userContext)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -186,6 +216,7 @@ public struct Script: Sendable, Hashable, Codable {
         try container.encode(visualElements, forKey: .visualElements)
         try container.encode(characters, forKey: .characters)
         try container.encodeIfPresent(degradationNote, forKey: .degradationNote)
+        try container.encodeIfPresent(userContext, forKey: .userContext)
     }
 }
 

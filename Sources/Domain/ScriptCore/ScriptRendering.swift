@@ -4,6 +4,11 @@ public enum ScriptRendering {
     public static func indexableText(_ script: Script) -> String {
         var blocks = [script.title, script.summary].filter { !$0.trimmedForIndexing.isEmpty }
 
+        // User-authored background (the 梗/题材 the model can't know) is searchable truth for 问答.
+        if let context = script.userContext?.trimmedForIndexing, !context.isEmpty {
+            blocks.append("背景: \(context)")
+        }
+
         if let hookBlock = hookStructureBlock(script.hookStructure) {
             blocks.append(hookBlock)
         }

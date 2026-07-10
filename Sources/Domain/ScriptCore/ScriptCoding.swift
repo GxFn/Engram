@@ -11,4 +11,13 @@ public enum ScriptCoding {
         }
         return try? JSONDecoder().decode(Script.self, from: data)
     }
+
+    /// Encodes a script back to its persisted JSON form (the write-back half of manual editing
+    /// and AI re-analysis). nil only if encoding fails, which lenient models never should.
+    public static func encode(_ script: Script) -> String? {
+        guard let data = try? JSONEncoder().encode(script) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
 }

@@ -97,6 +97,12 @@ public struct MemoryClient: Sendable {
     public let addClip: @Sendable (MemoryCaptureInput) async throws -> Void
     public let deleteClip: @Sendable (String) async throws -> Void
     public let editClip: @Sendable (String, String) async throws -> Void
+    /// Structured breakdown edit: applies the transform to the persisted script, re-indexes, and
+    /// returns the updated script for immediate display.
+    public let updateScript: @Sendable (String, @escaping @Sendable (Script) -> Script) async throws -> Script
+    /// AI re-analysis: re-derives title/summary/爆点结构 from corrected 台词+字幕+背景; returns the
+    /// updated script.
+    public let reanalyzeScript: @Sendable (String) async throws -> Script
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
@@ -105,7 +111,13 @@ public struct MemoryClient: Sendable {
         importVideo: @escaping @Sendable (URL) async throws -> Void = { _ in },
         addClip: @escaping @Sendable (MemoryCaptureInput) async throws -> Void = { _ in },
         deleteClip: @escaping @Sendable (String) async throws -> Void = { _ in },
-        editClip: @escaping @Sendable (String, String) async throws -> Void = { _, _ in }
+        editClip: @escaping @Sendable (String, String) async throws -> Void = { _, _ in },
+        updateScript: @escaping @Sendable (String, @escaping @Sendable (Script) -> Script) async throws -> Script = { _, _ in
+            throw MemoryClientError.editingUnavailable
+        },
+        reanalyzeScript: @escaping @Sendable (String) async throws -> Script = { _ in
+            throw MemoryClientError.editingUnavailable
+        }
     ) {
         self.loadItems = loadItems
         self.digestPending = digestPending
@@ -114,6 +126,8 @@ public struct MemoryClient: Sendable {
         self.addClip = addClip
         self.deleteClip = deleteClip
         self.editClip = editClip
+        self.updateScript = updateScript
+        self.reanalyzeScript = reanalyzeScript
     }
 
     public static let empty = MemoryClient(
@@ -125,6 +139,12 @@ public struct MemoryClient: Sendable {
         deleteClip: { _ in },
         editClip: { _, _ in }
     )
+}
+
+public enum MemoryClientError: Error, LocalizedError {
+    case editingUnavailable
+
+    public var errorDescription: String? { "剧本编辑暂不可用。" }
 }
 
 /// In-app 剪藏 capture input (text snippet or a URL to fetch).
@@ -277,6 +297,36 @@ public final class MemoryViewModel {
         }
     }
 
+    /// Applies a structured breakdown edit (manual correction), refreshes the store, and returns
+    /// the updated script for immediate in-place display. nil on failure (errorMessage set).
+    public func updateScript(
+        _ item: MemoryClip,
+        transform: @escaping @Sendable (Script) -> Script
+    ) async -> Script? {
+        do {
+            let updated = try await client.updateScript(item.id, transform)
+            items = (try? await client.loadItems()) ?? items
+            errorMessage = nil
+            return updated
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    /// AI re-analysis of a breakdown's understanding fields from its corrected facts + 背景.
+    public func reanalyzeScript(_ item: MemoryClip) async -> Script? {
+        do {
+            let updated = try await client.reanalyzeScript(item.id)
+            items = (try? await client.loadItems()) ?? items
+            errorMessage = nil
+            return updated
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -323,7 +373,9 @@ public struct MemoryView: View {
                             item: item,
                             retry: { Task { await viewModel.retry(item) } },
                             onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
-                            onAskAboutClip: onAskAboutClip
+                            onAskAboutClip: onAskAboutClip,
+                            onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
+                            onReanalyze: { await viewModel.reanalyzeScript(item) }
                         )
                     } label: {
                         MemoryRow(item: item)
@@ -416,7 +468,9 @@ public struct MemoryView: View {
                     highlightedChunkID: target.chunkID,
                     retry: { Task { await viewModel.retry(item) } },
                     onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
-                    onAskAboutClip: onAskAboutClip
+                    onAskAboutClip: onAskAboutClip,
+                    onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
+                    onReanalyze: { await viewModel.reanalyzeScript(item) }
                 )
             } else {
                 ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
@@ -645,10 +699,27 @@ private struct MemoryDetailView: View {
     let retry: () -> Void
     var onSaveEdit: (String) -> Void = { _ in }
     var onAskAboutClip: (MemoryClip) -> Void = { _ in }
+    /// Structured breakdown edit; returns the updated script (nil on failure) for in-place display.
+    var onUpdateScript: (@escaping @Sendable (Script) -> Script) async -> Script? = { _ in nil }
+    /// AI re-analysis from corrected facts + 背景; returns the updated script.
+    var onReanalyze: () async -> Script? = { nil }
 
     @State private var isEditing = false
     @State private var editDraft = ""
     @State private var shareParcel: ShareParcel?
+    // The latest edited/re-analyzed script — `item` is an immutable row copy, so edits display
+    // from this override until the list refreshes.
+    @State private var revisedScript: Script?
+    @State private var isReanalyzing = false
+    @State private var isEditingContext = false
+    @State private var contextDraft = ""
+    @State private var isEditingFacts = false
+    @State private var factsDraft = ScriptFactsDraft()
+    @State private var editingShot: StoryboardShot?
+
+    private var displayedBreakdown: Script? {
+        revisedScript ?? item.breakdown
+    }
 
     var body: some View {
         List {
@@ -676,7 +747,7 @@ private struct MemoryDetailView: View {
                 }
             }
 
-            if let breakdown = item.breakdown {
+            if let breakdown = displayedBreakdown {
                 // A degraded breakdown (vision failed → transcript-only, bad-JSON fallback, partial
                 // deep coverage) must be visibly marked — it used to look identical to a full 拆解.
                 if let note = breakdown.degradationNote, !note.isEmpty {
@@ -694,6 +765,53 @@ private struct MemoryDetailView: View {
                     } header: {
                         Text("画面理解未完全生效")
                     }
+                }
+
+                // Human-in-the-loop correction: the user supplies the 梗/题材 the model can't know
+                // and/or fixes facts, then AI re-derives the analysis on top of them.
+                Section {
+                    if let context = breakdown.userContext, !context.isEmpty {
+                        Text(context)
+                            .font(.footnote)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("补充这条视频的梗/题材/人物背景，AI 会按你的背景重新理解这条视频。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        contextDraft = breakdown.userContext ?? ""
+                        isEditingContext = true
+                    } label: {
+                        Label(breakdown.userContext?.isEmpty == false ? "编辑背景" : "补充背景", systemImage: "square.and.pencil")
+                    }
+                    Button {
+                        factsDraft = ScriptFactsDraft(script: breakdown)
+                        isEditingFacts = true
+                    } label: {
+                        Label("编辑标题/摘要/剧情点", systemImage: "list.bullet.rectangle")
+                    }
+                    Button {
+                        Task {
+                            isReanalyzing = true
+                            defer { isReanalyzing = false }
+                            if let updated = await onReanalyze() {
+                                revisedScript = updated
+                            }
+                        }
+                    } label: {
+                        if isReanalyzing {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("重新分析中…")
+                            }
+                        } else {
+                            Label("AI 重新分析（按台词+字幕+背景重写爆点结构）", systemImage: "wand.and.stars")
+                        }
+                    }
+                    .disabled(isReanalyzing)
+                } header: {
+                    Text("背景与订正")
                 }
 
                 if let hook = breakdown.hookStructure {
@@ -721,7 +839,11 @@ private struct MemoryDetailView: View {
                 if !breakdown.shots.isEmpty {
                     Section("分镜 (\(breakdown.shots.count))") {
                         ForEach(breakdown.shots.sorted { $0.index < $1.index }, id: \.index) { shot in
-                            ShotRowView(shot: shot, videoURL: breakdownVideoURL)
+                            ShotRowView(
+                                shot: shot,
+                                videoURL: breakdownVideoURL,
+                                onEditNarration: { editingShot = shot }
+                            )
                         }
                     }
                 }
@@ -767,7 +889,7 @@ private struct MemoryDetailView: View {
                     Menu {
                         ShareLink("分享剧本", item: item.handoffText)
                         #if os(iOS)
-                        if breakdownVideoURL != nil, let shots = item.breakdown?.shots, !shots.isEmpty {
+                        if breakdownVideoURL != nil, let shots = displayedBreakdown?.shots, !shots.isEmpty {
                             Button {
                                 Task { await prepareShareWithFrames(shots) }
                             } label: {
@@ -788,6 +910,35 @@ private struct MemoryDetailView: View {
             }
         }
         .sheet(isPresented: $isEditing) { editSheet }
+        .sheet(isPresented: $isEditingContext) {
+            UserContextEditSheet(text: contextDraft) { newText in
+                Task {
+                    let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let updated = await onUpdateScript({ $0.withUserContext(trimmed.isEmpty ? nil : trimmed) }) {
+                        revisedScript = updated
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $isEditingFacts) {
+            ScriptFactsEditSheet(draft: factsDraft) { draft in
+                Task {
+                    if let updated = await onUpdateScript({ draft.applied(to: $0) }) {
+                        revisedScript = updated
+                    }
+                }
+            }
+        }
+        .sheet(item: $editingShot) { shot in
+            ShotNarrationEditSheet(shot: shot) { newNarration in
+                Task {
+                    let index = shot.index
+                    if let updated = await onUpdateScript({ Self.replacingNarration($0, shotIndex: index, narration: newNarration) }) {
+                        revisedScript = updated
+                    }
+                }
+            }
+        }
         #if os(iOS)
         .sheet(item: $shareParcel) { parcel in
             ShareSheet(items: parcel.items)
@@ -804,6 +955,35 @@ private struct MemoryDetailView: View {
     /// Only indexed clips have retrievable content, so only they can be asked about.
     private var canAsk: Bool {
         item.state == .indexed
+    }
+
+    private nonisolated static func replacingNarration(_ script: Script, shotIndex: Int, narration: String) -> Script {
+        let trimmed = narration.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shots = script.shots.map { shot -> StoryboardShot in
+            guard shot.index == shotIndex else { return shot }
+            return StoryboardShot(
+                index: shot.index,
+                startSeconds: shot.startSeconds,
+                endSeconds: shot.endSeconds,
+                narration: trimmed.isEmpty ? nil : trimmed,
+                visualDescription: shot.visualDescription,
+                pacingNote: shot.pacingNote,
+                onScreenText: shot.onScreenText
+            )
+        }
+        return Script(
+            id: script.id,
+            videoSourceID: script.videoSourceID,
+            title: script.title,
+            summary: script.summary,
+            shots: shots,
+            createdAt: script.createdAt,
+            hookStructure: script.hookStructure,
+            visualElements: script.visualElements,
+            characters: script.characters,
+            degradationNote: script.degradationNote,
+            userContext: script.userContext
+        )
     }
 
     /// The local video file backing this breakdown, used to render per-shot frame thumbnails. Video
@@ -857,6 +1037,197 @@ private struct MemoryDetailView: View {
     }
 }
 
+/// Editable understanding-facts of a breakdown (title/summary/爆点结构 fields).
+private struct ScriptFactsDraft {
+    var title = ""
+    var summary = ""
+    var openingHook = ""
+    var retentionDevices = ""
+    var payoff = ""
+    var callToAction = ""
+    var whyItWorks = ""
+
+    init() {}
+
+    init(script: Script) {
+        title = script.title
+        summary = script.summary
+        openingHook = script.hookStructure?.openingHook ?? ""
+        retentionDevices = script.hookStructure?.retentionDevices.joined(separator: "、") ?? ""
+        payoff = script.hookStructure?.payoff ?? ""
+        callToAction = script.hookStructure?.callToAction ?? ""
+        whyItWorks = script.hookStructure?.whyItWorks ?? ""
+    }
+
+    func applied(to script: Script) -> Script {
+        let devices = retentionDevices
+            .split(whereSeparator: { $0 == "、" || $0 == "," || $0 == "，" || $0 == "\n" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let hookFieldsEmpty = openingHook.trimmingCharacters(in: .whitespaces).isEmpty
+            && devices.isEmpty
+            && payoff.trimmingCharacters(in: .whitespaces).isEmpty
+            && callToAction.trimmingCharacters(in: .whitespaces).isEmpty
+            && whyItWorks.trimmingCharacters(in: .whitespaces).isEmpty
+        let hook: HookAnalysis? = hookFieldsEmpty ? script.hookStructure : HookAnalysis(
+            openingHook: openingHook.trimmingCharacters(in: .whitespacesAndNewlines),
+            retentionDevices: devices,
+            payoff: payoff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : payoff.trimmingCharacters(in: .whitespacesAndNewlines),
+            callToAction: callToAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : callToAction.trimmingCharacters(in: .whitespacesAndNewlines),
+            whyItWorks: whyItWorks.trimmingCharacters(in: .whitespacesAndNewlines),
+            hookType: script.hookStructure?.hookType ?? .other
+        )
+        return Script(
+            id: script.id,
+            videoSourceID: script.videoSourceID,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? script.title : title.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? script.summary : summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            shots: script.shots,
+            createdAt: script.createdAt,
+            hookStructure: hook,
+            visualElements: script.visualElements,
+            characters: script.characters,
+            degradationNote: script.degradationNote,
+            userContext: script.userContext
+        )
+    }
+}
+
+private struct UserContextEditSheet: View {
+    @State var text: String
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 140)
+                } footer: {
+                    Text("写下这条视频的梗、题材、真实人物/战队等背景。「AI 重新分析」会基于它重新理解爆点，重拆也会带上它。")
+                }
+            }
+            .navigationTitle("视频背景")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(text)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+private struct ScriptFactsEditSheet: View {
+    @State var draft: ScriptFactsDraft
+    let onSave: (ScriptFactsDraft) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("标题与摘要") {
+                    TextField("标题", text: $draft.title)
+                    TextField("摘要", text: $draft.summary, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+                Section {
+                    TextField("钩子（前 3 秒）", text: $draft.openingHook, axis: .vertical)
+                        .lineLimit(1...3)
+                    TextField("留人手法（、分隔）", text: $draft.retentionDevices, axis: .vertical)
+                        .lineLimit(1...3)
+                    TextField("爆点/反转", text: $draft.payoff, axis: .vertical)
+                        .lineLimit(1...3)
+                    TextField("CTA（可空）", text: $draft.callToAction, axis: .vertical)
+                        .lineLimit(1...2)
+                    TextField("为什么成立", text: $draft.whyItWorks, axis: .vertical)
+                        .lineLimit(2...5)
+                } header: {
+                    Text("剧情点（爆点结构）")
+                } footer: {
+                    Text("改完会重建检索索引，问答与洞察范式都会基于修正后的内容。")
+                }
+            }
+            .navigationTitle("编辑剧本信息")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(draft)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ShotNarrationEditSheet: View {
+    let shot: StoryboardShot
+    let onSave: (String) -> Void
+    @State private var text: String
+    @Environment(\.dismiss) private var dismiss
+
+    init(shot: StoryboardShot, onSave: @escaping (String) -> Void) {
+        self.shot = shot
+        self.onSave = onSave
+        _text = State(initialValue: shot.narration ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("台词") {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 100)
+                }
+                if !shot.onScreenText.isEmpty {
+                    Section {
+                        Text(shot.onScreenText.joined(separator: " / "))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Button {
+                            text = shot.onScreenText.joined(separator: "，")
+                        } label: {
+                            Label("用字幕填入", systemImage: "text.insert")
+                        }
+                    } header: {
+                        Text("字幕参考")
+                    } footer: {
+                        Text("字幕是作者自己压的，通常比语音识别准。")
+                    }
+                }
+            }
+            .navigationTitle("订正分镜 \(shot.index + 1) 台词")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(text)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
 private struct HookStructureView: View {
     let hook: HookAnalysis
 
@@ -894,6 +1265,7 @@ private struct HookStructureView: View {
 private struct ShotRowView: View {
     let shot: StoryboardShot
     var videoURL: URL? = nil
+    var onEditNarration: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -910,9 +1282,21 @@ private struct ShotRowView: View {
             #endif
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("分镜 \(shot.index + 1)  \(timeRange)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("分镜 \(shot.index + 1)  \(timeRange)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if let onEditNarration {
+                        Button(action: onEditNarration) {
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("订正这一镜的台词")
+                    }
+                }
                 if let narration = shot.narration, !narration.isEmpty {
                     Text("台词: \(narration)").font(.subheadline)
                 }

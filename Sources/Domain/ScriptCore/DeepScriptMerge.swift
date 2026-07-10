@@ -52,7 +52,8 @@ public enum DeepScriptMerge {
             visualElements: elements,
             characters: characters,
             // Any degraded segment marks the whole merged breakdown.
-            degradationNote: ordered.compactMap(\.degradationNote).first
+            degradationNote: ordered.compactMap(\.degradationNote).first,
+            userContext: ordered.compactMap(\.userContext).first
         )
     }
 
