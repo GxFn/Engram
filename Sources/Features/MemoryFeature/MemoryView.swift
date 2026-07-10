@@ -225,30 +225,30 @@ public final class MemoryViewModel {
         }
     }
 
+    /// Shows the list IMMEDIATELY, then runs the digest — which can take minutes for a queued
+    /// video (OCR + ASR + VLM) — WITHOUT holding `isRefreshing`, and refreshes again for results.
+    /// Holding the flag across the digest used to blank the library and disable the toolbar for
+    /// the whole run ("右上角点不了" while a video was being 拆解 at launch).
     public func digestAndRefresh() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        await refresh()
         do {
             try await client.digestPending()
-            items = try await client.loadItems()
             errorMessage = nil
         } catch {
             errorMessage = String(describing: error)
         }
+        await refresh()
     }
 
     public func retry(_ item: MemoryClip) async {
-        isRefreshing = true
-        defer { isRefreshing = false }
         do {
             try await client.retryClip(item.id)
-            try await client.digestPending()
-            items = try await client.loadItems()
             errorMessage = nil
         } catch {
             errorMessage = String(describing: error)
+            return
         }
+        await digestAndRefresh()
     }
 
     public func importVideo(_ selection: MemoryVideoImportSelection) async {
@@ -268,17 +268,14 @@ public final class MemoryViewModel {
     }
 
     public func addClip(_ input: MemoryCaptureInput) async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
         do {
             try await client.addClip(input)
-            try await client.digestPending()
-            items = try await client.loadItems()
             errorMessage = nil
         } catch {
             errorMessage = String(describing: error)
+            return
         }
+        await digestAndRefresh()
     }
 
     public func delete(_ item: MemoryClip) async {
@@ -429,7 +426,6 @@ public struct MemoryView: View {
                         Label("剪藏", systemImage: "plus")
                     }
                     .accessibilityLabel("新建剪藏")
-                    .disabled(viewModel.isRefreshing)
                 }
             }
             #if os(iOS)
@@ -441,7 +437,6 @@ public struct MemoryView: View {
                         Label("导入视频", systemImage: "video.badge.plus")
                     }
                     .accessibilityLabel("导入视频")
-                    .disabled(viewModel.isRefreshing)
                 }
             }
             #endif
