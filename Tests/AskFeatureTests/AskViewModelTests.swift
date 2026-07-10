@@ -495,3 +495,50 @@ private actor FakeRetriever: Retriever {
 private func testChunk(_ id: String, text: String) -> Chunk {
     Chunk(id: id, clipID: "clip-\(id)", text: text, indexInClip: 0, preview: text)
 }
+
+@MainActor
+@Test func askViewModelAppliesFocusedEditBlockAndConfirms() async {
+    // 聚焦对话里模型输出修正块 → 拦截应用(不展示原始 JSON) → 气泡追加 ✅ 确认。
+    let metrics = GenerationMetrics(firstTokenLatencyMillis: 1, tokensPerSecond: 1, outputTokenCount: 1)
+    let engine = FakeEngine(events: [
+        .token("我把爆点改成了结尾反转。\n<engram-edit>{\"note\":\"爆点改为结尾反转\",\"hook\":{\"payoff\":\"最后一句\"}}</engram-edit>"),
+        .finished(.stop, metrics),
+    ])
+    actor Recorder {
+        var applied: [(String, String)] = []
+        func record(_ clipID: String, _ json: String) { applied.append((clipID, json)) }
+        func count() -> Int { applied.count }
+        func firstJSON() -> String? { applied.first?.1 }
+    }
+    let recorder = Recorder()
+    let viewModel = AskViewModel(
+        engine: engine,
+        model: testModel,
+        focusedFactsProvider: { _ in "标题：t\n分镜1 台词:x" },
+        applyEdit: { clipID, json in
+            await recorder.record(clipID, json)
+            return "爆点改为结尾反转"
+        }
+    )
+    viewModel.setFocusedClip("clip-1")
+
+    await viewModel.send("最后一句才是爆点")?.value
+
+    #expect(await recorder.count() == 1)
+    #expect(await recorder.firstJSON()?.contains("payoff") == true)
+    let text = viewModel.messages[1].text
+    #expect(text.contains("✅ 已修正：爆点改为结尾反转"))
+    #expect(!text.contains("<engram-edit>"))       // raw block never shown
+    #expect(text.contains("我把爆点改成了结尾反转"))
+}
+
+@MainActor
+@Test func askViewModelSplitEditBlockToleratesTruncatedClose() {
+    let (visible, json) = AskViewModel.splitEditBlock("答案<engram-edit>{\"note\":\"n\"}")
+    #expect(visible == "答案")
+    #expect(json?.contains("note") == true)
+
+    let (plain, none) = AskViewModel.splitEditBlock("纯回答，没有修正块")
+    #expect(plain == "纯回答，没有修正块")
+    #expect(none == nil)
+}

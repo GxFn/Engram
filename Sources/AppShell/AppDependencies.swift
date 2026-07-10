@@ -414,12 +414,42 @@ public final class AppDependencies {
         } else {
             clipKinds = nil
         }
+        // 聚焦订正: the chat renders the focused breakdown's facts into its system prompt, and a
+        // model-emitted <engram-edit> block is decoded + applied through the same write-back path
+        // as manual editing (updateScript → re-encode → re-index), then the memory tabs refresh.
+        let focusedFacts: (@Sendable (String) async -> String?)?
+        let applyEdit: (@Sendable (String, String) async throws -> String)?
+        if let service = clipDigestService {
+            focusedFacts = { clipID in
+                let snapshots = (try? await service.memorySnapshots()) ?? []
+                guard let snapshot = snapshots.first(where: { $0.id == clipID }),
+                      let script = ScriptCoding.decode(json: snapshot.scriptJSON) else {
+                    return nil
+                }
+                return BreakdownFactsRendering.facts(for: script)
+            }
+            applyEdit = { [weak self] clipID, rawJSON in
+                let plan = try BreakdownEditPlan.decode(fromJSON: rawJSON)
+                guard plan.isSubstantive else {
+                    throw BreakdownEditError.nothingToApply
+                }
+                _ = try await service.updateScript(id: clipID) { plan.applied(to: $0) }
+                await self?.cachedMemoryViewModel?.refresh()
+                return plan.note ?? "已更新拆解内容"
+            }
+        } else {
+            focusedFacts = nil
+            applyEdit = nil
+        }
+
         return AskViewModel(
             engine: activeEngine,
             model: activeModel,
             generationConfig: generationConfig,
             retriever: retriever,
-            clipKinds: clipKinds
+            clipKinds: clipKinds,
+            focusedFactsProvider: focusedFacts,
+            applyEdit: applyEdit
         )
     }
 

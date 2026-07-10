@@ -97,7 +97,7 @@ public struct AskView: View {
     private func focusChip(_ focus: AskFocus) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "scope")
-            Text("只问：\(focus.title)")
+            Text("聚焦：\(focus.title)")
                 .lineLimit(1)
                 .truncationMode(.middle)
             Button {
@@ -106,7 +106,7 @@ public struct AskView: View {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("取消只问这条")
+            .accessibilityLabel("取消聚焦这条")
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -303,7 +303,7 @@ public struct AskView: View {
             }
 
             VStack(spacing: 8) {
-                ForEach(AskViewModel.suggestedPrompts, id: \.self) { prompt in
+                ForEach(focus == nil ? AskViewModel.suggestedPrompts : AskViewModel.focusedSuggestedPrompts, id: \.self) { prompt in
                     Button {
                         submit(prompt)
                     } label: {

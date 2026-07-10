@@ -710,7 +710,6 @@ private struct MemoryDetailView: View {
     // The latest edited/re-analyzed script — `item` is an immutable row copy, so edits display
     // from this override until the list refreshes.
     @State private var revisedScript: Script?
-    @State private var isReanalyzing = false
     @State private var isEditingContext = false
     @State private var contextDraft = ""
     @State private var isEditingFacts = false
@@ -723,24 +722,11 @@ private struct MemoryDetailView: View {
 
     var body: some View {
         List {
-            Section {
-                LabeledContent("Status") {
-                    StateBadge(state: item.state)
-                }
-                LabeledContent("Updated", value: item.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                if let sourceURL = item.sourceURL {
-                    LabeledContent("Source", value: sourceURL.absoluteString)
-                }
-                if let note = item.note, !note.isEmpty {
-                    LabeledContent("Note", value: note)
-                }
-            }
-
             if let failureReason = item.failureReason {
-                Section("Failure") {
+                Section("失败原因") {
                     Text(failureReason)
                     if item.failureRetryable {
-                        Button("Retry") {
+                        Button("重试") {
                             retry()
                         }
                     }
@@ -767,56 +753,47 @@ private struct MemoryDetailView: View {
                     }
                 }
 
-                // Human-in-the-loop correction: the user supplies the 梗/题材 the model can't know
-                // and/or fixes facts, then AI re-derives the analysis on top of them.
+                // ONE conversational entry: questions AND corrections go through the focused chat
+                // ("这是电竞梗…"/"分镜3台词应该是…" → the AI applies the fix). Micro-edits live on
+                // long-press menus; no button farm.
                 Section {
-                    if let context = breakdown.userContext, !context.isEmpty {
+                    Button {
+                        onAskAboutClip(item)
+                    } label: {
+                        Label("和 AI 聊这条 · 提问或订正", systemImage: "bubble.left.and.text.bubble.right")
+                            .font(.body.weight(.medium))
+                    }
+                } footer: {
+                    Text("直接说哪里不对（背景/台词/爆点…），AI 会当场修正拆解；长按各区块可手动编辑。")
+                }
+
+                if let context = breakdown.userContext, !context.isEmpty {
+                    Section("背景") {
                         Text(context)
                             .font(.footnote)
                             .textSelection(.enabled)
-                    } else {
-                        Text("补充这条视频的梗/题材/人物背景，AI 会按你的背景重新理解这条视频。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        contextDraft = breakdown.userContext ?? ""
-                        isEditingContext = true
-                    } label: {
-                        Label(breakdown.userContext?.isEmpty == false ? "编辑背景" : "补充背景", systemImage: "square.and.pencil")
-                    }
-                    Button {
-                        factsDraft = ScriptFactsDraft(script: breakdown)
-                        isEditingFacts = true
-                    } label: {
-                        Label("编辑标题/摘要/剧情点", systemImage: "list.bullet.rectangle")
-                    }
-                    Button {
-                        Task {
-                            isReanalyzing = true
-                            defer { isReanalyzing = false }
-                            if let updated = await onReanalyze() {
-                                revisedScript = updated
+                            .contextMenu {
+                                Button {
+                                    contextDraft = context
+                                    isEditingContext = true
+                                } label: {
+                                    Label("编辑背景", systemImage: "square.and.pencil")
+                                }
                             }
-                        }
-                    } label: {
-                        if isReanalyzing {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text("重新分析中…")
-                            }
-                        } else {
-                            Label("AI 重新分析（按台词+字幕+背景重写爆点结构）", systemImage: "wand.and.stars")
-                        }
                     }
-                    .disabled(isReanalyzing)
-                } header: {
-                    Text("背景与订正")
                 }
 
                 if let hook = breakdown.hookStructure {
                     Section("爆点结构") {
                         HookStructureView(hook: hook)
+                            .contextMenu {
+                                Button {
+                                    factsDraft = ScriptFactsDraft(script: breakdown)
+                                    isEditingFacts = true
+                                } label: {
+                                    Label("编辑标题/摘要/剧情点", systemImage: "list.bullet.rectangle")
+                                }
+                            }
                     }
                 }
 
@@ -839,25 +816,64 @@ private struct MemoryDetailView: View {
                 if !breakdown.shots.isEmpty {
                     Section("分镜 (\(breakdown.shots.count))") {
                         ForEach(breakdown.shots.sorted { $0.index < $1.index }, id: \.index) { shot in
-                            ShotRowView(
-                                shot: shot,
-                                videoURL: breakdownVideoURL,
-                                onEditNarration: { editingShot = shot }
-                            )
+                            ShotRowView(shot: shot, videoURL: breakdownVideoURL)
+                                .contextMenu {
+                                    if !shot.onScreenText.isEmpty {
+                                        Button {
+                                            let caption = shot.onScreenText.joined(separator: "，")
+                                            Task {
+                                                let index = shot.index
+                                                if let updated = await onUpdateScript({ Self.replacingNarration($0, shotIndex: index, narration: caption) }) {
+                                                    revisedScript = updated
+                                                }
+                                            }
+                                        } label: {
+                                            Label("用字幕替换台词", systemImage: "text.insert")
+                                        }
+                                    }
+                                    Button {
+                                        editingShot = shot
+                                    } label: {
+                                        Label("订正台词…", systemImage: "pencil")
+                                    }
+                                    #if os(iOS)
+                                    if let narration = shot.narration, !narration.isEmpty {
+                                        Button {
+                                            UIPasteboard.general.string = narration
+                                        } label: {
+                                            Label("复制台词", systemImage: "doc.on.doc")
+                                        }
+                                    }
+                                    #endif
+                                }
                         }
                     }
                 }
             } else if let bodyText = item.bodyText, !bodyText.isEmpty {
-                Section("Original") {
+                Section("原文") {
                     Text(bodyText)
                         .textSelection(.enabled)
                 }
             }
 
+            // Metadata is rarely needed — it lives at the bottom so content leads.
+            Section("信息") {
+                LabeledContent("状态") {
+                    StateBadge(state: item.state)
+                }
+                LabeledContent("更新时间", value: item.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                if let sourceURL = item.sourceURL {
+                    LabeledContent("来源", value: sourceURL.absoluteString)
+                }
+                if let note = item.note, !note.isEmpty {
+                    LabeledContent("备注", value: note)
+                }
+            }
+
             if let highlightedChunkID, !highlightedChunkID.isEmpty {
-                Section("Citation") {
-                    LabeledContent("Clip", value: item.id)
-                    LabeledContent("Chunk", value: highlightedChunkID)
+                Section("引用") {
+                    LabeledContent("内容", value: item.id)
+                    LabeledContent("片段", value: highlightedChunkID)
                 }
             }
         }
@@ -1265,7 +1281,6 @@ private struct HookStructureView: View {
 private struct ShotRowView: View {
     let shot: StoryboardShot
     var videoURL: URL? = nil
-    var onEditNarration: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1282,21 +1297,9 @@ private struct ShotRowView: View {
             #endif
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("分镜 \(shot.index + 1)  \(timeRange)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    if let onEditNarration {
-                        Button(action: onEditNarration) {
-                            Image(systemName: "pencil")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("订正这一镜的台词")
-                    }
-                }
+                Text("分镜 \(shot.index + 1)  \(timeRange)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
                 if let narration = shot.narration, !narration.isEmpty {
                     Text("台词: \(narration)").font(.subheadline)
                 }

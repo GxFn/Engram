@@ -130,6 +130,13 @@ public final class AskViewModel {
     @ObservationIgnored private let retrievalConfiguration: AskRetrievalConfiguration
     // Resolves clipID -> isVideo so 限定范围 (剪藏/拆解) can filter retrieved chunks. nil = no scoping.
     @ObservationIgnored private let clipKinds: (@Sendable () async -> [String: Bool])?
+    // 聚焦模式 correction capabilities (nil = chat-only focus). The facts provider renders the
+    // focused breakdown's current content for the system prompt; the edit applier decodes and
+    // applies a model-emitted correction block, returning a short note for the confirmation bubble.
+    @ObservationIgnored private let focusedFactsProvider: (@Sendable (String) async -> String?)?
+    @ObservationIgnored private let applyEdit: (@Sendable (String, String) async throws -> String)?
+    @ObservationIgnored private var focusedFactsCache: (clipID: String, facts: String)?
+    @ObservationIgnored private var pendingEditJSON: String?
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private var loadedModelID: String?
 
@@ -140,6 +147,8 @@ public final class AskViewModel {
         retriever: (any Retriever)? = nil,
         retrievalConfiguration: AskRetrievalConfiguration = .default,
         clipKinds: (@Sendable () async -> [String: Bool])? = nil,
+        focusedFactsProvider: (@Sendable (String) async -> String?)? = nil,
+        applyEdit: (@Sendable (String, String) async throws -> String)? = nil,
         messages: [DisplayMessage] = []
     ) {
         self.engine = engine
@@ -147,6 +156,8 @@ public final class AskViewModel {
         self.retriever = retriever
         self.retrievalConfiguration = retrievalConfiguration
         self.clipKinds = clipKinds
+        self.focusedFactsProvider = focusedFactsProvider
+        self.applyEdit = applyEdit
         self.generationConfig = generationConfig
         self.engineName = engine.descriptor.displayName
         self.modelName = Self.displayName(for: model)
@@ -159,6 +170,14 @@ public final class AskViewModel {
     public func setFocusedClip(_ clipID: String?) {
         focusedClipID = clipID
     }
+
+    /// Suggestions when focused on one clip: the surface answers AND corrects.
+    public nonisolated static let focusedSuggestedPrompts: [String] = [
+        "这条视频为什么可能爆？",
+        "重新分析一下爆点结构",
+        "背景是：…（补充这条的梗，我会修正理解）",
+        "分镜X的台词应该是：…（直接说，我来改）",
+    ]
 
     /// Example prompts shown on the empty Ask screen to make the surface feel guided/smart.
     public nonisolated static let suggestedPrompts: [String] = [
@@ -177,8 +196,73 @@ public final class AskViewModel {
 
     private func withSystemPrompt(_ tail: [ChatMessage]) -> [ChatMessage] {
         let suffix = answerStyle.promptSuffix
-        let content = suffix.isEmpty ? Self.systemPrompt : "\(Self.systemPrompt)\n\(suffix)"
+        var content = suffix.isEmpty ? Self.systemPrompt : "\(Self.systemPrompt)\n\(suffix)"
+        if let focusedClipID, applyEdit != nil,
+           let cache = focusedFactsCache, cache.clipID == focusedClipID {
+            content += "\n\n" + Self.focusedEditInstructions(facts: cache.facts)
+        }
         return [ChatMessage(role: .system, content: content)] + tail
+    }
+
+    /// 聚焦模式下问答与订正共用一个对话：模型自行判断是回答还是修改，修改时在回复末尾输出一个
+    /// 修正块，App 拦截应用（用户看不到原始 JSON）。
+    nonisolated static func focusedEditInstructions(facts: String) -> String {
+        """
+        【聚焦模式】我们正在讨论我的一条视频拆解，其当前内容如下（分镜编号从 1 开始）：
+        \(facts)
+        当我指出拆解中的错误、补充背景/梗，或要求修改（台词/标题/摘要/背景/钩子/留人/爆点/CTA/为什么成立）时：先用一两句话说明你理解到什么、改了什么，然后在回复的最末尾输出一个修正块，格式严格为：
+        \(editBlockOpen){"note":"一句话说明改了什么","userContext":"合并后的完整背景","title":"新标题","summary":"新摘要","hook":{"openingHook":"…","hookType":"悬念/共鸣/反差/痛点/利益前置/好奇/身份认同/情绪冲击/其他","retentionDevices":["…"],"payoff":"…","callToAction":"…","whyItWorks":"…"},"narration":[{"shot":1,"text":"新台词"}]}\(editBlockClose)
+        修正块只包含需要修改的键（note 必填）；纯提问时绝对不要输出修正块。修正时可以运用你对公开人物、战队、赛事的常识去识别我的背景/台词/字幕指向的真实名称——识别不是编造。
+        """
+    }
+
+    nonisolated static let editBlockOpen = "<engram-edit>"
+    nonisolated static let editBlockClose = "</engram-edit>"
+
+    /// Splits a finished assistant response into visible text and the correction-block JSON.
+    /// Tolerates a missing close tag (token truncation) by taking everything after the open tag.
+    nonisolated static func splitEditBlock(_ text: String) -> (visible: String, editJSON: String?) {
+        guard let openRange = text.range(of: editBlockOpen) else {
+            return (text, nil)
+        }
+        let before = String(text[..<openRange.lowerBound])
+        let afterOpen = String(text[openRange.upperBound...])
+        if let closeRange = afterOpen.range(of: editBlockClose) {
+            let json = String(afterOpen[..<closeRange.lowerBound])
+            let after = String(afterOpen[closeRange.upperBound...])
+            return ((before + after).trimmingCharacters(in: .whitespacesAndNewlines), json)
+        }
+        return (before.trimmingCharacters(in: .whitespacesAndNewlines), afterOpen)
+    }
+
+    /// Fetches (and caches per clip) the focused breakdown's facts for the system prompt.
+    private func prepareFocusedFactsIfNeeded() async {
+        guard let focusedClipID, applyEdit != nil, let focusedFactsProvider else { return }
+        if let cache = focusedFactsCache, cache.clipID == focusedClipID { return }
+        if let facts = await focusedFactsProvider(focusedClipID) {
+            focusedFactsCache = (focusedClipID, facts)
+        }
+    }
+
+    /// Applies a model-emitted correction block after the stream ends, appending a confirmation
+    /// (or a visible failure) to the assistant bubble, and refreshes the facts cache so the next
+    /// turn reasons over the corrected breakdown.
+    private func consumePendingEdit(for id: UUID) async {
+        guard let json = pendingEditJSON else { return }
+        pendingEditJSON = nil
+        guard let clipID = focusedClipID, let applyEdit else { return }
+        do {
+            let note = try await applyEdit(clipID, json)
+            focusedFactsCache = nil
+            await prepareFocusedFactsIfNeeded()
+            updateMessage(id) { message in
+                message.text += (message.text.isEmpty ? "" : "\n\n") + "✅ 已修正：\(note)"
+            }
+        } catch {
+            updateMessage(id) { message in
+                message.text += (message.text.isEmpty ? "" : "\n\n") + "⚠️ 修正未能应用：\(Self.userFacingMessage(for: error))"
+            }
+        }
     }
 
     /// Bounds for the auxiliary in-Ask generation controls (kept local so AskFeature doesn't depend
@@ -216,6 +300,7 @@ public final class AskViewModel {
 
         let task = Task { [weak self] in
             guard let self else { return }
+            await self.prepareFocusedFactsIfNeeded()
             if self.retriever == nil {
                 await self.runGeneration(directRequestMessages, assistantID: assistantID)
             } else {
@@ -258,6 +343,8 @@ public final class AskViewModel {
                     finishAssistantMessage(assistantID, reason: reason, metrics: metrics)
                 }
             }
+
+            await consumePendingEdit(for: assistantID)
 
             if !receivedTerminalEvent, Task.isCancelled {
                 markAssistantCancelled(assistantID)
@@ -334,6 +421,8 @@ public final class AskViewModel {
                     finishAssistantMessage(assistantID, reason: reason, metrics: metrics)
                 }
             }
+
+            await consumePendingEdit(for: assistantID)
 
             if !receivedTerminalEvent, Task.isCancelled {
                 markAssistantCancelled(assistantID)
@@ -513,7 +602,11 @@ public final class AskViewModel {
         metrics: GenerationMetrics
     ) {
         updateMessage(id) { message in
-            message.text = Self.displayText(from: message.text)
+            let split = Self.splitEditBlock(message.text)
+            if let editJSON = split.editJSON {
+                pendingEditJSON = editJSON
+            }
+            message.text = Self.displayText(from: split.visible)
             message.metrics = metrics
             message.finishReason = reason
 
