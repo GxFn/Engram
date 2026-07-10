@@ -149,7 +149,7 @@ private struct RootContent: View {
 
     /// Opens the 问答 tab scoped to a single clip (问这条视频).
     private func askAbout(_ clip: MemoryClip) {
-        askFocus = AskFocus(clipID: clip.id, title: clip.title)
+        askFocus = AskFocus(clipID: clip.id, title: clip.displayTitle)
         selectedTab = .ask
     }
 

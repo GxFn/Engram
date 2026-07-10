@@ -474,7 +474,7 @@ public final class AppDependencies {
                     }
                     items.append(BreakdownItem(
                         id: snapshot.id,
-                        title: snapshot.title ?? "未命名",
+                        title: Self.preferredTitle(from: snapshot),
                         summary: script.summary,
                         createdAt: snapshot.createdAt
                     ))
@@ -494,7 +494,7 @@ public final class AppDependencies {
                     else {
                         continue
                     }
-                    sources.append(ParadigmSource.from(clipID: id, title: snapshot.title ?? "未命名", script: script))
+                    sources.append(ParadigmSource.from(clipID: id, title: Self.preferredTitle(from: snapshot), script: script))
                 }
                 return (try? await composer.compose(sources: sources)) ?? nil
             },
@@ -676,8 +676,23 @@ public final class AppDependencies {
     }
 
     private nonisolated static func memoryTitle(from snapshot: ClipRecordSnapshot) -> String {
-        if let title = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-            return title
+        preferredTitle(from: snapshot)
+    }
+
+    /// Meaningful display title: a stored non-UUID title wins; a UUID import name (PHPicker temp
+    /// filenames) defers to the breakdown's AI title; then web host / body preview.
+    nonisolated static func preferredTitle(from snapshot: ClipRecordSnapshot) -> String {
+        let stored = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isAutoName = UUID(uuidString: stored) != nil
+        if !stored.isEmpty, !isAutoName {
+            return stored
+        }
+        if let scriptTitle = ScriptCoding.decode(json: snapshot.scriptJSON)?.title
+            .trimmingCharacters(in: .whitespacesAndNewlines), !scriptTitle.isEmpty {
+            return scriptTitle
+        }
+        if !stored.isEmpty {
+            return stored
         }
         if let host = snapshot.url?.host(), !host.isEmpty {
             return host
@@ -685,7 +700,7 @@ public final class AppDependencies {
         if let bodyText = snapshot.bodyText?.trimmingCharacters(in: .whitespacesAndNewlines), !bodyText.isEmpty {
             return String(bodyText.prefix(48))
         }
-        return "Untitled Clip"
+        return "未命名"
     }
 }
 

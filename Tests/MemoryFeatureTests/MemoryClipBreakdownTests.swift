@@ -64,3 +64,27 @@ private func makeClip(scriptJSON: String?, bodyText: String?) -> MemoryClip {
         scriptJSON: scriptJSON
     )
 }
+
+@Test func displayTitlePrefersBreakdownTitleOverUUIDImportName() throws {
+    // PHPicker imports store a UUID temp filename as the title — meaningless in lists. The
+    // breakdown's AI title is the real name; a human-set title always wins.
+    let script = Script(
+        id: "s", videoSourceID: "v", title: "电竞转会梗视频", summary: "s",
+        shots: [StoryboardShot(index: 0, startSeconds: 0, endSeconds: 3, narration: "词", visualDescription: "画")],
+        createdAt: Date(timeIntervalSince1970: 0)
+    )
+    let json = try #require(ScriptCoding.encode(script))
+
+    func clip(title: String, scriptJSON: String?) -> MemoryClip {
+        MemoryClip(
+            id: "c", title: title, sourceURL: nil, note: nil, bodyText: nil,
+            createdAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
+            state: .indexed, failureReason: nil, failureRetryable: false, indexPreview: nil,
+            scriptJSON: scriptJSON, sourceKind: .video
+        )
+    }
+
+    #expect(clip(title: "B454DEFD-A311-4290-9236-BF42469B84CC", scriptJSON: json).displayTitle == "电竞转会梗视频")
+    #expect(clip(title: "我自己起的名字", scriptJSON: json).displayTitle == "我自己起的名字")
+    #expect(clip(title: "B454DEFD-A311-4290-9236-BF42469B84CC", scriptJSON: nil).displayTitle == "B454DEFD-A311-4290-9236-BF42469B84CC")
+}

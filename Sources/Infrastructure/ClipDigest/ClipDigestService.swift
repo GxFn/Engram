@@ -407,7 +407,12 @@ public actor ClipDigestService: ClipDigesting {
                    let context = ScriptCoding.decode(json: previous.scriptJSON)?.userContext {
                     enriched = script.withUserContext(context)
                 }
-                clip.title = clip.title ?? enriched.title
+                // A PHPicker import stores a UUID temp filename as the title — the breakdown's AI
+                // title is the meaningful name, so it wins over empty or auto-generated ones.
+                let storedTitle = clip.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if storedTitle.isEmpty || UUID(uuidString: storedTitle) != nil {
+                    clip.title = enriched.title
+                }
                 clip.bodyText = ScriptRendering.indexableText(enriched)
                 scriptJSON = try ClipRecordScriptJSON.encode(enriched)
                 _ = try await recordStore.updateFetchedBody(
