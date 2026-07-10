@@ -541,6 +541,26 @@ private actor RecordingVLMGenerator: QwenVLGenerating {
     }
 }
 
+@Test func transcriptCorrectorFeedsCaptionsAsCorrectionReference() async throws {
+    // The burned-in 字幕 are the creator's authoritative wording — the correction prompt must carry
+    // them (with timestamps) so mis-heard domain terms (陪玩→掮客-class) can be fixed against them.
+    let generator = RecordingTextGenerator(responses: [
+        #"[{"i":0,"text":"我已经找好四个陪玩了"}]"#,
+    ])
+    let corrector = LLMTranscriptCorrector(generator: generator)
+    let raw = [TranscriptSegment(startSeconds: 6.2, endSeconds: 7.8, text: "我已经找好四个掮客了")]
+    let captions = [FrameText(timestampSeconds: 6.5, lines: ["不用我已经找好四个冠军陪了"])]
+
+    let corrected = try await corrector.correct(raw, onScreenText: captions)
+
+    #expect(corrected[0].text == "我已经找好四个陪玩了")
+    let prompt = try #require(await generator.requests.first?.prompt)
+    #expect(prompt.contains("画面字幕"))
+    #expect(prompt.contains("不用我已经找好四个冠军陪了"))
+    #expect(prompt.contains("以字幕用词为准"))
+    #expect(prompt.contains("[6.5s]"))
+}
+
 @Test func transcriptCorrectorAppliesFixesAndPreservesTiming() async throws {
     let generator = RecordingTextGenerator(responses: [
         #"[{"i":0,"text":"我想组队。"},{"i":1,"text":"你知道他在干嘛吗？"}]"#,

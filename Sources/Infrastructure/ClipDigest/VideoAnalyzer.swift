@@ -82,15 +82,16 @@ public struct VideoAnalyzer: VideoAnalyzing {
         onStage: @Sendable (ClipState) async -> Void
     ) async throws -> Script {
         await onStage(.transcribing)
+        // OCR runs FIRST: the burned-in 字幕 are the creator's own captions, and they feed the ASR
+        // correction below — domain terms the ASR mishears (电竞战队/选手/黑话, e.g. 陪玩→掮客) are
+        // recovered from what's written on screen. Also captured for shot attachment either way.
+        let onScreenText = await recognizeOnScreenText(source)
+
         // Transcription is NOT a hard gate: a silent/music video with burned-in 字幕 can still yield
         // a good vision-only breakdown from frames + OCR. Only cancellation propagates.
-        let transcript = try await resilientTranscript(source)
+        let transcript = try await resilientTranscript(source, onScreenText: onScreenText)
 
         await onStage(.scripting)
-
-        // Deterministic OCR of burned-in 字幕/on-screen text (independent of the VLM) so captions are
-        // captured in both 云端 and 本地 modes; empty when no recognizer or nothing detected.
-        let onScreenText = await recognizeOnScreenText(source)
 
         let duration = videoDuration(source: source, transcript: transcript, onScreenText: onScreenText)
         if let deep, duration > deep.thresholdSeconds,
@@ -151,12 +152,16 @@ public struct VideoAnalyzer: VideoAnalyzing {
     /// (no audio track, unsupported locale, speech assets still downloading, pre-iOS26 runtime):
     /// the breakdown then proceeds vision-only from frames + OCR instead of hard-failing a whole
     /// class of 爆款 (music/no-speech videos with burned-in 字幕).
-    private func resilientTranscript(_ source: VideoSource) async throws -> [TranscriptSegment] {
+    private func resilientTranscript(
+        _ source: VideoSource,
+        onScreenText: [FrameText]
+    ) async throws -> [TranscriptSegment] {
         do {
             let raw = try await transcriber.transcribe(source)
-            // Clean the raw ASR (typos/punctuation/run-ons) before scripting so 台词 is readable and
-            // the 爆点/剧本 analysis reasons over accurate text; falls back to raw on any failure.
-            return try await correctedTranscript(raw)
+            // Clean the raw ASR (typos/punctuation/run-ons) before scripting, using the burned-in
+            // 字幕 as the reference for mis-heard domain terms — so 台词 is accurate and the 爆点/剧本
+            // analysis reasons over real words; falls back to raw on any failure.
+            return try await correctedTranscript(raw, onScreenText: onScreenText)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -167,11 +172,14 @@ public struct VideoAnalyzer: VideoAnalyzing {
         }
     }
 
-    private func correctedTranscript(_ raw: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+    private func correctedTranscript(
+        _ raw: [TranscriptSegment],
+        onScreenText: [FrameText]
+    ) async throws -> [TranscriptSegment] {
         guard let corrector else {
             return raw
         }
-        return try await corrector.correct(raw)
+        return try await corrector.correct(raw, onScreenText: onScreenText)
     }
 
     private func recognizeOnScreenText(_ source: VideoSource) async -> [FrameText] {

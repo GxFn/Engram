@@ -899,7 +899,13 @@ private struct ShotRowView: View {
         HStack(alignment: .top, spacing: 10) {
             #if os(iOS)
             if let videoURL {
-                ShotThumbnail(videoURL: videoURL, seconds: shot.startSeconds, shotIndex: shot.index)
+                // Midpoint, not startSeconds: a shot's first frame often catches the cut/transition
+                // (mouth closed, motion blur) — the middle is the representative moment.
+                ShotThumbnail(
+                    videoURL: videoURL,
+                    seconds: (shot.startSeconds + max(shot.startSeconds, shot.endSeconds)) / 2,
+                    shotIndex: shot.index
+                )
             }
             #endif
 

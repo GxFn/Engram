@@ -69,9 +69,18 @@ public protocol Transcriber: Sendable {
 
 public protocol TranscriptCorrecting: Sendable {
     /// Cleans raw ASR output (typos, homophones, missing punctuation, run-ons) without changing
-    /// meaning, preserving each segment's timing. Implementations return the original segments on
-    /// any non-cancellation failure so the pipeline never breaks.
-    func correct(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment]
+    /// meaning, preserving each segment's timing. `onScreenText` carries the burned-in 字幕 read by
+    /// OCR — the creator's own authoritative captions — so domain terms the ASR mishears
+    /// (电竞/人名/战队 etc.) can be corrected against them. Implementations return the original
+    /// segments on any non-cancellation failure so the pipeline never breaks.
+    func correct(_ segments: [TranscriptSegment], onScreenText: [FrameText]) async throws -> [TranscriptSegment]
+}
+
+extension TranscriptCorrecting {
+    /// Convenience for callers without captions.
+    public func correct(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+        try await correct(segments, onScreenText: [])
+    }
 }
 
 public protocol FrameSampler: Sendable {

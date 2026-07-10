@@ -36,14 +36,14 @@ public actor LLMTranscriptCorrector: TranscriptCorrecting {
         )
     }
 
-    public func correct(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+    public func correct(_ segments: [TranscriptSegment], onScreenText: [FrameText]) async throws -> [TranscriptSegment] {
         guard !segments.isEmpty else {
             return segments
         }
 
         do {
             let output = try await generator.generateScriptText(
-                prompt: Self.prompt(for: segments),
+                prompt: Self.prompt(for: segments, onScreenText: onScreenText),
                 config: configuration
             )
             return Self.apply(output, to: segments)
@@ -57,18 +57,46 @@ public actor LLMTranscriptCorrector: TranscriptCorrecting {
         }
     }
 
-    static func prompt(for segments: [TranscriptSegment]) -> String {
+    static func prompt(for segments: [TranscriptSegment], onScreenText: [FrameText] = []) -> String {
         let lines = segments.enumerated()
-            .map { index, segment in "[\(index)] \(segment.text)" }
+            .map { index, segment in "[\(index)] [\(format(segment.startSeconds))s] \(segment.text)" }
             .joined(separator: "\n")
 
+        // The burned-in 字幕 are the creator's own captions — the authoritative wording for domain
+        // terms the ASR mishears (电竞战队/选手/黑话). Fed as a reference so 掮客→陪玩-class errors and
+        // garbled fragments can be recovered instead of poisoning every downstream analysis.
+        let captionBlock: String
+        if onScreenText.isEmpty {
+            captionBlock = ""
+        } else {
+            let captions = onScreenText
+                .sorted { $0.timestampSeconds < $1.timestampSeconds }
+                .map { text in "[\(format(text.timestampSeconds))s] \(text.lines.joined(separator: " / "))" }
+                .joined(separator: "\n")
+            captionBlock = """
+
+
+            画面字幕（OCR 识别的烧录字幕，按时间。这是作者自己压的字幕，用词比语音识别可靠，但可能夹带昵称/水印）：
+            \(captions)
+            """
+        }
+
         return """
-        以下是语音识别的原始转写，可能有错别字、同音字、缺标点、断句混乱。请在【不改变原意、不新增或删减信息、不翻译、不猜测人名】的前提下：修正明显错别字与同音字、补合适标点、把断句顺成通顺中文。
+        以下是语音识别的原始转写，可能有错别字、同音字、缺标点、断句混乱，专有名词（电竞战队、选手、行业黑话等）常被听成同音错词。请在【不改变原意、不翻译】的前提下：
+        - 修正明显错别字与同音字，补合适标点，把断句顺成通顺中文；
+        - 对照相近时间的画面字幕纠正被听错的词，以字幕用词为准；
+        - 某段语音明显破碎或缺字、而对应时间的字幕里有完整句子时，按字幕恢复该段原文；
+        - 不得添加语音和字幕里都不存在的内容，不要把字幕里的昵称/水印当台词。
         保持段的数量与编号完全不变。只输出一个 JSON 数组，元素为 {"i": 段编号, "text": "修正后的该段文本"}，不要 Markdown，不要解释。
 
         转写：
         \(lines)
+        \(captionBlock)
         """
+    }
+
+    private static func format(_ seconds: Double) -> String {
+        String(format: "%.1f", seconds.isFinite ? seconds : 0)
     }
 
     static func apply(_ output: String, to segments: [TranscriptSegment]) -> [TranscriptSegment] {
