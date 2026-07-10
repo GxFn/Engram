@@ -14,14 +14,19 @@ public struct SettingsView: View {
     public var body: some View {
         Form {
             modeSection
+            activeRolesSection
 
             if viewModel.visionBackend.kind == .cloud {
                 cloudSection
             } else {
-                localModelSection
+                deviceSection
+                modelGroup(.language)
+                modelGroup(.vision)
+                modelGroup(.retrieval)
             }
 
             generationSection
+            storageSection
 
             if let errorMessage = viewModel.errorMessage {
                 Section {
@@ -109,41 +114,92 @@ public struct SettingsView: View {
         }
     }
 
-    private var localModelSection: some View {
-        Section {
+    /// One glance answers "现在到底在用什么": per-role (语言/视觉/检索) effective backend,
+    /// mode-aware — the pipeline's actual resolution, not the aspirational setting.
+    @ViewBuilder
+    private var activeRolesSection: some View {
+        if let roles = viewModel.activeRoles {
+            Section("当前生效") {
+                LabeledContent {
+                    Text(roles.text).multilineTextAlignment(.trailing)
+                } label: {
+                    Label("语言", systemImage: "text.bubble")
+                }
+                LabeledContent {
+                    Text(roles.vision).multilineTextAlignment(.trailing)
+                } label: {
+                    Label("视觉", systemImage: "eye")
+                }
+                LabeledContent {
+                    Text(roles.retrieval).multilineTextAlignment(.trailing)
+                } label: {
+                    Label("检索", systemImage: "magnifyingglass")
+                }
+            }
+        }
+    }
+
+    private var deviceSection: some View {
+        Section("设备") {
             LabeledContent("设备内存", value: viewModel.memorySummary)
             if let recommendedModel = viewModel.recommendedModel {
                 LabeledContent("推荐模型", value: recommendedModel.displayName)
             }
-
             if !viewModel.canRunVisionLocally {
                 visionUnavailableHint
             }
-
             if viewModel.isRefreshing && viewModel.models.isEmpty {
                 ProgressView()
             }
+        }
+    }
 
-            ForEach(viewModel.runnableModels) { model in
-                ModelManagementRow(
-                    model: model,
-                    isActive: model.id == viewModel.selectedModelID,
-                    isOperating: model.id == viewModel.operationModelID,
-                    downloadProgress: model.id == viewModel.operationModelID ? viewModel.downloadProgress : nil,
-                    select: { viewModel.selectModel(model.model) },
-                    downloadModel: {
-                        viewModel.beginDownload(model)
-                    },
-                    importModel: {
-                        importTarget = model
-                        isShowingModelImporter = true
-                    },
-                    cancelOperation: { viewModel.cancelOperation() },
-                    delete: { Task { await viewModel.delete(model) } }
-                )
+    /// One section per model role. 使用 (set active) only exists for 语言 — the vision/embedding
+    /// models are loaded by the pipeline for their role, never as the chat/scripting model.
+    @ViewBuilder
+    private func modelGroup(_ purpose: ModelPurpose) -> some View {
+        let models = viewModel.runnableModels(for: purpose)
+        if !models.isEmpty {
+            Section {
+                ForEach(models) { model in
+                    ModelManagementRow(
+                        model: model,
+                        isActive: purpose == .language && model.id == viewModel.selectedModelID,
+                        isOperating: model.id == viewModel.operationModelID,
+                        downloadProgress: model.id == viewModel.operationModelID ? viewModel.downloadProgress : nil,
+                        showsUse: purpose == .language,
+                        select: { viewModel.selectModel(model.model) },
+                        downloadModel: {
+                            viewModel.beginDownload(model)
+                        },
+                        importModel: {
+                            importTarget = model
+                            isShowingModelImporter = true
+                        },
+                        cancelOperation: { viewModel.cancelOperation() },
+                        delete: { Task { await viewModel.delete(model) } }
+                    )
+                }
+            } header: {
+                Text("\(purpose.displayName)模型 · \(purpose.usage)")
             }
-        } header: {
-            Text("本地模型")
+        }
+    }
+
+    /// Where the disk went: imported videos, downloaded model weights, and the retrieval index.
+    @ViewBuilder
+    private var storageSection: some View {
+        if let storage = viewModel.storage {
+            Section {
+                LabeledContent("视频文件", value: SettingsViewModel.formatBytes(storage.videoBytes))
+                LabeledContent("模型文件", value: SettingsViewModel.formatBytes(storage.modelBytes))
+                LabeledContent("检索索引", value: SettingsViewModel.formatBytes(storage.indexBytes))
+                LabeledContent("合计", value: SettingsViewModel.formatBytes(storage.totalBytes))
+            } header: {
+                Text("存储")
+            } footer: {
+                Text("视频随对应拆解删除；模型可在上方删除，需要时重新下载。")
+            }
         }
     }
 
@@ -244,6 +300,7 @@ private struct ModelManagementRow: View {
     let isActive: Bool
     let isOperating: Bool
     let downloadProgress: ModelDownloadProgress?
+    var showsUse: Bool = true
     let select: () -> Void
     let downloadModel: () -> Void
     let importModel: () -> Void
@@ -254,13 +311,10 @@ private struct ModelManagementRow: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(model.displayName)
-                            .font(.body.weight(.semibold))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        purposeTag
-                    }
+                    Text(model.displayName)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
                     Text(statusSummary)
                         .font(.caption)
@@ -288,8 +342,10 @@ private struct ModelManagementRow: View {
             }
 
             HStack(spacing: 10) {
-                Button("使用", action: select)
-                    .disabled(isActive)
+                if showsUse {
+                    Button("使用", action: select)
+                        .disabled(isActive)
+                }
 
                 if isOperating {
                     Button("取消", role: .cancel, action: cancelOperation)
@@ -318,26 +374,21 @@ private struct ModelManagementRow: View {
         .padding(.vertical, 4)
     }
 
-    private var purposeTag: some View {
-        Text(model.purpose.displayName)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.15), in: Capsule())
-            .foregroundStyle(.secondary)
-            .fixedSize()
-    }
-
-    // Leads with the model's usage (its 用途); only runnable models reach this row, so no
-    // "内存不足" state is shown here — the section filters those out.
+    // The purpose lives in the group header; only runnable models reach this row, so no
+    // "内存不足" state is shown here — the sections filter those out.
     private var statusSummary: String {
-        var parts: [String] = [model.purpose.usage]
+        var parts: [String] = []
 
         if model.isRecommended {
             parts.append("推荐")
         }
 
-        parts.append(model.isDownloaded ? SettingsViewModel.formatBytes(model.storageBytes) : "未下载")
+        if model.isDownloaded {
+            parts.append(SettingsViewModel.formatBytes(model.storageBytes))
+        } else {
+            // estimatedMemoryBytes ≈ 4-bit weight file size; good enough to set expectations.
+            parts.append("未下载 · 约 \(SettingsViewModel.formatBytes(model.model.estimatedMemoryBytes))")
+        }
 
         return parts.joined(separator: " · ")
     }

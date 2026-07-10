@@ -13,6 +13,10 @@ public final class SettingsViewModel {
     public private(set) var operationModelID: String?
     public private(set) var downloadProgress: ModelDownloadProgress?
     public private(set) var visionBackend: VisionBackendSettings
+    /// Per-role effective backend (语言/视觉/检索), resolved by the shell from mode + config + downloads.
+    public private(set) var activeRoles: ActiveAIRoles?
+    /// Local artifact sizes (videos / model weights / retrieval index).
+    public private(set) var storage: StorageSummary?
     public var errorMessage: String?
 
     public let engines: [SettingsEngineOption]
@@ -21,6 +25,8 @@ public final class SettingsViewModel {
 
     @ObservationIgnored private let client: ModelManagementClient
     @ObservationIgnored private let visionBackendClient: VisionBackendClient
+    @ObservationIgnored private let loadActiveRoles: (@Sendable () async -> ActiveAIRoles?)?
+    @ObservationIgnored private let loadStorage: (@Sendable () async -> StorageSummary?)?
     @ObservationIgnored private let applyActiveModel: (ModelIdentity) -> Void
     @ObservationIgnored private let applyActiveEngine: (String) -> Void
     @ObservationIgnored private let applyGenerationConfig: (GenerationConfig) -> Void
@@ -36,6 +42,8 @@ public final class SettingsViewModel {
         recommendedModelID: String,
         client: ModelManagementClient = .empty,
         visionBackendClient: VisionBackendClient = .empty,
+        loadActiveRoles: (@Sendable () async -> ActiveAIRoles?)? = nil,
+        loadStorage: (@Sendable () async -> StorageSummary?)? = nil,
         applyActiveModel: @escaping (ModelIdentity) -> Void = { _ in },
         applyActiveEngine: @escaping (String) -> Void = { _ in },
         applyGenerationConfig: @escaping (GenerationConfig) -> Void = { _ in }
@@ -49,6 +57,8 @@ public final class SettingsViewModel {
         self.recommendedModelID = recommendedModelID
         self.client = client
         self.visionBackendClient = visionBackendClient
+        self.loadActiveRoles = loadActiveRoles
+        self.loadStorage = loadStorage
         self.visionBackend = visionBackendClient.load()
         self.applyActiveModel = applyActiveModel
         self.applyActiveEngine = applyActiveEngine
@@ -61,21 +71,25 @@ public final class SettingsViewModel {
     public func selectVisionBackend(_ kind: VisionBackendKind) {
         visionBackend.kind = kind
         visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
     }
 
     public func setCloudBaseURL(_ value: String) {
         visionBackend.cloudBaseURL = value
         visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
     }
 
     public func setCloudModel(_ value: String) {
         visionBackend.cloudModel = value
         visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
     }
 
     public func setCloudTextModel(_ value: String) {
         visionBackend.cloudTextModel = value
         visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
     }
 
     /// True in 云端 mode when any required field is missing. Cloud routing is all-or-nothing (a
@@ -95,6 +109,7 @@ public final class SettingsViewModel {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         visionBackend.hasCloudKey = !trimmed.isEmpty
         visionBackendClient.save(visionBackend, trimmed)
+        scheduleRolesReload()
     }
 
     public var selectedModel: ManagedModel? {
@@ -147,6 +162,29 @@ public final class SettingsViewModel {
         } catch {
             errorMessage = Self.userFacingMessage(for: error)
         }
+
+        await reloadRolesAndStorage()
+    }
+
+    /// Recomputes the 当前生效 panel + storage sizes (mode/config/download changes shift them).
+    public func reloadRolesAndStorage() async {
+        if let loadActiveRoles {
+            activeRoles = await loadActiveRoles()
+        }
+        if let loadStorage {
+            storage = await loadStorage()
+        }
+    }
+
+    private func scheduleRolesReload() {
+        Task { [weak self] in
+            await self?.reloadRolesAndStorage()
+        }
+    }
+
+    /// Runnable models of one role, for the purpose-grouped Settings sections.
+    public func runnableModels(for purpose: ModelPurpose) -> [ManagedModel] {
+        runnableModels.filter { $0.purpose == purpose }
     }
 
     public func selectModel(_ model: ModelIdentity) {

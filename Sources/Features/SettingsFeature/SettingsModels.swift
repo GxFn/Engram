@@ -78,6 +78,34 @@ extension ManagedModel {
     }
 }
 
+/// What's actually powering each AI role right now (mode-aware) — the 当前生效 panel's data.
+public struct ActiveAIRoles: Sendable, Equatable {
+    public let text: String
+    public let vision: String
+    public let retrieval: String
+
+    public init(text: String, vision: String, retrieval: String) {
+        self.text = text
+        self.vision = vision
+        self.retrieval = retrieval
+    }
+}
+
+/// On-disk usage of the app's local artifacts (imported videos, model weights, retrieval index).
+public struct StorageSummary: Sendable, Equatable {
+    public let videoBytes: Int64
+    public let modelBytes: Int64
+    public let indexBytes: Int64
+
+    public var totalBytes: Int64 { videoBytes + modelBytes + indexBytes }
+
+    public init(videoBytes: Int64, modelBytes: Int64, indexBytes: Int64) {
+        self.videoBytes = videoBytes
+        self.modelBytes = modelBytes
+        self.indexBytes = indexBytes
+    }
+}
+
 public struct ModelDownloadProgress: Sendable, Equatable {
     public let completedUnitCount: Int64
     public let totalUnitCount: Int64?

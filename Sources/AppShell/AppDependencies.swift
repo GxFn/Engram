@@ -312,6 +312,54 @@ public final class AppDependencies {
             }
         )
 
+        // 当前生效 panel: per-role (语言/视觉/检索) effective backend, resolved the same way the
+        // pipeline resolves it — cloud only when the config is complete, with download/memory state
+        // for the on-device fallbacks.
+        nonisolated(unsafe) let rolesDefaults = defaults
+        let rolesCapability = deviceCapability
+        let loadActiveRoles: @Sendable () async -> ActiveAIRoles? = {
+            let cloudReady = CloudAIResolver.cloudReady(defaults: rolesDefaults)
+            let isCloudMode = CloudAIResolver.isCloudMode(defaults: rolesDefaults)
+            let text: String
+            let vision: String
+            if cloudReady {
+                let textModel = rolesDefaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
+                let visionModel = rolesDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
+                text = "云端 · \(textModel)"
+                vision = "云端 · \(visionModel)"
+            } else {
+                let prefix = isCloudMode ? "本地（云端未配全）· " : "本地 · "
+                let localText = Self.storedModel(defaults: rolesDefaults) ?? rolesCapability.recommendedModel
+                let textDownloaded = (try? await store.isDownloaded(localText)) ?? false
+                text = prefix + Self.shortModelName(localText.id) + (textDownloaded ? "" : "（未下载）")
+
+                let vl = ModelCatalog.qwen3VL_4B_4bit
+                if !rolesCapability.canRun(vl) {
+                    vision = "不可用（本机内存不足，建议云端）"
+                } else {
+                    let vlDownloaded = (try? await store.isDownloaded(vl)) ?? false
+                    vision = prefix + Self.shortModelName(vl.id) + (vlDownloaded ? "" : "（未下载）")
+                }
+            }
+            return ActiveAIRoles(
+                text: text,
+                vision: vision,
+                retrieval: "端侧 · Apple 语义向量"
+            )
+        }
+
+        let modelsRoot = store.modelDirectoryRoot
+        let loadStorage: @Sendable () async -> StorageSummary? = {
+            let locations = try? EngramAppGroup.locations()
+            return await Task.detached(priority: .utility) {
+                StorageSummary(
+                    videoBytes: Self.directoryBytes(locations?.videosDirectory),
+                    modelBytes: Self.directoryBytes(modelsRoot),
+                    indexBytes: Self.sqliteFamilyBytes(locations?.retrievalIndexURL)
+                )
+            }.value
+        }
+
         return SettingsViewModel(
             engines: engines.map {
                 SettingsEngineOption(
@@ -327,6 +375,8 @@ public final class AppDependencies {
             recommendedModelID: deviceCapability.recommendedModel.id,
             client: client,
             visionBackendClient: visionBackendClient,
+            loadActiveRoles: loadActiveRoles,
+            loadStorage: loadStorage,
             applyActiveModel: { [weak self] model in
                 self?.selectModel(model)
             },
@@ -621,7 +671,7 @@ public final class AppDependencies {
         return engines.first { $0.descriptor.id == id }
     }
 
-    private static func storedModel(defaults: UserDefaults?) -> ModelIdentity? {
+    private nonisolated static func storedModel(defaults: UserDefaults?) -> ModelIdentity? {
         guard let id = defaults?.string(forKey: DefaultsKey.activeModelID) else {
             return nil
         }
@@ -677,6 +727,46 @@ public final class AppDependencies {
 
     private nonisolated static func memoryTitle(from snapshot: ClipRecordSnapshot) -> String {
         preferredTitle(from: snapshot)
+    }
+
+    nonisolated static func shortModelName(_ id: String) -> String {
+        id.split(separator: "/").last.map(String.init) ?? id
+    }
+
+    /// Total on-disk size of a directory tree (0 for nil/missing paths).
+    nonisolated static func directoryBytes(_ url: URL?) -> Int64 {
+        guard let url else { return 0 }
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Size of an SQLite database including its -wal/-shm siblings (matched by filename prefix).
+    nonisolated static func sqliteFamilyBytes(_ databaseURL: URL?) -> Int64 {
+        guard let databaseURL else { return 0 }
+        let parent = databaseURL.deletingLastPathComponent()
+        let baseName = databaseURL.lastPathComponent
+        guard let siblings = try? FileManager.default.contentsOfDirectory(
+            at: parent,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+
+        return siblings
+            .filter { $0.lastPathComponent.hasPrefix(baseName) }
+            .compactMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }
+            .reduce(Int64(0)) { $0 + Int64($1) }
     }
 
     /// Meaningful display title: a stored non-UUID title wins; a UUID import name (PHPicker temp
