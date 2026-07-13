@@ -1,3 +1,4 @@
+import AnalysisStore
 import AppGroupSupport
 import ClipDigest
 import CloudVision
@@ -9,6 +10,7 @@ import ModelStore
 import RAGCore
 import ScriptComposer
 import ScriptCore
+import ShotDetection
 import SpeechTranscription
 import SwiftData
 import VectorStoreSQLite
@@ -63,12 +65,13 @@ enum RetrievalAssembly {
             keywordIndex: keywordIndex,
             chunkResolver: vectorStore
         )
-        let videoAnalyzer = videoAnalyzer ?? makeVideoAnalyzer(
+        let videoAnalyzer = try videoAnalyzer ?? makeVideoAnalyzer(
             modelStore: modelStore,
             activeEngine: activeEngine,
             activeModel: activeModel,
             generationConfig: generationConfig,
-            visionGenerator: visionGenerator
+            visionGenerator: visionGenerator,
+            artifactRoot: locations.rootDirectory.appendingPathComponent("analysis-artifacts", isDirectory: true)
         )
         let digestService = try ClipDigestService.live(
             modelContainer: modelContainer,
@@ -87,8 +90,9 @@ enum RetrievalAssembly {
         activeEngine: any LLMEngine,
         activeModel: ModelIdentity,
         generationConfig: GenerationConfig,
-        visionGenerator: (any VisionScriptGenerating)? = nil
-    ) -> any VideoAnalyzing {
+        visionGenerator: (any VisionScriptGenerating)? = nil,
+        artifactRoot: URL
+    ) throws -> any VideoAnalyzing {
         let textConfiguration = ScriptComposerConfiguration(
             maxKeyframeCount: 0,
             generationConfig: generationConfig
@@ -121,7 +125,7 @@ enum RetrievalAssembly {
             )
         }
 
-        return VideoAnalyzer(
+        let base = VideoAnalyzer(
             transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
             sampler: AVFoundationFrameSampler(),
             visionComposer: visionComposer,
@@ -133,6 +137,13 @@ enum RetrievalAssembly {
             // 云端/本地 vision backend, so captions are captured and attached to shots.
             recognizer: VisionFrameTextRecognizer(),
             maxFrames: videoAnalyzerMaxFrames
+        )
+        return EvidenceGroundedVideoAnalyzer(
+            base: base,
+            probe: AVFoundationVideoAssetProbe(),
+            detector: AVFoundationShotBoundaryDetector(),
+            keyframeSelector: AVFoundationShotKeyframeSelector(),
+            artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot)
         )
     }
 }

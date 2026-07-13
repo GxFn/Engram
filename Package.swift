@@ -253,6 +253,8 @@ let package = Package(
                 "EngineKit",
                 "RAGCore",
                 "ClipDigest",
+                "AnalysisStore",
+                "ShotDetection",
                 "EmbeddingMLX",
                 "SpeechTranscription",
                 "FrameVision",

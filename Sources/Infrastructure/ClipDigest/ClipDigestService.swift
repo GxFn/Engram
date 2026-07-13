@@ -345,6 +345,10 @@ public actor ClipDigestService: ClipDigesting {
     private func digest(_ item: ClipQueueItem) async throws {
         var clip = item.clip
         var scriptJSON: String?
+        var storyboardJSON: String?
+        var activeRunID: String?
+        var qualityStatusRaw: String?
+        var analysisSchemaVersion: Int?
         _ = try await recordStore.prepareQueuedClipForDigest(clip, now: now())
 
         do {
@@ -390,7 +394,7 @@ public actor ClipDigestService: ClipDigesting {
 
                 let source = VideoSource(id: clip.id, localFileURL: url, importedAt: clip.createdAt)
                 let clipID = clip.id
-                let script = try await videoAnalyzer.analyze(source) { [recordStore, now, clipID] stage in
+                let recordStage: @Sendable (ClipState) async -> Void = { [recordStore, now, clipID] stage in
                     do {
                         _ = try await recordStore.transition(id: clipID, to: stage, now: now())
                     } catch {
@@ -398,6 +402,20 @@ public actor ClipDigestService: ClipDigesting {
                             "Failed to record video stage \(stage.rawValue, privacy: .public) for clip \(clipID, privacy: .public): \(String(describing: error), privacy: .public)"
                         )
                     }
+                }
+                let script: Script
+                if let grounded = videoAnalyzer as? any EvidenceGroundedVideoAnalyzing {
+                    let result = try await grounded.analyzeGrounded(source, onStage: recordStage)
+                    script = result.legacy
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    encoder.dateEncodingStrategy = .iso8601
+                    storyboardJSON = String(decoding: try encoder.encode(result.document), as: UTF8.self)
+                    activeRunID = result.run.id
+                    qualityStatusRaw = result.quality.status.rawValue
+                    analysisSchemaVersion = result.document.source.schemaVersion
+                } else {
+                    script = try await videoAnalyzer.analyze(source, onStage: recordStage)
                 }
                 // A re-digest (Retry) replaces scriptJSON wholesale — graft the user's 背景说明
                 // from the previous breakdown so their supplied context survives regeneration.
@@ -447,6 +465,10 @@ public actor ClipDigestService: ClipDigesting {
                 bodyText: bodyText,
                 indexPreview: indexingResult.preview,
                 scriptJSON: scriptJSON,
+                storyboardJSON: storyboardJSON,
+                activeRunID: activeRunID,
+                qualityStatusRaw: qualityStatusRaw,
+                analysisSchemaVersion: analysisSchemaVersion,
                 now: now()
             )
             try queueStore.delete(item)

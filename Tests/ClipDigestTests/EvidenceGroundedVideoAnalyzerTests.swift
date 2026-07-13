@@ -12,7 +12,11 @@ import VideoUnderstanding
         .appendingPathComponent("EngramGroundedAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try AnalysisArtifactStore(rootURL: root, now: { Date(timeIntervalSince1970: 10) })
-    let source = VideoSource(id: "clip-grounded", localFileURL: URL(fileURLWithPath: "/tmp/fixture.mp4"))
+    let source = VideoSource(
+        id: "clip-grounded",
+        localFileURL: URL(fileURLWithPath: "/tmp/fixture.mp4"),
+        importedAt: Date(timeIntervalSince1970: 1)
+    )
     let asset = groundedAsset(sourceID: source.id)
     let graph = try groundedGraph(asset: asset)
     let analyzer = EvidenceGroundedVideoAnalyzer(
