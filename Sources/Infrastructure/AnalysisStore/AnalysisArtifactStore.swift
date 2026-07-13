@@ -96,7 +96,8 @@ public actor AnalysisArtifactStore {
             updatedAt: now(),
             retryCount: run.retryCount,
             mediaBytesUploaded: run.mediaBytesUploaded,
-            degradationNotes: run.degradationNotes
+            degradationNotes: run.degradationNotes,
+            cloudTelemetry: run.cloudTelemetry
         )
         try writeManifest(updated)
         return updated
@@ -206,6 +207,129 @@ public actor AnalysisArtifactStore {
         }
     }
 
+    public func recordCloudTelemetry(
+        _ telemetry: AnalysisCloudTelemetry,
+        for run: AnalysisRun
+    ) throws -> AnalysisRun {
+        let updated = AnalysisRun(
+            id: run.id,
+            clipID: run.clipID,
+            fingerprint: run.fingerprint,
+            schemaVersion: run.schemaVersion,
+            pipelineVersion: run.pipelineVersion,
+            status: run.status,
+            currentStage: run.currentStage,
+            completedStages: run.completedStages,
+            checkpoints: run.checkpoints,
+            startedAt: run.startedAt,
+            updatedAt: now(),
+            retryCount: run.retryCount,
+            mediaBytesUploaded: telemetry.mediaBytesUploaded ?? run.mediaBytesUploaded,
+            degradationNotes: run.degradationNotes,
+            cloudTelemetry: telemetry
+        )
+        try writeManifest(updated)
+        return updated
+    }
+
+    public func saveShotArtifact<T: Codable & Sendable>(
+        _ value: T,
+        stage: AnalysisStage,
+        shotID: ShotID,
+        cacheKey: String,
+        for run: AnalysisRun
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let payload = try encoder.encode(value)
+        let envelope = ShotArtifactEnvelope(
+            shotID: shotID.rawValue,
+            stage: stage,
+            cacheKey: cacheKey,
+            payload: payload,
+            payloadSHA256: Self.sha256(payload),
+            completedAt: now()
+        )
+        try writeAtomically(
+            encoder.encode(envelope),
+            to: shotArtifactURL(stage: stage, shotID: shotID, run: run)
+        )
+    }
+
+    public func loadShotArtifact<T: Codable & Sendable>(
+        _ type: T.Type,
+        stage: AnalysisStage,
+        shotID: ShotID,
+        cacheKey: String,
+        from run: AnalysisRun
+    ) throws -> T? {
+        let url = shotArtifactURL(stage: stage, shotID: shotID, run: run)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let envelope = try decoder.decode(ShotArtifactEnvelope.self, from: Data(contentsOf: url))
+            guard envelope.shotID == shotID.rawValue,
+                  envelope.stage == stage,
+                  envelope.cacheKey == cacheKey
+            else { return nil }
+            guard Self.sha256(envelope.payload) == envelope.payloadSHA256 else {
+                throw AnalysisArtifactStoreError.invalidManifest
+            }
+            return try decoder.decode(T.self, from: envelope.payload)
+        } catch let error as AnalysisArtifactStoreError {
+            throw error
+        } catch {
+            throw AnalysisArtifactStoreError.invalidManifest
+        }
+    }
+
+    public func invalidateShotArtifacts(
+        stages: Set<AnalysisStage>,
+        shotIDs: Set<ShotID>,
+        from run: AnalysisRun
+    ) throws {
+        for shotID in shotIDs {
+            for stage in stages {
+                let url = shotArtifactURL(stage: stage, shotID: shotID, run: run)
+                if fileManager.fileExists(atPath: url.path) {
+                    try fileManager.removeItem(at: url)
+                }
+            }
+        }
+    }
+
+    public func invalidate(stages: Set<AnalysisStage>, from run: AnalysisRun) throws -> AnalysisRun {
+        let directory = runDirectory(clipID: run.clipID, runID: run.id)
+        let retained = run.checkpoints.filter { !stages.contains($0.stage) }
+        for checkpoint in run.checkpoints where stages.contains(checkpoint.stage) {
+            let url = directory.appendingPathComponent(checkpoint.relativePath)
+            if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+        }
+        let completedStages = retained.map(\.stage)
+        let next = AnalysisStage.allCases.first { !completedStages.contains($0) } ?? .completed
+        let updated = AnalysisRun(
+            id: run.id,
+            clipID: run.clipID,
+            fingerprint: run.fingerprint,
+            schemaVersion: run.schemaVersion,
+            pipelineVersion: run.pipelineVersion,
+            status: next == .completed ? .completed : .running,
+            currentStage: next,
+            completedStages: completedStages,
+            checkpoints: retained,
+            startedAt: run.startedAt,
+            updatedAt: now(),
+            retryCount: run.retryCount + 1,
+            mediaBytesUploaded: run.mediaBytesUploaded,
+            degradationNotes: run.degradationNotes,
+            cloudTelemetry: run.cloudTelemetry
+        )
+        try writeManifest(updated)
+        return updated
+    }
+
     public func deleteArtifacts(clipID: String) throws {
         try Self.validateIdentifier(clipID)
         let directory = rootURL.appendingPathComponent(clipID, isDirectory: true)
@@ -260,6 +384,13 @@ public actor AnalysisArtifactStore {
         rootURL.appendingPathComponent(clipID, isDirectory: true).appendingPathComponent(runID, isDirectory: true)
     }
 
+    private func shotArtifactURL(stage: AnalysisStage, shotID: ShotID, run: AnalysisRun) -> URL {
+        let key = Self.sha256(Data(shotID.rawValue.utf8))
+        return runDirectory(clipID: run.clipID, runID: run.id)
+            .appendingPathComponent("shots", isDirectory: true)
+            .appendingPathComponent("\(key)-\(stage.rawValue).json")
+    }
+
     private static func fileName(for stage: AnalysisStage) -> String {
         "\(stage.rawValue).json"
     }
@@ -278,4 +409,13 @@ public actor AnalysisArtifactStore {
             throw AnalysisArtifactStoreError.unsafeIdentifier
         }
     }
+}
+
+private struct ShotArtifactEnvelope: Codable, Sendable {
+    let shotID: String
+    let stage: AnalysisStage
+    let cacheKey: String
+    let payload: Data
+    let payloadSHA256: String
+    let completedAt: Date
 }

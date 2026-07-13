@@ -44,7 +44,22 @@ private actor IncrementalRecordingKeyframeSelector: ShotKeyframeSelecting {
 
     func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe] {
         requestedShotIDs.append(graph.shots.map(\.id))
-        return graph.shots.map { shot in
+        return makeFrames(graph.shots)
+    }
+
+    func select(
+        in graph: ShotGraph,
+        sourceURL: URL,
+        shotIDs: Set<ShotID>,
+        framesPerShot: Int
+    ) async throws -> [ShotKeyframe] {
+        let shots = graph.shots.filter { shotIDs.contains($0.id) }
+        requestedShotIDs.append(shots.map(\.id))
+        return makeFrames(shots)
+    }
+
+    private func makeFrames(_ shots: [ShotSegment]) -> [ShotKeyframe] {
+        shots.map { shot in
             let midpoint = (shot.timeRange.startSeconds + shot.timeRange.endSeconds) / 2
             return ShotKeyframe(
                 shotID: shot.id,

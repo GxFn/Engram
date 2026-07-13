@@ -46,8 +46,13 @@ import VideoUnderstanding
     )
     let keyframes = try await AVFoundationShotKeyframeSelector().select(in: graph, sourceURL: url)
 
-    #expect(asset.durationSeconds > 12)
-    #expect(asset.frameCount == 385)
+    if url.lastPathComponent == "1358.MP4" {
+        #expect(asset.durationSeconds > 12)
+        #expect(asset.frameCount == 385)
+    } else {
+        #expect(asset.durationSeconds > 0)
+        #expect(asset.frameCount == Int((asset.durationSeconds * asset.nominalFrameRate).rounded()))
+    }
     #expect(graph.coverageRatio == 1)
     #expect(!graph.shots.isEmpty)
     #expect(keyframes.count == graph.shots.count)

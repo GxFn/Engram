@@ -31,6 +31,7 @@ import VideoUnderstanding
     #expect(decision.effectiveMode == .cloudStandard)
     #expect(decision.mediaUploadAllowed == false)
     #expect(decision.degradationNote?.contains("fullVideo") == true)
+    #expect(profile.transport == .frameChat)
 }
 
 @Test func providerTransportArtifactsCarryIdempotencyUsageAndCancellationContract() throws {
@@ -58,51 +59,149 @@ import VideoUnderstanding
     #expect(CloudCapability(rawValue: "jobCancellation") != nil)
 }
 
+@Test func providerArtifactsDecodeLegacyCheckpointsWithoutNewContractFields() throws {
+    let request = try JSONDecoder().decode(
+        CloudVideoJobRequest.self,
+        from: Data(#"{"sourceID":"clip-1","sourceFingerprint":"legacy-fingerprint","byteCount":3,"requestedCapabilities":["cloudASR"]}"#.utf8)
+    )
+    let receipt = try JSONDecoder().decode(
+        CloudVideoJobReceipt.self,
+        from: Data(#"{"jobID":"legacy-job","state":"queued","observations":[],"sanitizedError":null}"#.utf8)
+    )
+
+    #expect(request.idempotencyKey == "legacy-fingerprint")
+    #expect(receipt.usage == .zero)
+    #expect(receipt.cancellationSupported == false)
+}
+
+@Suite(.serialized)
+struct ProviderHTTPContractTests {
 @Test func asyncASRSubmitUsesOfficialHeadersAndBodyInsteadOfGenericVideoJobsSchema() async throws {
     let session = makeContractSession { request in
         let response = try #require(request.url).absoluteString
         #expect(response == "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit")
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "X-Api-App-Key") == "speech-app-id")
         #expect(request.value(forHTTPHeaderField: "X-Api-Request-Id") == "sha256-fixture")
         #expect(request.value(forHTTPHeaderField: "X-Api-Resource-Id") == "volc.bigasr.auc")
         let body = try requestBodyData(request)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(object["audio"] != nil)
+        let audio = try #require(object["audio"] as? [String: Any])
+        #expect(audio["url"] as? String == "https://fixture.tos-cn-beijing.volces.com/tiny.mp4")
+        #expect(audio["data"] == nil)
         #expect(object["mediaBase64"] == nil)
         return try contractResponse(for: request, state: "queued")
     }
     let profile = providerFixture(
         jobURL: URL(string: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit")!
     )
-    let client = URLSessionCloudVideoJobClient(profile: profile, session: session)
+    let client = URLSessionCloudVideoJobClient(
+        profile: profile,
+        session: session,
+        doubaoAppKey: "speech-app-id"
+    )
 
-    _ = try await client.submit(
+    _ = try await client.submitRemoteMedia(
         CloudVideoJobRequest(
             sourceID: "clip-1",
             sourceFingerprint: "sha256-fixture",
             byteCount: 3,
             requestedCapabilities: [.cloudASR, .asyncJobs]
         ),
-        media: Data([1, 2, 3]),
+        mediaURL: URL(string: "https://fixture.tos-cn-beijing.volces.com/tiny.mp4")!,
         consent: MediaUploadConsent(allowsUpload: true, maximumBytes: 3),
         bearerToken: "speech-access-key"
     )
+}
+
+@Test func asyncASRRejectsInlineMediaInsteadOfInventingAnUnsupportedUploadContract() async {
+    let client = URLSessionCloudVideoJobClient(
+        profile: .doubaoAsyncASR(),
+        doubaoAppKey: "speech-app-id"
+    )
+
+    await #expect(throws: CloudVideoJobError.remoteMediaRequired) {
+        try await client.submit(
+            CloudVideoJobRequest(
+                sourceID: "clip-1",
+                sourceFingerprint: "sha256-fixture",
+                byteCount: 3,
+                requestedCapabilities: [.cloudASR, .asyncJobs]
+            ),
+            media: Data([1, 2, 3]),
+            consent: MediaUploadConsent(allowsUpload: true, maximumBytes: 3),
+            bearerToken: "speech-access-key"
+        )
+    }
+}
+
+@Test func frameChatProfileCannotBeUsedAsAnAsyncVideoJobTransport() async {
+    let profile = CloudProviderProfile.frameChat(
+        id: "frame-only",
+        displayName: "Frame only",
+        baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/v3")!
+    )
+    let client = URLSessionCloudVideoJobClient(profile: profile)
+
+    await #expect(throws: CloudVideoJobError.jobTransportUnsupported) {
+        try await client.submit(
+            CloudVideoJobRequest(
+                sourceID: "clip-1",
+                sourceFingerprint: "sha256-fixture",
+                byteCount: 3,
+                requestedCapabilities: [.fullVideo]
+            ),
+            media: Data([1, 2, 3]),
+            consent: MediaUploadConsent(allowsUpload: true, maximumBytes: 3),
+            bearerToken: "speech-access-key"
+        )
+    }
 }
 
 @Test func asyncASRStatusUsesOfficialQueryRequestInsteadOfAppendingJobID() async throws {
     let session = makeContractSession { request in
         #expect(request.url?.absoluteString == "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query")
         #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "X-Api-App-Key") == "speech-app-id")
         #expect(request.value(forHTTPHeaderField: "X-Api-Request-Id") == "task-123")
         return try contractResponse(for: request, state: "completed")
     }
     let profile = providerFixture(
         jobURL: URL(string: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query")!
     )
-    let client = URLSessionCloudVideoJobClient(profile: profile, session: session)
+    let client = URLSessionCloudVideoJobClient(
+        profile: profile,
+        session: session,
+        doubaoAppKey: "speech-app-id"
+    )
 
     _ = try await client.status(jobID: "task-123", bearerToken: "speech-access-key")
+}
+
+@Test func asyncASRMapsOfficialQueueAndProcessingStatusCodes() async throws {
+    let responses = ContractResponseQueue(["20000002", "20000001"])
+    let session = makeContractSession { request in
+        let code = responses.removeFirst()
+        let response = HTTPURLResponse(
+            url: try #require(request.url),
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["X-Api-Status-Code": code]
+        )!
+        return (response, Data(#"{"audio_info":{"duration":0}}"#.utf8))
+    }
+    let client = URLSessionCloudVideoJobClient(
+        profile: .doubaoAsyncASR(),
+        session: session,
+        doubaoAppKey: "speech-app-id"
+    )
+
+    let queued = try await client.status(jobID: "task-123", bearerToken: "speech-access-key")
+    let running = try await client.status(jobID: "task-123", bearerToken: "speech-access-key")
+
+    #expect(queued.state == .queued)
+    #expect(running.state == .running)
 }
 
 @Test func providerHTTPErrorIsSanitizedAtTheTransportBoundary() async throws {
@@ -132,6 +231,15 @@ import VideoUnderstanding
         #expect(!message.contains("raw-token"))
         #expect(message.contains("[REDACTED]"))
     }
+}
+
+@Test func doubaoASRDeclaresProviderCancellationUnsupported() async {
+    let client = URLSessionCloudVideoJobClient(profile: .doubaoAsyncASR())
+
+    await #expect(throws: CloudVideoJobError.cancellationUnsupported) {
+        try await client.cancel(jobID: "job-1", bearerToken: "speech-access-key")
+    }
+}
 }
 
 @Test func unavailableDeepCapabilityDegradesHonestlyToCloudStandard() {
@@ -295,4 +403,19 @@ private final class ContractURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class ContractResponseQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String]
+
+    init(_ values: [String]) {
+        self.values = values
+    }
+
+    func removeFirst() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return values.removeFirst()
+    }
 }

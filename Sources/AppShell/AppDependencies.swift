@@ -514,6 +514,19 @@ public final class AppDependencies {
                                     values: values.domainValues,
                                     lock: true
                                 )
+                            case let .editObservedFact(field, value):
+                                return try StoryboardEditor.editObservedFact(
+                                    document,
+                                    shotID: shotID,
+                                    field: field,
+                                    value: value
+                                )
+                            case let .selectRepresentativeFrames(refs):
+                                return try StoryboardEditor.selectRepresentativeFrames(
+                                    document,
+                                    shotID: shotID,
+                                    artifactRefs: refs
+                                )
                             case .undo, .reanalyze:
                                 throw MemoryClientError.editingUnavailable
                             }

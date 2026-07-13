@@ -58,6 +58,10 @@ public struct MediaTimeRange: Codable, Hashable, Sendable {
     }
 
     public var durationSeconds: Double { endSeconds - startSeconds }
+
+    public func contains(_ seconds: Double) -> Bool {
+        seconds >= startSeconds && seconds < endSeconds
+    }
 }
 
 public struct FrameRange: Codable, Hashable, Sendable {
@@ -289,6 +293,33 @@ public protocol ShotBoundaryDetecting: Sendable {
 
 public protocol ShotKeyframeSelecting: Sendable {
     func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe]
+    func select(
+        in graph: ShotGraph,
+        sourceURL: URL,
+        shotIDs: Set<ShotID>,
+        framesPerShot: Int
+    ) async throws -> [ShotKeyframe]
+}
+
+public extension ShotKeyframeSelecting {
+    func select(
+        in graph: ShotGraph,
+        sourceURL: URL,
+        shotIDs: Set<ShotID>,
+        framesPerShot: Int
+    ) async throws -> [ShotKeyframe] {
+        let selected = try await select(in: graph, sourceURL: sourceURL)
+            .filter { shotIDs.contains($0.shotID) }
+        let limit = min(3, max(1, framesPerShot))
+        return Dictionary(grouping: selected, by: \.shotID)
+            .values
+            .flatMap { $0.sorted { $0.frame.timestampSeconds < $1.frame.timestampSeconds }.prefix(limit) }
+            .sorted {
+                $0.shotID == $1.shotID
+                    ? $0.frame.timestampSeconds < $1.frame.timestampSeconds
+                    : $0.shotID < $1.shotID
+            }
+    }
 }
 
 extension ShotGraph: Codable {

@@ -25,10 +25,17 @@ struct CloudResolverContractTests {
         defaults.set(50, forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB)
         try #require(KeychainStore.set("contract-test-key", for: VisionBackendKeychainAccount.cloudAPIKey))
 
-        let configuration = CloudAIResolver.makeVideoConfiguration(defaults: defaults)
+        let resolved = CloudAIResolver.makeVideoConfiguration(defaults: defaults)
 
-        // A generic OpenAI-compatible endpoint proves only text/image chat. Deep-video routing
-        // requires an explicit provider profile and a real tiny-media capability probe.
-        #expect(configuration == nil)
+        // A generic OpenAI-compatible endpoint proves only text/image chat. The requested mode
+        // remains deep for an auditable resolver decision, but the profile must declare no
+        // full-video job transport and therefore can only degrade to cloudStandard.
+        let configuration = try #require(resolved)
+        #expect(configuration.requestedMode == .cloudDeep)
+        #expect(configuration.profile.transport == .frameChat)
+        #expect(configuration.profile.capabilityURL.path.hasSuffix("/chat/completions"))
+        #expect(configuration.profile.jobURL == configuration.profile.capabilityURL)
+        #expect(!configuration.profile.jobURL.path.contains("/video/jobs"))
+        #expect(configuration.profile.declaredCapabilities == [.frameUnderstanding])
     }
 }

@@ -148,6 +148,23 @@ public struct StoryboardEditReceipt: Sendable {
     public let partialRerun: PartialRerunPlan
 }
 
+private struct PersistedStoryboardEditJournal: Codable, Sendable {
+    var entries: [PersistedStoryboardEditEntry]
+
+    static let empty = PersistedStoryboardEditJournal(entries: [])
+}
+
+private struct PersistedStoryboardEditEntry: Codable, Sendable {
+    let id: String
+    let previousDocument: StoryboardDocumentV2
+    let document: StoryboardDocumentV2
+    let remap: ShotRemap
+    let diff: StoryboardDiff
+    let partialRerun: PartialRerunPlan
+    let previousQualityStatusRaw: String?
+    let createdAt: Date
+}
+
 /// In-app capture intent for the 剪藏 library.
 public enum ClipCaptureInput: Sendable, Equatable {
     case text(String)
@@ -164,7 +181,6 @@ public actor ClipDigestService: ClipDigesting {
     private let videoDirectoryURL: URL?
     private let videoImporter: VideoImporter?
     private let now: @Sendable () -> Date
-    private var storyboardUndoStack: [String: [StoryboardDocumentV2]] = [:]
 
     public init(
         queueStore: ClipQueueStore,
@@ -377,13 +393,25 @@ public actor ClipDigestService: ClipDigesting {
               let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data)
         else { throw ClipDigestServiceError.unsupportedEmptyText("clip \(id) has no V2 storyboard to edit") }
         let result = try transform(document)
-        var stack = storyboardUndoStack[id] ?? []
-        stack.append(result.original)
-        storyboardUndoStack[id] = Array(stack.suffix(20))
+        guard result.original == document else {
+            throw ClipDigestServiceError.retryUnavailable("clip \(id) edit is not based on the current durable storyboard")
+        }
+        var journal = try storyboardJournal(from: snapshot)
+        journal.entries.append(PersistedStoryboardEditEntry(
+            id: UUID().uuidString,
+            previousDocument: document,
+            document: result.document,
+            remap: result.remap,
+            diff: result.diff,
+            partialRerun: result.partialRerun,
+            previousQualityStatusRaw: snapshot.qualityStatusRaw,
+            createdAt: now()
+        ))
+        journal.entries = Array(journal.entries.suffix(20))
         Log.clip.info(
             "Applying storyboard edit to \(id, privacy: .public); affected=\(result.partialRerun.affectedShotIDs.count, privacy: .public), invalidated=\(result.partialRerun.invalidatedStages.map(\.rawValue).joined(separator: ","), privacy: .public)"
         )
-        let legacy = try await persistStoryboard(result.document, snapshot: snapshot)
+        let legacy = try await persistStoryboard(result.document, snapshot: snapshot, journal: journal)
         return StoryboardEditReceipt(
             legacy: legacy,
             document: result.document,
@@ -394,12 +422,18 @@ public actor ClipDigestService: ClipDigesting {
     }
 
     public func undoStoryboard(id: String) async throws -> StoryboardEditReceipt {
-        guard var stack = storyboardUndoStack[id], let document = stack.popLast() else {
+        let snapshot = try await recordStore.snapshot(id: id)
+        var journal = try storyboardJournal(from: snapshot)
+        guard let entry = journal.entries.popLast() else {
             throw ClipDigestServiceError.retryUnavailable("clip \(id) has no storyboard edit to undo")
         }
-        storyboardUndoStack[id] = stack
-        let snapshot = try await recordStore.snapshot(id: id)
-        let legacy = try await persistStoryboard(document, snapshot: snapshot)
+        let document = entry.previousDocument
+        let legacy = try await persistStoryboard(
+            document,
+            snapshot: snapshot,
+            journal: journal,
+            qualityStatusRaw: entry.previousQualityStatusRaw
+        )
         let changed = document.shotGraph.shots.map(\.id)
         return StoryboardEditReceipt(
             legacy: legacy,
@@ -425,31 +459,56 @@ public actor ClipDigestService: ClipDigesting {
         let shotID = document.shotGraph.shots[shotIndex].id
         let source = VideoSource(id: id, localFileURL: sourceURL, importedAt: snapshot.createdAt)
         let refreshed = try await grounded.reanalyzeGrounded(source, document: document, shotIDs: [shotID])
-        var stack = storyboardUndoStack[id] ?? []
-        stack.append(document)
-        storyboardUndoStack[id] = Array(stack.suffix(20))
+        guard Self.partialRerunIsPublishable(before: document, after: refreshed, shotIDs: [shotID]) else {
+            throw ClipDigestServiceError.retryUnavailable("clip \(id) partial storyboard analysis failed semantic quality or user-state preservation")
+        }
+        let qualityStatus = Self.recomputedQualityStatus(for: refreshed)
+        var journal = try storyboardJournal(from: snapshot)
+        let rerun = PartialRerunPlan(
+            affectedShotIDs: [shotID],
+            invalidatedStages: [.shotUnderstanding, .synthesis, .quality, .indexing],
+            preservedLockedFields: Set(refreshed.shots.first(where: { $0.id == shotID })?.userLockedFields.compactMap(EditablePlanField.init(rawValue:)) ?? [])
+        )
+        journal.entries.append(PersistedStoryboardEditEntry(
+            id: UUID().uuidString,
+            previousDocument: document,
+            document: refreshed,
+            remap: ShotRemap(mapping: [:]),
+            diff: StoryboardDiff(changedShotIDs: [shotID]),
+            partialRerun: rerun,
+            previousQualityStatusRaw: snapshot.qualityStatusRaw,
+            createdAt: now()
+        ))
+        journal.entries = Array(journal.entries.suffix(20))
         Log.clip.info("Reanalyzed storyboard shot \(shotID.rawValue, privacy: .public) for \(id, privacy: .public) while preserving user locks")
-        let legacy = try await persistStoryboard(refreshed, snapshot: snapshot)
+        let legacy = try await persistStoryboard(
+            refreshed,
+            snapshot: snapshot,
+            journal: journal,
+            qualityStatusRaw: qualityStatus.rawValue
+        )
         return StoryboardEditReceipt(
             legacy: legacy,
             document: refreshed,
             remap: ShotRemap(mapping: [:]),
             diff: StoryboardDiff(changedShotIDs: [shotID]),
-            partialRerun: PartialRerunPlan(
-                affectedShotIDs: [shotID],
-                invalidatedStages: [.shotUnderstanding, .synthesis, .quality, .indexing],
-                preservedLockedFields: Set(refreshed.shots.first(where: { $0.id == shotID })?.userLockedFields.compactMap(EditablePlanField.init(rawValue:)) ?? [])
-            )
+            partialRerun: rerun
         )
     }
 
     private func persistStoryboard(
         _ updatedDocument: StoryboardDocumentV2,
-        snapshot: ClipRecordSnapshot
+        snapshot: ClipRecordSnapshot,
+        journal: PersistedStoryboardEditJournal? = nil,
+        qualityStatusRaw: String? = nil
     ) async throws -> Script {
         let id = snapshot.id
-        var legacy = StoryboardLegacyProjector.project(updatedDocument)
-        if let context = ScriptCoding.decode(json: snapshot.scriptJSON)?.userContext {
+        let previousScript = ScriptCoding.decode(json: snapshot.scriptJSON)
+        var legacy = StoryboardLegacyProjector.project(
+            updatedDocument,
+            createdAt: previousScript?.createdAt ?? snapshot.createdAt
+        )
+        if let context = previousScript?.userContext {
             legacy = legacy.withUserContext(context)
         }
         guard let legacyJSON = ScriptCoding.encode(legacy) else {
@@ -459,19 +518,71 @@ public actor ClipDigestService: ClipDigesting {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let storyboardJSON = String(decoding: try encoder.encode(updatedDocument), as: UTF8.self)
+        let journalJSON: String?
+        if let journal {
+            journalJSON = String(decoding: try encoder.encode(journal), as: UTF8.self)
+        } else {
+            journalJSON = snapshot.storyboardEditJournalJSON
+        }
         let bodyText = ScriptRendering.indexableText(legacy)
-        try? await indexer.deleteClip(clipID: id)
+        // Retrieval implementations use upsert semantics. Publishing the replacement before the
+        // durable record means an indexing failure cannot destroy the last-good storyboard/journal.
         let result = try await indexer.index(ClipDigestIndexingPayload(
             clipID: id, title: legacy.title, bodyText: bodyText, sourceURL: snapshot.url
         ))
         _ = try await recordStore.markIndexed(
             id: id, title: legacy.title, bodyText: bodyText, indexPreview: result.preview,
             scriptJSON: legacyJSON, storyboardJSON: storyboardJSON,
-            activeRunID: snapshot.activeRunID, qualityStatusRaw: snapshot.qualityStatusRaw,
+            storyboardEditJournalJSON: journalJSON,
+            activeRunID: snapshot.activeRunID, qualityStatusRaw: qualityStatusRaw ?? snapshot.qualityStatusRaw,
             analysisSchemaVersion: snapshot.analysisSchemaVersion, now: now()
         )
         Log.clip.info("Re-indexed authoritative storyboard edit \(id, privacy: .public)")
         return legacy
+    }
+
+    private func storyboardJournal(from snapshot: ClipRecordSnapshot) throws -> PersistedStoryboardEditJournal {
+        guard let json = snapshot.storyboardEditJournalJSON else { return .empty }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(PersistedStoryboardEditJournal.self, from: Data(json.utf8))
+        } catch {
+            throw ClipDigestServiceError.retryUnavailable("clip \(snapshot.id) storyboard edit journal is corrupt")
+        }
+    }
+
+    private static func partialRerunIsPublishable(
+        before: StoryboardDocumentV2,
+        after: StoryboardDocumentV2,
+        shotIDs: [ShotID]
+    ) -> Bool {
+        guard before.shotGraph == after.shotGraph else { return false }
+        for shotID in shotIDs {
+            guard let old = before.shots.first(where: { $0.id == shotID }),
+                  let refreshed = after.shots.first(where: { $0.id == shotID }),
+                  !refreshed.observedFacts.facts.isEmpty,
+                  !refreshed.observedFacts.reviewFlags.contains(where: { $0.hasPrefix("shot-understanding-failed") })
+            else { return false }
+            let oldLocks = old.userLockedFields.union(old.productionPlan?.userLockedFields ?? [])
+            let newLocks = refreshed.userLockedFields.union(refreshed.productionPlan?.userLockedFields ?? [])
+            guard oldLocks.isSubset(of: newLocks) else { return false }
+            let oldUserFacts = old.observedFacts.facts.filter { $0.source == .user }
+            guard oldUserFacts.allSatisfy(refreshed.observedFacts.facts.contains) else { return false }
+        }
+        return true
+    }
+
+    private static func recomputedQualityStatus(for document: StoryboardDocumentV2) -> QualityStatus {
+        if document.shots.contains(where: {
+            $0.observedFacts.reviewFlags.contains(where: { $0.hasPrefix("shot-understanding-failed") })
+        }) {
+            return .failed
+        }
+        if document.shots.contains(where: { $0.observedFacts.facts.isEmpty }) { return .partial }
+        if document.shots.contains(where: { !$0.observedFacts.reviewFlags.isEmpty }) { return .needsReview }
+        if document.source.degradationNote != nil { return .degraded }
+        return .clean
     }
 
     private func digest(_ item: ClipQueueItem) async throws {

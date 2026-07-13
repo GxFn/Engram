@@ -36,6 +36,7 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
         let minimumShotFrames = max(3, Int((asset.nominalFrameRate * 0.25).rounded()))
         var gradualStart: Int?
         var gradualScore = 0.0
+        var suppressedReboundIndex: Int?
 
         for index in 1..<ordered.count {
             let previous = ordered[index - 1]
@@ -44,8 +45,23 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
             let median = Self.median(recent)
             let mad = Self.median(recent.map { abs($0 - median) })
             let threshold = max(0.32, median + max(0.08, mad * 6))
-            let flashOrBlack = current.blackRatio > 0.95 || previous.blackRatio > 0.95
-            if score >= threshold, !flashOrBlack, current.frame - lastBoundary >= minimumShotFrames {
+            let blackFrame = current.blackRatio > 0.95 || previous.blackRatio > 0.95
+            let startsTransientDisturbance = ordered.indices.contains(index + 1)
+                && Self.isTransientDisturbance(
+                    previous: previous,
+                    current: current,
+                    next: ordered[index + 1],
+                    candidateScore: score
+                )
+            if startsTransientDisturbance {
+                // A one-frame flash or motion spike creates a second large delta when the
+                // original scene returns. Neither edge is an authoritative shot boundary.
+                suppressedReboundIndex = index + 1
+            }
+            let transientDisturbance = startsTransientDisturbance || suppressedReboundIndex == index
+            if suppressedReboundIndex == index { suppressedReboundIndex = nil }
+            if score >= threshold, !blackFrame, !transientDisturbance,
+               current.frame - lastBoundary >= minimumShotFrames {
                 boundaries.append((current.frame, min(1, score / max(threshold, 0.001)), .cut))
                 lastBoundary = current.frame
                 gradualStart = nil
@@ -114,6 +130,19 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
             / Double(max(1, min(previous.histogram.count, current.histogram.count)))
         return histogramDelta + abs(previous.luma - current.luma) * 0.6
             + abs(previous.edgeEnergy - current.edgeEnergy) * 0.2
+    }
+
+    private static func isTransientDisturbance(
+        previous: ShotFrameSignal,
+        current: ShotFrameSignal,
+        next: ShotFrameSignal,
+        candidateScore: Double
+    ) -> Bool {
+        guard candidateScore >= 0.32 else { return false }
+        let returnToPrevious = distance(previous, next)
+        let leavesTransientFrame = distance(current, next)
+        return returnToPrevious <= max(0.12, candidateScore * 0.35)
+            && leavesTransientFrame >= candidateScore * 0.55
     }
 }
 
@@ -239,21 +268,66 @@ public struct AVFoundationShotBoundaryDetector: ShotBoundaryDetecting {
 
 public struct AVFoundationShotKeyframeSelector: ShotKeyframeSelecting {
     public init() {}
+
     public func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe] {
+        try await select(
+            in: graph,
+            sourceURL: sourceURL,
+            shotIDs: Set(graph.shots.map(\.id)),
+            framesPerShot: 1
+        )
+    }
+
+    public func select(
+        in graph: ShotGraph,
+        sourceURL: URL,
+        shotIDs: Set<ShotID>,
+        framesPerShot: Int
+    ) async throws -> [ShotKeyframe] {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: sourceURL))
         generator.appliesPreferredTrackTransform = true
-        return try graph.shots.map { shot in
-            let time = (shot.timeRange.startSeconds + shot.timeRange.endSeconds) / 2
-            var actual = CMTime.zero
-            let image = try generator.copyCGImage(at: CMTime(seconds: time, preferredTimescale: 600), actualTime: &actual)
-            let data = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
-                throw VideoUnderstandingError.visionUnavailable("jpeg encoder unavailable")
+        let count = min(3, max(1, framesPerShot))
+        var selected: [ShotKeyframe] = []
+        for shot in graph.shots where shotIDs.contains(shot.id) {
+            let frames = Self.representativeFrames(for: shot, requestedCount: count)
+            for (index, frame) in frames.enumerated() {
+                let time = Double(frame) / graph.asset.nominalFrameRate
+                var actual = CMTime.zero
+                let image = try generator.copyCGImage(
+                    at: CMTime(seconds: time, preferredTimescale: 600),
+                    actualTime: &actual
+                )
+                let data = NSMutableData()
+                guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
+                    throw VideoUnderstandingError.visionUnavailable("jpeg encoder unavailable")
+                }
+                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
+                guard CGImageDestinationFinalize(destination) else {
+                    throw VideoUnderstandingError.visionUnavailable("jpeg encode failed")
+                }
+                selected.append(ShotKeyframe(
+                    shotID: shot.id,
+                    frame: SampledFrame(timestampSeconds: actual.seconds, jpegData: data as Data),
+                    artifactRef: "shots/\(shot.id.rawValue)/representative-\(index + 1).jpg"
+                ))
             }
-            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
-            guard CGImageDestinationFinalize(destination) else { throw VideoUnderstandingError.visionUnavailable("jpeg encode failed") }
-            return ShotKeyframe(shotID: shot.id, frame: SampledFrame(timestampSeconds: actual.seconds, jpegData: data as Data),
-                                artifactRef: "shots/\(shot.id.rawValue)/representative.jpg")
+        }
+        return selected
+    }
+
+    static func representativeFrames(for shot: ShotSegment, requestedCount: Int) -> [Int] {
+        let count = min(3, max(1, requestedCount))
+        let first = shot.frameRange.startFrame
+        let last = max(first, shot.frameRange.endFrameExclusive - 1)
+        let available = last - first + 1
+        let actualCount = min(count, available)
+        guard actualCount > 1 else { return [(first + last) / 2] }
+        let safeInset = available > actualCount + 2 ? 1 : 0
+        let safeFirst = first + safeInset
+        let safeLast = last - safeInset
+        return (0..<actualCount).map { index in
+            let ratio = Double(index) / Double(actualCount - 1)
+            return Int((Double(safeFirst) + Double(safeLast - safeFirst) * ratio).rounded())
         }
     }
 }

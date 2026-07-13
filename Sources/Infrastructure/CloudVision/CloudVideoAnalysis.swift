@@ -7,6 +7,18 @@ public enum CloudCapability: String, Codable, CaseIterable, Hashable, Sendable {
     case fullVideo
     case cloudASR
     case asyncJobs
+    case idempotentSubmit
+    case usageReporting
+    case jobCancellation
+}
+
+public enum CloudProviderTransport: String, Codable, Hashable, Sendable {
+    /// A configured OpenAI-compatible chat endpoint. It proves frame/image chat only.
+    case frameChat
+    /// Doubao recording-file ASR submit/query protocol under openspeech.bytedance.com.
+    case doubaoAsyncASR
+    /// Backward-compatible custom gateway. It must never be inferred from an arbitrary chat URL.
+    case customJSONJob
 }
 
 public struct CloudProviderProfile: Codable, Hashable, Sendable {
@@ -15,19 +27,87 @@ public struct CloudProviderProfile: Codable, Hashable, Sendable {
     public let capabilityURL: URL
     public let jobURL: URL
     public let declaredCapabilities: Set<CloudCapability>
+    public let transport: CloudProviderTransport
 
     public init(
         id: String,
         displayName: String,
         capabilityURL: URL,
         jobURL: URL,
-        declaredCapabilities: Set<CloudCapability>
+        declaredCapabilities: Set<CloudCapability>,
+        transport: CloudProviderTransport? = nil
     ) {
         self.id = id
         self.displayName = displayName
         self.capabilityURL = capabilityURL
         self.jobURL = jobURL
         self.declaredCapabilities = declaredCapabilities
+        self.transport = transport ?? Self.inferTransport(
+            jobURL: jobURL,
+            declaredCapabilities: declaredCapabilities
+        )
+    }
+
+    public static func frameChat(
+        id: String,
+        displayName: String,
+        baseURL: URL
+    ) -> CloudProviderProfile {
+        let endpoint = baseURL.path.hasSuffix("/chat/completions")
+            ? baseURL
+            : baseURL.appendingPathComponent("chat/completions")
+        return CloudProviderProfile(
+            id: id,
+            displayName: displayName,
+            capabilityURL: endpoint,
+            jobURL: endpoint,
+            declaredCapabilities: [.frameUnderstanding],
+            transport: .frameChat
+        )
+    }
+
+    public static func doubaoAsyncASR(
+        id: String = "volcengine-doubao-asr",
+        displayName: String = "Volcengine Doubao asynchronous ASR",
+        submitURL: URL = URL(string: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit")!
+    ) -> CloudProviderProfile {
+        CloudProviderProfile(
+            id: id,
+            displayName: displayName,
+            capabilityURL: submitURL,
+            jobURL: submitURL,
+            declaredCapabilities: [.cloudASR, .asyncJobs, .idempotentSubmit, .usageReporting],
+            transport: .doubaoAsyncASR
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, capabilityURL, jobURL, declaredCapabilities, transport
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        capabilityURL = try container.decode(URL.self, forKey: .capabilityURL)
+        jobURL = try container.decode(URL.self, forKey: .jobURL)
+        declaredCapabilities = try container.decode(Set<CloudCapability>.self, forKey: .declaredCapabilities)
+        transport = try container.decodeIfPresent(CloudProviderTransport.self, forKey: .transport)
+            ?? Self.inferTransport(jobURL: jobURL, declaredCapabilities: declaredCapabilities)
+    }
+
+    private static func inferTransport(
+        jobURL: URL,
+        declaredCapabilities: Set<CloudCapability>
+    ) -> CloudProviderTransport {
+        if jobURL.host == "openspeech.bytedance.com",
+           jobURL.path.contains("/auc/bigmodel/") {
+            return .doubaoAsyncASR
+        }
+        if declaredCapabilities == [.frameUnderstanding] {
+            return .frameChat
+        }
+        return .customJSONJob
     }
 }
 
@@ -69,6 +149,15 @@ public struct HTTPCloudCapabilityProbe: CloudCapabilityProbing {
     }
 
     public func probe(_ profile: CloudProviderProfile) async -> CloudCapabilityProbeResult {
+        if profile.transport == .frameChat {
+            return CloudCapabilityProbeResult(
+                providerID: profile.id,
+                available: [.frameUnderstanding],
+                unavailable: profile.declaredCapabilities.subtracting([.frameUnderstanding]),
+                checkedAt: now(),
+                evidence: "explicit frame-chat profile; deep-video capability not declared"
+            )
+        }
         var request = URLRequest(url: profile.capabilityURL)
         request.httpMethod = "GET"
         request.timeoutInterval = 10
@@ -187,12 +276,42 @@ public struct CloudVideoJobRequest: Codable, Hashable, Sendable {
     public let sourceFingerprint: String
     public let byteCount: Int64
     public let requestedCapabilities: Set<CloudCapability>
+    public let idempotencyKey: String
 
-    public init(sourceID: String, sourceFingerprint: String, byteCount: Int64, requestedCapabilities: Set<CloudCapability>) {
+    public init(
+        sourceID: String,
+        sourceFingerprint: String,
+        byteCount: Int64,
+        requestedCapabilities: Set<CloudCapability>,
+        idempotencyKey: String? = nil
+    ) {
         self.sourceID = sourceID
         self.sourceFingerprint = sourceFingerprint
         self.byteCount = max(0, byteCount)
         self.requestedCapabilities = requestedCapabilities
+        self.idempotencyKey = if let idempotencyKey, !idempotencyKey.isEmpty {
+            idempotencyKey
+        } else {
+            sourceFingerprint
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceID, sourceFingerprint, byteCount, requestedCapabilities, idempotencyKey
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try container.decode(String.self, forKey: .sourceID)
+        sourceFingerprint = try container.decode(String.self, forKey: .sourceFingerprint)
+        byteCount = max(0, try container.decode(Int64.self, forKey: .byteCount))
+        requestedCapabilities = try container.decode(Set<CloudCapability>.self, forKey: .requestedCapabilities)
+        let decodedKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        idempotencyKey = if let decodedKey, !decodedKey.isEmpty {
+            decodedKey
+        } else {
+            sourceFingerprint
+        }
     }
 }
 
@@ -204,16 +323,82 @@ public enum CloudVideoJobState: String, Codable, Hashable, Sendable {
     case cancelled
 }
 
+public struct CloudProviderUsage: Codable, Hashable, Sendable {
+    public let requestCount: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let mediaMilliseconds: Int64
+    public let estimatedUSD: Decimal?
+
+    public init(
+        requestCount: Int = 0,
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        mediaMilliseconds: Int64 = 0,
+        estimatedUSD: Decimal? = nil
+    ) {
+        self.requestCount = max(0, requestCount)
+        self.inputTokens = max(0, inputTokens)
+        self.outputTokens = max(0, outputTokens)
+        self.mediaMilliseconds = max(0, mediaMilliseconds)
+        self.estimatedUSD = estimatedUSD.map { max(0, $0) }
+    }
+
+    public static let zero = CloudProviderUsage()
+}
+
 public struct CloudVideoJobReceipt: Codable, Hashable, Sendable {
     public let jobID: String
     public let state: CloudVideoJobState
     public let observations: [CloudTimelineObservation]
     public let sanitizedError: String?
+    public let idempotencyKey: String?
+    public let usage: CloudProviderUsage
+    public let cancellationSupported: Bool
+
+    public init(
+        jobID: String,
+        state: CloudVideoJobState,
+        observations: [CloudTimelineObservation],
+        sanitizedError: String?,
+        idempotencyKey: String? = nil,
+        usage: CloudProviderUsage = .zero,
+        cancellationSupported: Bool = false
+    ) {
+        self.jobID = jobID
+        self.state = state
+        self.observations = observations
+        self.sanitizedError = sanitizedError.map(CloudErrorSanitizer.sanitize)
+        self.idempotencyKey = idempotencyKey
+        self.usage = usage
+        self.cancellationSupported = cancellationSupported
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case jobID, state, observations, sanitizedError, idempotencyKey, usage, cancellationSupported
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        jobID = try container.decode(String.self, forKey: .jobID)
+        state = try container.decode(CloudVideoJobState.self, forKey: .state)
+        observations = try container.decodeIfPresent([CloudTimelineObservation].self, forKey: .observations) ?? []
+        sanitizedError = try container.decodeIfPresent(String.self, forKey: .sanitizedError)
+            .map(CloudErrorSanitizer.sanitize)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        usage = try container.decodeIfPresent(CloudProviderUsage.self, forKey: .usage) ?? .zero
+        cancellationSupported = try container.decodeIfPresent(Bool.self, forKey: .cancellationSupported) ?? false
+    }
 }
 
 public enum CloudVideoJobError: Error, Hashable, Sendable {
     case uploadNotConsented
     case uploadExceedsConsent
+    case remoteMediaRequired
+    case invalidRemoteMediaURL
+    case missingProviderAppKey
+    case jobTransportUnsupported
+    case cancellationUnsupported
     case invalidResponse(String)
 }
 
@@ -225,6 +410,13 @@ public protocol CloudVideoJobClient: Sendable {
         bearerToken: String
     ) async throws -> CloudVideoJobReceipt
     func status(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt
+    func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt
+}
+
+public extension CloudVideoJobClient {
+    func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt {
+        throw CloudVideoJobError.cancellationUnsupported
+    }
 }
 
 /// Async full-video/cloud-ASR job transport. Callers must probe capabilities and
@@ -232,10 +424,18 @@ public protocol CloudVideoJobClient: Sendable {
 public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
     private let profile: CloudProviderProfile
     private let session: URLSession
+    /// Provider credential supplied at runtime only. It is intentionally absent from the Codable
+    /// profile, checkpoints and diagnostics so an App ID is never persisted as analysis evidence.
+    private let doubaoAppKey: String?
 
-    public init(profile: CloudProviderProfile, session: URLSession = .shared) {
+    public init(
+        profile: CloudProviderProfile,
+        session: URLSession = .shared,
+        doubaoAppKey: String? = nil
+    ) {
         self.profile = profile
         self.session = session
+        self.doubaoAppKey = doubaoAppKey
     }
 
     public func submit(
@@ -248,21 +448,242 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
         guard media.count <= consent.maximumBytes, Int64(media.count) == request.byteCount else {
             throw CloudVideoJobError.uploadExceedsConsent
         }
-        struct Body: Encodable { let request: CloudVideoJobRequest; let mediaBase64: String }
+        if profile.transport == .doubaoAsyncASR {
+            // The standard asynchronous AUC contract accepts an online HTTPS/TOS object URL,
+            // not inline Base64. The flash endpoint has a different synchronous contract and
+            // must not be silently substituted here.
+            throw CloudVideoJobError.remoteMediaRequired
+        }
+        guard profile.transport == .customJSONJob else {
+            throw CloudVideoJobError.jobTransportUnsupported
+        }
         var urlRequest = URLRequest(url: profile.jobURL)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
-        urlRequest.httpBody = try JSONEncoder().encode(Body(request: request, mediaBase64: media.base64EncodedString()))
+        urlRequest.httpBody = try customJobBody(request, media: media)
         return try await execute(urlRequest)
     }
 
+    /// Exact byte count of the custom gateway's JSON payload, including inline Base64 media.
+    public func inlineRequestByteCount(
+        _ request: CloudVideoJobRequest,
+        media: Data
+    ) throws -> Int64 {
+        guard profile.transport == .customJSONJob else {
+            throw CloudVideoJobError.jobTransportUnsupported
+        }
+        return Int64(try customJobBody(request, media: media).count)
+    }
+
+    /// Submit media already staged at an HTTPS URL to the provider's documented async endpoint.
+    /// The URL remains request-local and is never copied into receipts, checkpoints or errors.
+    public func submitRemoteMedia(
+        _ request: CloudVideoJobRequest,
+        mediaURL: URL,
+        consent: MediaUploadConsent,
+        bearerToken: String
+    ) async throws -> CloudVideoJobReceipt {
+        guard consent.allowsUpload else { throw CloudVideoJobError.uploadNotConsented }
+        guard request.byteCount <= consent.maximumBytes else {
+            throw CloudVideoJobError.uploadExceedsConsent
+        }
+        guard mediaURL.scheme?.lowercased() == "https", mediaURL.host != nil else {
+            throw CloudVideoJobError.invalidRemoteMediaURL
+        }
+        guard profile.transport == .doubaoAsyncASR else {
+            throw CloudVideoJobError.invalidResponse("remote-media submit is unsupported for this provider transport")
+        }
+        return try await submitDoubaoASR(request, mediaURL: mediaURL, accessKey: bearerToken)
+    }
+
     public func status(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt {
+        if profile.transport == .doubaoAsyncASR {
+            return try await queryDoubaoASR(jobID: jobID, accessKey: bearerToken)
+        }
+        guard profile.transport == .customJSONJob else {
+            throw CloudVideoJobError.jobTransportUnsupported
+        }
         let safeID = jobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
         var request = URLRequest(url: profile.jobURL.appendingPathComponent(safeID))
         request.httpMethod = "GET"
         request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         return try await execute(request)
+    }
+
+    public func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt {
+        // Doubao recording-file ASR documents submit/query but no provider-side cancellation API.
+        // Do not synthesize DELETE /jobs/{id}; local callers can stop polling and retain the job ID.
+        throw CloudVideoJobError.cancellationUnsupported
+    }
+
+    private func submitDoubaoASR(
+        _ request: CloudVideoJobRequest,
+        mediaURL: URL,
+        accessKey: String
+    ) async throws -> CloudVideoJobReceipt {
+        guard let doubaoAppKey, !doubaoAppKey.isEmpty else {
+            throw CloudVideoJobError.missingProviderAppKey
+        }
+        struct User: Encodable { let uid: String }
+        struct Audio: Encodable { let url: URL }
+        struct RecognitionRequest: Encodable { let modelName = "bigmodel" }
+        struct Body: Encodable {
+            let user: User
+            let audio: Audio
+            let request: RecognitionRequest
+        }
+        var urlRequest = URLRequest(url: doubaoASREndpoint(action: "submit"))
+        urlRequest.httpMethod = "POST"
+        applyDoubaoASRHeaders(
+            to: &urlRequest,
+            appKey: doubaoAppKey,
+            accessKey: accessKey,
+            requestID: request.idempotencyKey,
+            isSubmission: true
+        )
+        urlRequest.httpBody = try JSONEncoder().encode(Body(
+            user: User(uid: doubaoAppKey),
+            audio: Audio(url: mediaURL),
+            request: RecognitionRequest()
+        ))
+        return try await executeDoubaoASR(
+            urlRequest,
+            fallbackJobID: request.idempotencyKey,
+            idempotencyKey: request.idempotencyKey,
+            isSubmission: true
+        )
+    }
+
+    private func customJobBody(_ request: CloudVideoJobRequest, media: Data) throws -> Data {
+        struct Body: Encodable {
+            let request: CloudVideoJobRequest
+            let mediaBase64: String
+        }
+        return try JSONEncoder().encode(Body(
+            request: request,
+            mediaBase64: media.base64EncodedString()
+        ))
+    }
+
+    private func queryDoubaoASR(jobID: String, accessKey: String) async throws -> CloudVideoJobReceipt {
+        guard let doubaoAppKey, !doubaoAppKey.isEmpty else {
+            throw CloudVideoJobError.missingProviderAppKey
+        }
+        var request = URLRequest(url: doubaoASREndpoint(action: "query"))
+        request.httpMethod = "POST"
+        applyDoubaoASRHeaders(
+            to: &request,
+            appKey: doubaoAppKey,
+            accessKey: accessKey,
+            requestID: jobID,
+            isSubmission: false
+        )
+        request.httpBody = Data("{}".utf8)
+        return try await executeDoubaoASR(
+            request,
+            fallbackJobID: jobID,
+            idempotencyKey: jobID,
+            isSubmission: false
+        )
+    }
+
+    private func applyDoubaoASRHeaders(
+        to request: inout URLRequest,
+        appKey: String,
+        accessKey: String,
+        requestID: String,
+        isSubmission: Bool
+    ) {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(appKey, forHTTPHeaderField: "X-Api-App-Key")
+        request.setValue(accessKey, forHTTPHeaderField: "X-Api-Access-Key")
+        request.setValue("volc.bigasr.auc", forHTTPHeaderField: "X-Api-Resource-Id")
+        request.setValue(requestID, forHTTPHeaderField: "X-Api-Request-Id")
+        if isSubmission { request.setValue("-1", forHTTPHeaderField: "X-Api-Sequence") }
+    }
+
+    private func doubaoASREndpoint(action: String) -> URL {
+        let absolute = profile.jobURL.absoluteString
+        for existingAction in ["submit", "query"] where absolute.hasSuffix("/\(existingAction)") {
+            return URL(string: String(absolute.dropLast(existingAction.count)) + action) ?? profile.jobURL
+        }
+        return profile.jobURL.appendingPathComponent(action)
+    }
+
+    private func executeDoubaoASR(
+        _ request: URLRequest,
+        fallbackJobID: String,
+        idempotencyKey: String,
+        isSubmission: Bool
+    ) async throws -> CloudVideoJobReceipt {
+        let (data, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw CloudVideoJobError.invalidResponse(
+                CloudErrorSanitizer.sanitize("HTTP \(status): \(body)")
+            )
+        }
+        if let receipt = try? JSONDecoder().decode(CloudVideoJobReceipt.self, from: data) {
+            return receipt
+        }
+
+        struct AudioInfo: Decodable { let duration: Int64? }
+        struct Utterance: Decodable {
+            let startTime: Int64
+            let endTime: Int64
+            let text: String
+
+            enum CodingKeys: String, CodingKey {
+                case startTime = "start_time"
+                case endTime = "end_time"
+                case text
+            }
+        }
+        struct Result: Decodable { let utterances: [Utterance]? }
+        struct Payload: Decodable {
+            let audioInfo: AudioInfo?
+            let result: Result?
+
+            enum CodingKeys: String, CodingKey {
+                case audioInfo = "audio_info"
+                case result
+            }
+        }
+        let payload = try? JSONDecoder().decode(Payload.self, from: data)
+        let providerCode = http?.value(forHTTPHeaderField: "X-Api-Status-Code")
+        let state: CloudVideoJobState = switch providerCode {
+        case "20000000": isSubmission ? .queued : .completed
+        case "20000001": .running
+        case "20000002": .queued
+        case .none where isSubmission: .queued
+        default: .failed
+        }
+        let observations = (payload?.result?.utterances ?? []).enumerated().map { index, utterance in
+            CloudTimelineObservation(
+                id: "asr-\(index)",
+                startSeconds: Double(utterance.startTime) / 1_000,
+                endSeconds: Double(utterance.endTime) / 1_000,
+                text: utterance.text,
+                confidence: 1,
+                kind: .transcript
+            )
+        }
+        let providerMessage = http?.value(forHTTPHeaderField: "X-Api-Message")
+        return CloudVideoJobReceipt(
+            jobID: fallbackJobID,
+            state: state,
+            observations: observations,
+            sanitizedError: state == .failed ? providerMessage : nil,
+            idempotencyKey: idempotencyKey,
+            usage: CloudProviderUsage(
+                requestCount: 1,
+                mediaMilliseconds: payload?.audioInfo?.duration ?? 0
+            ),
+            cancellationSupported: false
+        )
     }
 
     private func execute(_ request: URLRequest) async throws -> CloudVideoJobReceipt {

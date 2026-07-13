@@ -115,6 +115,26 @@ import VideoUnderstanding
     #expect(!report.isValid)
 }
 
+@Test func validatorRejectsJSONWithMatchingIDButDifferentDocumentContent() throws {
+    let root = exportRoot("json-round-trip")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let document = try exportDocument(shotCount: 1, marker: "json-original")
+    let bundle = try StoryboardExporter().export(
+        document,
+        keyframes: try exportKeyframes(for: document),
+        to: root
+    )
+    let jsonURL = try artifactURL(.json, in: bundle)
+    let original = try String(contentsOf: jsonURL, encoding: .utf8)
+    let tampered = original.replacingOccurrences(of: "五类导出 json-original", with: "五类导出 json-tampered")
+    try tampered.write(to: jsonURL, atomically: true, encoding: .utf8)
+
+    let report = StoryboardExportValidator.validate(bundle, document: document)
+
+    #expect(!report.isValid)
+    #expect(report.issues.contains("invalid-json"))
+}
+
 @Test func validatorRejectsDuplicateReferenceManifestEntries() throws {
     let root = exportRoot("duplicate-manifest")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -155,6 +175,31 @@ import VideoUnderstanding
     let first = try #require(items.first)
     let fileName = try #require(first["fileName"] as? String)
     try Data([0xff, 0xd8, 0x00, 0x00]).write(to: referenceRoot.appendingPathComponent(fileName))
+
+    let report = StoryboardExportValidator.validate(bundle, document: document)
+
+    #expect(!report.isValid)
+    #expect(report.issues.contains("invalid-reference-package"))
+}
+
+@Test func validatorRejectsManifestTimeRangeThatDoesNotMatchAuthoritativeShot() throws {
+    let root = exportRoot("manifest-time-range")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let document = try exportDocument(shotCount: 1, marker: "time-range")
+    let bundle = try StoryboardExporter().export(
+        document,
+        keyframes: try exportKeyframes(for: document),
+        to: root
+    )
+    let manifestURL = try artifactURL(.referenceFramePackage, in: bundle)
+        .appendingPathComponent("manifest.json")
+    let manifestData = try Data(contentsOf: manifestURL)
+    var object = try #require(JSONSerialization.jsonObject(with: manifestData) as? [String: Any])
+    var items = try #require(object["items"] as? [[String: Any]])
+    items[0]["startSeconds"] = -100.0
+    items[0]["endSeconds"] = 100.0
+    object["items"] = items
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: manifestURL)
 
     let report = StoryboardExportValidator.validate(bundle, document: document)
 

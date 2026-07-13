@@ -24,6 +24,46 @@ struct RetrievalServices: Sendable {
 enum RetrievalAssembly {
     static let defaultVideoTranscriptionLocale = Locale(identifier: "zh_CN")
 
+    /// Leaf-only runtime seam used by production black-box tests. It deliberately cannot replace
+    /// `VideoAnalyzing`: RetrievalAssembly still constructs the real orchestrator, artifact store,
+    /// ClipDigest service, persistence and indexer.
+    struct VideoPipelineRuntime: Sendable {
+        let probe: any VideoAssetProbing
+        let detector: any ShotBoundaryDetecting
+        let keyframeSelector: any ShotKeyframeSelecting
+        let transcriber: any Transcriber
+        let corrector: (any TranscriptCorrecting)?
+        let recognizer: any FrameTextRecognizing
+        let understandingProvider: any ShotUnderstandingProviding
+        let pipelineVersion: String
+        let representativeFramesPerShot: Int
+        let runID: @Sendable () -> String
+
+        init(
+            probe: any VideoAssetProbing,
+            detector: any ShotBoundaryDetecting,
+            keyframeSelector: any ShotKeyframeSelecting,
+            transcriber: any Transcriber,
+            corrector: (any TranscriptCorrecting)? = nil,
+            recognizer: any FrameTextRecognizing,
+            understandingProvider: any ShotUnderstandingProviding,
+            pipelineVersion: String,
+            representativeFramesPerShot: Int = 2,
+            runID: @escaping @Sendable () -> String = { UUID().uuidString }
+        ) {
+            self.probe = probe
+            self.detector = detector
+            self.keyframeSelector = keyframeSelector
+            self.transcriber = transcriber
+            self.corrector = corrector
+            self.recognizer = recognizer
+            self.understandingProvider = understandingProvider
+            self.pipelineVersion = pipelineVersion
+            self.representativeFramesPerShot = min(3, max(1, representativeFramesPerShot))
+            self.runID = runID
+        }
+    }
+
     @MainActor
     static func makeServices(
         modelContainer: ModelContainer,
@@ -35,7 +75,8 @@ enum RetrievalAssembly {
         visionGenerator: (any VisionScriptGenerating)? = nil,
         cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
         appGroupLocations: AppGroupLocations? = nil,
-        embeddingEngine: (any EmbeddingEngine)? = nil
+        embeddingEngine: (any EmbeddingEngine)? = nil,
+        videoPipelineRuntime: VideoPipelineRuntime? = nil
     ) throws -> RetrievalServices {
         let locations: AppGroupLocations
         if let appGroupLocations {
@@ -71,7 +112,8 @@ enum RetrievalAssembly {
             generationConfig: generationConfig,
             visionGenerator: visionGenerator,
             cloudVideoConfiguration: cloudVideoConfiguration,
-            artifactRoot: locations.rootDirectory.appendingPathComponent("analysis-artifacts", isDirectory: true)
+            artifactRoot: locations.rootDirectory.appendingPathComponent("analysis-artifacts", isDirectory: true),
+            runtime: videoPipelineRuntime
         )
         let digestService = try ClipDigestService.live(
             modelContainer: modelContainer,
@@ -92,8 +134,25 @@ enum RetrievalAssembly {
         generationConfig: GenerationConfig,
         visionGenerator: (any VisionScriptGenerating)? = nil,
         cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
-        artifactRoot: URL
+        artifactRoot: URL,
+        runtime: VideoPipelineRuntime? = nil
     ) throws -> any VideoAnalyzing {
+        if let runtime {
+            return EvidenceGroundedVideoAnalyzer(
+                probe: runtime.probe,
+                detector: runtime.detector,
+                keyframeSelector: runtime.keyframeSelector,
+                transcriber: runtime.transcriber,
+                corrector: runtime.corrector,
+                recognizer: runtime.recognizer,
+                understandingProvider: runtime.understandingProvider,
+                cloudEnricher: cloudVideoConfiguration.map(ConfiguredCloudStoryboardEnricher.init),
+                artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
+                pipelineVersion: runtime.pipelineVersion,
+                representativeFramesPerShot: runtime.representativeFramesPerShot,
+                runID: runtime.runID
+            )
+        }
         let textConfiguration = ScriptComposerConfiguration(
             maxKeyframeCount: 0,
             generationConfig: generationConfig
@@ -139,7 +198,8 @@ enum RetrievalAssembly {
             ),
             cloudEnricher: cloudVideoConfiguration.map(ConfiguredCloudStoryboardEnricher.init),
             artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
-            pipelineVersion: "storyboard-v2.1"
+            pipelineVersion: "storyboard-v2.1",
+            representativeFramesPerShot: 2
         )
     }
 }
@@ -174,12 +234,15 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
         )
         guard decision.effectiveMode == .cloudDeep, decision.mediaUploadAllowed else {
             return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                requestedCloudMode: decision.requestedMode,
                 cloudMode: decision.effectiveMode,
                 mediaUploaded: false,
                 degradationNote: decision.degradationNote
             ))
         }
         var hasSubmittedJob = false
+        var requestBytes: Int64?
+        var activeJobID: String?
         do {
             let client = URLSessionCloudVideoJobClient(profile: configuration.profile)
             var receipt: CloudVideoJobReceipt
@@ -187,10 +250,12 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
                resume.providerID == configuration.profile.id,
                resume.sourceFingerprint == asset.fingerprint.value {
                 hasSubmittedJob = true
+                activeJobID = resume.jobID
                 receipt = try await client.status(jobID: resume.jobID, bearerToken: configuration.bearerToken)
             } else {
                 guard await configuration.consumeUploadConsent() else {
                     return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                        requestedCloudMode: decision.requestedMode,
                         cloudMode: .cloudStandard,
                         mediaUploaded: false,
                         degradationNote: "full-video upload consent was already consumed; enable it again for this video"
@@ -203,6 +268,7 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
                     byteCount: Int64(media.count),
                     requestedCapabilities: [.fullVideo, .cloudASR]
                 )
+                requestBytes = try client.inlineRequestByteCount(request, media: media)
                 receipt = try await client.submit(
                     request,
                     media: media,
@@ -210,6 +276,7 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
                     bearerToken: configuration.bearerToken
                 )
                 hasSubmittedJob = true
+                activeJobID = receipt.jobID
                 try await checkpoint(Self.checkpoint(receipt, configuration: configuration, asset: asset))
             }
             var polls = 0
@@ -225,35 +292,69 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
             }
             guard receipt.state == .completed else {
                 return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                    requestedCloudMode: decision.requestedMode,
                     cloudMode: .cloudStandard,
                     mediaUploaded: true,
+                    mediaBytesUploaded: asset.fileSizeBytes,
+                    requestBytes: requestBytes,
+                    requestCount: receipt.usage.requestCount,
+                    inputTokens: receipt.usage.inputTokens,
+                    outputTokens: receipt.usage.outputTokens,
+                    mediaMilliseconds: receipt.usage.mediaMilliseconds,
+                    estimatedUSD: receipt.usage.estimatedUSD,
+                    sanitizedError: receipt.sanitizedError,
                     degradationNote: "cloudDeep job \(receipt.state.rawValue) and degraded to cloudStandard: \(CloudErrorSanitizer.sanitize(receipt.sanitizedError ?? "provider returned no detail"))"
                 ))
             }
             let alignment = CloudTimelineAligner.align(receipt.observations, to: graph)
+            let refinement = CloudRefinementPlanner.plan(alignment)
             let summary = receipt.observations
                 .filter { $0.kind == .visual }
                 .map(\.text)
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
             return CloudStoryboardEnrichment(
-                context: StoryboardExecutionContext(cloudMode: .cloudDeep, mediaUploaded: true),
+                context: StoryboardExecutionContext(
+                    requestedCloudMode: decision.requestedMode,
+                    cloudMode: .cloudDeep,
+                    mediaUploaded: true,
+                    mediaBytesUploaded: asset.fileSizeBytes,
+                    requestBytes: requestBytes,
+                    requestCount: receipt.usage.requestCount,
+                    inputTokens: receipt.usage.inputTokens,
+                    outputTokens: receipt.usage.outputTokens,
+                    mediaMilliseconds: receipt.usage.mediaMilliseconds,
+                    estimatedUSD: receipt.usage.estimatedUSD,
+                    refinementShotIDs: refinement.shotIDs
+                ),
                 evidence: alignment.items.map(\.evidence),
-                shotsNeedingReview: alignment.shotsNeedingReview,
+                shotsNeedingReview: refinement.shotIDs,
                 globalSummary: summary.isEmpty ? nil : summary
             )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            let sanitized = CloudErrorSanitizer.sanitize(String(describing: error))
             if hasSubmittedJob {
+                if let activeJobID {
+                    try? await checkpoint(CloudVideoJobCheckpoint(
+                        providerID: configuration.profile.id,
+                        sourceFingerprint: asset.fingerprint.value,
+                        jobID: activeJobID,
+                        state: "transport-error",
+                        sanitizedError: sanitized
+                    ))
+                }
                 throw VideoUnderstandingError.visionUnavailable(
-                    "cloud video job is checkpointed for resume: \(CloudErrorSanitizer.sanitize(String(describing: error)))"
+                    "cloud video job is checkpointed for resume: \(sanitized)"
                 )
             }
             return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                requestedCloudMode: decision.requestedMode,
                 cloudMode: .cloudStandard,
                 mediaUploaded: false,
-                degradationNote: "cloudDeep failed after probe and degraded to cloudStandard: \(CloudErrorSanitizer.sanitize(String(describing: error)))"
+                sanitizedError: sanitized,
+                degradationNote: "cloudDeep failed after probe and degraded to cloudStandard: \(sanitized)"
             ))
         }
     }
@@ -267,7 +368,8 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
             providerID: configuration.profile.id,
             sourceFingerprint: asset.fingerprint.value,
             jobID: receipt.jobID,
-            state: receipt.state.rawValue
+            state: receipt.state.rawValue,
+            sanitizedError: receipt.sanitizedError
         )
     }
 }

@@ -21,6 +21,7 @@ public struct StoryboardSource: Codable, Hashable, Sendable {
     public let mode: StoryboardMode
     public let actualCloudMode: EffectiveCloudMode
     public let mediaUploaded: Bool
+    public let cloudTelemetry: AnalysisCloudTelemetry?
     public let degradationNote: String?
 
     public init(
@@ -31,6 +32,7 @@ public struct StoryboardSource: Codable, Hashable, Sendable {
         mode: StoryboardMode,
         actualCloudMode: EffectiveCloudMode,
         mediaUploaded: Bool,
+        cloudTelemetry: AnalysisCloudTelemetry? = nil,
         degradationNote: String? = nil
     ) {
         self.sourceID = sourceID
@@ -40,11 +42,12 @@ public struct StoryboardSource: Codable, Hashable, Sendable {
         self.mode = mode
         self.actualCloudMode = actualCloudMode
         self.mediaUploaded = mediaUploaded
+        self.cloudTelemetry = cloudTelemetry
         self.degradationNote = degradationNote
     }
 }
 
-public enum FactField: String, Codable, Hashable, Sendable {
+public enum FactField: String, Codable, CaseIterable, Hashable, Sendable {
     case subject
     case character
     case action
@@ -331,7 +334,7 @@ public enum StoryboardValidator {
     public static func validate(document: StoryboardDocumentV2, evidence: [EvidenceRef]) -> QualityReport {
         let graphIDs = Set(document.shotGraph.shots.map(\.id))
         let documentIDs = Set(document.shots.map(\.id))
-        let evidenceIDs = Set(evidence.map(\.id))
+        let evidenceByID = Dictionary(grouping: evidence, by: \.id)
         var issues: [QualityIssue] = []
         var machineFactCount = 0
         var groundedMachineFactCount = 0
@@ -353,18 +356,73 @@ public enum StoryboardValidator {
             ))
         }
         for shot in document.shots {
+            let segment = document.shotGraph.shots.first { $0.id == shot.id }
+            if shot.observedFacts.facts.isEmpty,
+               shot.observedFacts.reviewFlags.contains(where: { $0.hasPrefix("shot-understanding-failed") }) {
+                issues.append(QualityIssue(
+                    code: "factless-failed-shot",
+                    severity: .error,
+                    shotID: shot.id,
+                    detail: "A failed shot-understanding result cannot pass as a clean factless shot."
+                ))
+            }
             for fact in shot.observedFacts.facts where fact.source != .user {
                 machineFactCount += 1
-                let linksAreValid = !fact.evidenceIDs.isEmpty && fact.evidenceIDs.allSatisfy(evidenceIDs.contains)
-                if linksAreValid {
-                    groundedMachineFactCount += 1
-                } else {
+                let linked = fact.evidenceIDs.flatMap { evidenceByID[$0] ?? [] }
+                let linksResolve = !fact.evidenceIDs.isEmpty
+                    && fact.evidenceIDs.allSatisfy { evidenceByID[$0]?.count == 1 }
+                if !linksResolve {
                     issues.append(QualityIssue(
                         code: "unsupported-machine-fact",
                         severity: .error,
                         shotID: shot.id,
-                        detail: "Machine facts require resolvable evidence links."
+                        detail: "Machine facts require unique, resolvable evidence links."
                     ))
+                    continue
+                }
+
+                let allowedKinds = allowedEvidenceKinds(for: fact.field)
+                let kindMatches = !linked.isEmpty && linked.allSatisfy { allowedKinds.contains($0.kind) }
+                if !kindMatches {
+                    issues.append(QualityIssue(
+                        code: "evidence-kind-mismatch",
+                        severity: .error,
+                        shotID: shot.id,
+                        detail: "Evidence kind does not support \(fact.field.rawValue)."
+                    ))
+                }
+                let overlapsShot = segment.map { owningShot in
+                    linked.allSatisfy { overlaps($0, owningShot) }
+                } ?? false
+                if !overlapsShot {
+                    issues.append(QualityIssue(
+                        code: "evidence-outside-shot",
+                        severity: .error,
+                        shotID: shot.id,
+                        detail: "Fact evidence must overlap its owning shot."
+                    ))
+                }
+                let payloadsValid = linked.allSatisfy { isSafePayloadReference($0.payloadRef) }
+                if !payloadsValid {
+                    issues.append(QualityIssue(
+                        code: "invalid-evidence-payload",
+                        severity: .error,
+                        shotID: shot.id,
+                        detail: "Evidence payload references must be non-empty workspace-relative paths."
+                    ))
+                }
+                let textMatches = textEvidenceMatches(fact: fact, evidence: linked)
+                if !textMatches {
+                    issues.append(QualityIssue(
+                        code: "evidence-text-mismatch",
+                        severity: .error,
+                        shotID: shot.id,
+                        detail: "OCR/ASR-backed facts must be verifiable against raw or corrected evidence text."
+                    ))
+                }
+
+                if kindMatches, overlapsShot, payloadsValid, textMatches {
+                    groundedMachineFactCount += 1
                 }
             }
             if let plan = shot.productionPlan {
@@ -403,5 +461,52 @@ public enum StoryboardValidator {
             machineFactCount: machineFactCount,
             groundedMachineFactCount: groundedMachineFactCount
         )
+    }
+
+    private static func allowedEvidenceKinds(for field: FactField) -> Set<EvidenceKind> {
+        switch field {
+        case .visibleText:
+            return [.ocr]
+        case .audioSummary, .musicCue, .soundEffect:
+            return [.transcript, .audio]
+        default:
+            return [.frame, .ocr, .cloudTimeline]
+        }
+    }
+
+    private static func overlaps(_ evidence: EvidenceRef, _ shot: ShotSegment) -> Bool {
+        let timeOverlap = min(evidence.timeRange.endSeconds, shot.timeRange.endSeconds)
+            - max(evidence.timeRange.startSeconds, shot.timeRange.startSeconds)
+        if timeOverlap > 0 { return true }
+        guard let evidenceFrames = evidence.frameRange else { return false }
+        return min(evidenceFrames.endFrameExclusive, shot.frameRange.endFrameExclusive)
+            - max(evidenceFrames.startFrame, shot.frameRange.startFrame) > 0
+    }
+
+    private static func isSafePayloadReference(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              !normalized.hasPrefix("/"),
+              !normalized.contains(".."),
+              URL(string: normalized)?.scheme == nil
+        else { return false }
+        return true
+    }
+
+    private static func textEvidenceMatches(fact: GroundedFact, evidence: [EvidenceRef]) -> Bool {
+        guard fact.field == .visibleText || fact.field == .audioSummary else { return true }
+        let expected = normalizedText(fact.value)
+        guard !expected.isEmpty else { return false }
+        return evidence.contains { item in
+            let values = [item.rawText, item.correctedText].compactMap { $0 }.map(normalizedText)
+            return values.contains { !$0.isEmpty && ($0.contains(expected) || expected.contains($0)) }
+        }
+    }
+
+    private static func normalizedText(_ value: String) -> String {
+        value.lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }

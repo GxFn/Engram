@@ -103,16 +103,18 @@ enum CloudAIResolver {
               let (baseURL, apiKey) = credentials(defaults: defaults)
         else { return nil }
         let mode = defaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
+        // A generic OpenAI-compatible or Ark /api/v3 endpoint proves frame/image chat only.
+        // Keep the user's deep request in the decision record, but expose only this honest
+        // frame-chat profile so the resolver visibly degrades to cloudStandard without ever
+        // manufacturing provider video routes from the chat base URL.
         let maximumMB = max(1, defaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200)
-        let uploadEnabled = defaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false
+        let uploadEnabled = false
         let gate = OneShotUploadConsentGate(enabled: uploadEnabled)
         nonisolated(unsafe) let capturedDefaults = defaults
-        let profile = CloudProviderProfile(
+        let profile = CloudProviderProfile.frameChat(
             id: baseURL.host ?? "configured-cloud",
             displayName: baseURL.host ?? "Configured cloud video provider",
-            capabilityURL: baseURL.appendingPathComponent("capabilities/video"),
-            jobURL: baseURL.appendingPathComponent("video/jobs"),
-            declaredCapabilities: Set(CloudCapability.allCases)
+            baseURL: baseURL
         )
         return VideoConfiguration(
             profile: profile,

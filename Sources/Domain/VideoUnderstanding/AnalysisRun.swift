@@ -46,6 +46,48 @@ public struct ArtifactCheckpoint: Codable, Hashable, Sendable {
     }
 }
 
+/// Durable, provider-neutral accounting for one cloud execution. Optional values mean the
+/// selected provider did not report that dimension; they must not be replaced with invented 0s.
+public struct AnalysisCloudTelemetry: Codable, Hashable, Sendable {
+    public let requestedMode: String
+    public let effectiveMode: String
+    public let mediaBytesUploaded: Int64?
+    public let requestBytes: Int64?
+    public let requestCount: Int?
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let mediaMilliseconds: Int64?
+    public let estimatedUSD: Decimal?
+    public let sanitizedError: String?
+    public let refinementShotIDs: [String]
+
+    public init(
+        requestedMode: String,
+        effectiveMode: String,
+        mediaBytesUploaded: Int64? = nil,
+        requestBytes: Int64? = nil,
+        requestCount: Int? = nil,
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil,
+        mediaMilliseconds: Int64? = nil,
+        estimatedUSD: Decimal? = nil,
+        sanitizedError: String? = nil,
+        refinementShotIDs: [String] = []
+    ) {
+        self.requestedMode = requestedMode
+        self.effectiveMode = effectiveMode
+        self.mediaBytesUploaded = mediaBytesUploaded
+        self.requestBytes = requestBytes
+        self.requestCount = requestCount
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.mediaMilliseconds = mediaMilliseconds
+        self.estimatedUSD = estimatedUSD
+        self.sanitizedError = sanitizedError
+        self.refinementShotIDs = refinementShotIDs
+    }
+}
+
 public struct AnalysisRun: Codable, Hashable, Sendable, Identifiable {
     public let id: String
     public let clipID: String
@@ -61,6 +103,7 @@ public struct AnalysisRun: Codable, Hashable, Sendable, Identifiable {
     public let retryCount: Int
     public let mediaBytesUploaded: Int64
     public let degradationNotes: [String]
+    public let cloudTelemetry: AnalysisCloudTelemetry?
 
     public init(
         id: String,
@@ -76,7 +119,8 @@ public struct AnalysisRun: Codable, Hashable, Sendable, Identifiable {
         updatedAt: Date,
         retryCount: Int = 0,
         mediaBytesUploaded: Int64 = 0,
-        degradationNotes: [String] = []
+        degradationNotes: [String] = [],
+        cloudTelemetry: AnalysisCloudTelemetry? = nil
     ) {
         self.id = id
         self.clipID = clipID
@@ -92,5 +136,6 @@ public struct AnalysisRun: Codable, Hashable, Sendable, Identifiable {
         self.retryCount = retryCount
         self.mediaBytesUploaded = mediaBytesUploaded
         self.degradationNotes = degradationNotes
+        self.cloudTelemetry = cloudTelemetry
     }
 }

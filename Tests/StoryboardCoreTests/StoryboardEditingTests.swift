@@ -48,6 +48,31 @@ import VideoUnderstanding
     #expect(result.undo() == original)
 }
 
+@Test func observedFactCorrectionAndRepresentativeFramesAreUndoableScopedEdits() throws {
+    let original = try editableDocument()
+    let shotID = ShotID(rawValue: "S001")
+
+    let factEdit = try StoryboardEditor.editObservedFact(
+        original,
+        shotID: shotID,
+        field: .action,
+        value: "用户核对后的动作"
+    )
+    #expect(factEdit.document.shots[0].observedFacts.facts.first?.source == .user)
+    #expect(factEdit.document.shots[0].observedFacts.facts.first?.value == "用户核对后的动作")
+    #expect(factEdit.partialRerun.invalidatedStages == [.synthesis, .quality, .indexing])
+    #expect(factEdit.undo() == original)
+
+    let frameEdit = try StoryboardEditor.selectRepresentativeFrames(
+        factEdit.document,
+        shotID: shotID,
+        artifactRefs: ["frame-c.jpg", "frame-a.jpg", "frame-a.jpg", "frame-b.jpg", "frame-d.jpg"]
+    )
+    #expect(frameEdit.document.shotGraph.shots[0].representativeFrameRefs == ["frame-c.jpg", "frame-a.jpg", "frame-b.jpg"])
+    #expect(frameEdit.partialRerun.affectedShotIDs == [shotID])
+    #expect(frameEdit.partialRerun.invalidatedStages.contains(.shotUnderstanding))
+}
+
 private func twoShotEditableDocument() throws -> StoryboardDocumentV2 {
     let original = try editableDocument()
     return try StoryboardEditor.split(

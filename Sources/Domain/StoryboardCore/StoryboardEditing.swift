@@ -99,7 +99,8 @@ public enum StoryboardEditor {
             transitionIn: first.transitionIn,
             transitionOut: first.transitionOut,
             boundaryConfidence: first.boundaryConfidence,
-            detectorEvidenceIDs: first.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"]
+            detectorEvidenceIDs: first.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"],
+            representativeFrameRefs: first.representativeFrameRefs
         )
         let movedSecond = ShotSegment(
             id: second.id,
@@ -108,7 +109,8 @@ public enum StoryboardEditor {
             transitionIn: second.transitionIn,
             transitionOut: second.transitionOut,
             boundaryConfidence: second.boundaryConfidence,
-            detectorEvidenceIDs: second.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"]
+            detectorEvidenceIDs: second.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"],
+            representativeFrameRefs: second.representativeFrameRefs
         )
         var segments = document.shotGraph.shots
         segments[index] = movedFirst
@@ -144,7 +146,8 @@ public enum StoryboardEditor {
             frameRange: FrameRange(startFrame: old.frameRange.startFrame, endFrameExclusive: frame),
             transitionIn: old.transitionIn, transitionOut: .cut,
             boundaryConfidence: old.boundaryConfidence,
-            detectorEvidenceIDs: old.detectorEvidenceIDs + ["user-split:\(shotID.rawValue)"]
+            detectorEvidenceIDs: old.detectorEvidenceIDs + ["user-split:\(shotID.rawValue)"],
+            representativeFrameRefs: old.representativeFrameRefs
         )
         let second = ShotSegment(
             id: secondID,
@@ -152,7 +155,8 @@ public enum StoryboardEditor {
             frameRange: FrameRange(startFrame: frame, endFrameExclusive: old.frameRange.endFrameExclusive),
             transitionIn: .cut, transitionOut: old.transitionOut,
             boundaryConfidence: old.boundaryConfidence,
-            detectorEvidenceIDs: old.detectorEvidenceIDs + ["user-split:\(shotID.rawValue)"]
+            detectorEvidenceIDs: old.detectorEvidenceIDs + ["user-split:\(shotID.rawValue)"],
+            representativeFrameRefs: old.representativeFrameRefs
         )
         var segments = document.shotGraph.shots
         segments.replaceSubrange(graphIndex...graphIndex, with: [first, second])
@@ -195,7 +199,8 @@ public enum StoryboardEditor {
             frameRange: FrameRange(startFrame: first.frameRange.startFrame, endFrameExclusive: second.frameRange.endFrameExclusive),
             transitionIn: first.transitionIn, transitionOut: second.transitionOut,
             boundaryConfidence: min(first.boundaryConfidence, second.boundaryConfidence),
-            detectorEvidenceIDs: Array(Set(first.detectorEvidenceIDs + second.detectorEvidenceIDs)).sorted()
+            detectorEvidenceIDs: Array(Set(first.detectorEvidenceIDs + second.detectorEvidenceIDs)).sorted(),
+            representativeFrameRefs: Array(Set(first.representativeFrameRefs + second.representativeFrameRefs)).sorted()
         )
         var segments = document.shotGraph.shots
         segments.replaceSubrange(firstIndex...(firstIndex + 1), with: [merged])
@@ -248,6 +253,98 @@ public enum StoryboardEditor {
         values: [EditablePlanField: String?]
     ) throws -> StoryboardEditResult {
         try update(document, shotID: shotID, values: values, lock: false, provenance: .model)
+    }
+
+    /// Replaces one observed-fact field with an explicit user correction. Existing evidence links
+    /// are retained as audit context, while `.user` provenance prevents model refresh from
+    /// silently overwriting the correction.
+    public static func editObservedFact(
+        _ document: StoryboardDocumentV2,
+        shotID: ShotID,
+        field: FactField,
+        value: String?
+    ) throws -> StoryboardEditResult {
+        guard let index = document.shots.firstIndex(where: { $0.id == shotID }) else {
+            throw StoryboardEditingError.shotNotFound(shotID)
+        }
+        let shot = document.shots[index]
+        let retainedEvidence = shot.observedFacts.facts
+            .filter { $0.field == field }
+            .flatMap(\.evidenceIDs)
+            .uniqueSorted
+        var facts = shot.observedFacts.facts.filter { $0.field != field }
+        if let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines), !normalized.isEmpty {
+            facts.append(GroundedFact(
+                field: field,
+                value: normalized,
+                evidenceIDs: retainedEvidence,
+                source: .user,
+                confidence: 1
+            ))
+        }
+        let observed = ObservedShotFacts(
+            facts: facts,
+            unknownFields: shot.observedFacts.unknownFields.filter { $0 != field },
+            modelConfidence: shot.observedFacts.modelConfidence,
+            reviewFlags: shot.observedFacts.reviewFlags
+        )
+        var shots = document.shots
+        shots[index] = StoryboardShotV2(
+            id: shot.id,
+            observedFacts: observed,
+            productionPlan: shot.productionPlan,
+            userLockedFields: shot.userLockedFields
+        )
+        let updated = rebuilt(document, graph: document.shotGraph, shots: shots, remap: ShotRemap(mapping: [:]))
+        return StoryboardEditResult(
+            original: document,
+            document: updated,
+            remap: ShotRemap(mapping: [:]),
+            diff: StoryboardDiff(changedShotIDs: [shotID]),
+            partialRerun: PartialRerunPlan(
+                affectedShotIDs: [shotID],
+                invalidatedStages: [.synthesis, .quality, .indexing],
+                preservedLockedFields: Set(shot.userLockedFields.compactMap(EditablePlanField.init(rawValue:)))
+            )
+        )
+    }
+
+    /// Persists the user's authoritative 1–3 representative-frame selection for one shot.
+    public static func selectRepresentativeFrames(
+        _ document: StoryboardDocumentV2,
+        shotID: ShotID,
+        artifactRefs: [String]
+    ) throws -> StoryboardEditResult {
+        let refs = Array(artifactRefs.filter { !$0.isEmpty }.unique.prefix(3))
+        guard !refs.isEmpty else { throw StoryboardEditingError.invalidSplitPoint }
+        guard let graphIndex = document.shotGraph.shots.firstIndex(where: { $0.id == shotID }) else {
+            throw StoryboardEditingError.shotNotFound(shotID)
+        }
+        let segment = document.shotGraph.shots[graphIndex]
+        var segments = document.shotGraph.shots
+        segments[graphIndex] = ShotSegment(
+            id: segment.id,
+            timeRange: segment.timeRange,
+            frameRange: segment.frameRange,
+            transitionIn: segment.transitionIn,
+            transitionOut: segment.transitionOut,
+            boundaryConfidence: segment.boundaryConfidence,
+            detectorEvidenceIDs: segment.detectorEvidenceIDs,
+            representativeFrameRefs: refs
+        )
+        let graph = try ShotGraph(asset: document.shotGraph.asset, shots: segments)
+        let updated = rebuilt(document, graph: graph, shots: document.shots, remap: ShotRemap(mapping: [:]))
+        return StoryboardEditResult(
+            original: document,
+            document: updated,
+            remap: ShotRemap(mapping: [:]),
+            diff: StoryboardDiff(changedShotIDs: [shotID]),
+            partialRerun: PartialRerunPlan(
+                affectedShotIDs: [shotID],
+                invalidatedStages: [.evidenceAssembly, .shotUnderstanding, .synthesis, .quality, .indexing],
+                preservedLockedFields: Set(document.shots.flatMap(\.userLockedFields).compactMap(EditablePlanField.init(rawValue:)))
+            )
+        )
     }
 
     private static func update(
@@ -371,5 +468,16 @@ public enum StoryboardEditor {
             userLockedFields: userLockedFields ?? plan.userLockedFields,
             isDerivedCreativePlan: plan.isDerivedCreativePlan
         )
+    }
+}
+
+private extension Array where Element == EvidenceID {
+    var uniqueSorted: [EvidenceID] { Array(Set(self)).sorted() }
+}
+
+private extension Array where Element == String {
+    var unique: [String] {
+        var seen = Set<String>()
+        return filter { seen.insert($0).inserted }
     }
 }

@@ -14,17 +14,91 @@ public struct EvidenceGroundedAnalysis: Sendable {
 }
 
 public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
+    public let requestedCloudMode: EffectiveCloudMode
     public let cloudMode: EffectiveCloudMode
     public let mediaUploaded: Bool
+    public let mediaBytesUploaded: Int64?
+    public let requestBytes: Int64?
+    public let requestCount: Int?
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let mediaMilliseconds: Int64?
+    public let estimatedUSD: Decimal?
+    public let sanitizedError: String?
+    public let refinementShotIDs: [ShotID]
     public let degradationNote: String?
 
-    public init(cloudMode: EffectiveCloudMode, mediaUploaded: Bool, degradationNote: String? = nil) {
+    public init(
+        requestedCloudMode: EffectiveCloudMode? = nil,
+        cloudMode: EffectiveCloudMode,
+        mediaUploaded: Bool,
+        mediaBytesUploaded: Int64? = nil,
+        requestBytes: Int64? = nil,
+        requestCount: Int? = nil,
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil,
+        mediaMilliseconds: Int64? = nil,
+        estimatedUSD: Decimal? = nil,
+        sanitizedError: String? = nil,
+        refinementShotIDs: [ShotID] = [],
+        degradationNote: String? = nil
+    ) {
+        self.requestedCloudMode = requestedCloudMode ?? cloudMode
         self.cloudMode = cloudMode
         self.mediaUploaded = mediaUploaded
+        self.mediaBytesUploaded = mediaBytesUploaded
+        self.requestBytes = requestBytes
+        self.requestCount = requestCount
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.mediaMilliseconds = mediaMilliseconds
+        self.estimatedUSD = estimatedUSD
+        self.sanitizedError = sanitizedError
+        self.refinementShotIDs = refinementShotIDs
         self.degradationNote = degradationNote
     }
 
     public static let local = StoryboardExecutionContext(cloudMode: .local, mediaUploaded: false)
+
+    private enum CodingKeys: String, CodingKey {
+        case requestedCloudMode, cloudMode, mediaUploaded, mediaBytesUploaded, requestBytes
+        case requestCount, inputTokens, outputTokens, mediaMilliseconds, estimatedUSD
+        case sanitizedError, refinementShotIDs, degradationNote
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let effective = try container.decode(EffectiveCloudMode.self, forKey: .cloudMode)
+        requestedCloudMode = try container.decodeIfPresent(EffectiveCloudMode.self, forKey: .requestedCloudMode) ?? effective
+        cloudMode = effective
+        mediaUploaded = try container.decode(Bool.self, forKey: .mediaUploaded)
+        mediaBytesUploaded = try container.decodeIfPresent(Int64.self, forKey: .mediaBytesUploaded)
+        requestBytes = try container.decodeIfPresent(Int64.self, forKey: .requestBytes)
+        requestCount = try container.decodeIfPresent(Int.self, forKey: .requestCount)
+        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens)
+        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens)
+        mediaMilliseconds = try container.decodeIfPresent(Int64.self, forKey: .mediaMilliseconds)
+        estimatedUSD = try container.decodeIfPresent(Decimal.self, forKey: .estimatedUSD)
+        sanitizedError = try container.decodeIfPresent(String.self, forKey: .sanitizedError)
+        refinementShotIDs = try container.decodeIfPresent([ShotID].self, forKey: .refinementShotIDs) ?? []
+        degradationNote = try container.decodeIfPresent(String.self, forKey: .degradationNote)
+    }
+
+    var telemetry: AnalysisCloudTelemetry {
+        AnalysisCloudTelemetry(
+            requestedMode: requestedCloudMode.rawValue,
+            effectiveMode: cloudMode.rawValue,
+            mediaBytesUploaded: mediaBytesUploaded,
+            requestBytes: requestBytes,
+            requestCount: requestCount,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            mediaMilliseconds: mediaMilliseconds,
+            estimatedUSD: estimatedUSD,
+            sanitizedError: sanitizedError,
+            refinementShotIDs: refinementShotIDs.map(\.rawValue)
+        )
+    }
 }
 
 public struct ShotUnderstandingInput: Sendable {
@@ -96,6 +170,7 @@ public struct VisionComposerShotUnderstandingProvider: ShotUnderstandingProvidin
             Self.overlap(lhs, input.shot) < Self.overlap(rhs, input.shot)
         }
         let visualEvidence = input.evidence.filter { $0.kind == .frame || $0.kind == .ocr }.map(\.id)
+        let textEvidence = input.evidence.filter { $0.kind == .ocr }.map(\.id)
         let speechEvidence = input.evidence.filter { $0.kind == .transcript || $0.kind == .audio }.map(\.id)
         var facts: [GroundedFact] = []
         if let value = Self.normalized(modelShot?.visualDescription), !visualEvidence.isEmpty {
@@ -116,11 +191,11 @@ public struct VisionComposerShotUnderstandingProvider: ShotUnderstandingProvidin
                 confidence: 0.8
             ))
         }
-        for value in modelShot?.onScreenText ?? [] where !visualEvidence.isEmpty {
+        for value in modelShot?.onScreenText ?? [] where !textEvidence.isEmpty {
             facts.append(GroundedFact(
                 field: .visibleText,
                 value: value,
-                evidenceIDs: visualEvidence,
+                evidenceIDs: textEvidence,
                 source: source,
                 confidence: 0.8
             ))
@@ -203,12 +278,20 @@ public struct CloudVideoJobCheckpoint: Codable, Hashable, Sendable {
     public let sourceFingerprint: String
     public let jobID: String
     public let state: String
+    public let sanitizedError: String?
 
-    public init(providerID: String, sourceFingerprint: String, jobID: String, state: String) {
+    public init(
+        providerID: String,
+        sourceFingerprint: String,
+        jobID: String,
+        state: String,
+        sanitizedError: String? = nil
+    ) {
         self.providerID = providerID
         self.sourceFingerprint = sourceFingerprint
         self.jobID = jobID
         self.state = state
+        self.sanitizedError = sanitizedError
     }
 }
 
@@ -247,6 +330,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
     private let artifactStore: AnalysisArtifactStore
     private let pipelineVersion: String
     private let quality: AnalysisQuality
+    private let representativeFramesPerShot: Int
     private let makeRunID: @Sendable () -> String
 
     public init(
@@ -261,6 +345,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         artifactStore: AnalysisArtifactStore,
         pipelineVersion: String = "storyboard-v2.1",
         quality: AnalysisQuality = .balanced,
+        representativeFramesPerShot: Int = 2,
         runID: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.probe = probe
@@ -274,6 +359,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         self.artifactStore = artifactStore
         self.pipelineVersion = pipelineVersion
         self.quality = quality
+        self.representativeFramesPerShot = min(3, max(1, representativeFramesPerShot))
         self.makeRunID = runID
     }
 
@@ -300,14 +386,21 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         }
 
         (run, _) = try await checkpoint(asset, stage: .assetProbe, run: run)
-        let graph: ShotGraph
+        var graph: ShotGraph
         (run, graph) = try await stage(.shotDetection, run: run) {
             try await detector.detect(in: asset, sourceURL: source.localFileURL, quality: quality)
         }
         let keyframes: [ShotKeyframe]
+        let keyframeRun = run
         (run, keyframes) = try await stage(.keyframes, run: run) {
-            try await keyframeSelector.select(in: graph, sourceURL: source.localFileURL)
+            try await shotKeyframes(
+                graph: graph,
+                sourceURL: source.localFileURL,
+                shotIDs: Set(graph.shots.map(\.id)),
+                run: keyframeRun
+            )
         }
+        graph = try Self.attachingKeyframeReferences(keyframes, to: graph)
 
         await onStage(.transcribing)
         let transcription: TranscriptionArtifact
@@ -326,18 +419,41 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         }
         let corrected = try await correctedTranscript(transcription.raw, ocr: ocr)
         let localEvidence: [EvidenceRef]
+        let evidenceRun = run
         (run, localEvidence) = try await stage(.evidenceAssembly, run: run) {
-            Self.makeLocalEvidence(asset: asset, graph: graph, keyframes: keyframes, raw: transcription.raw, corrected: corrected, ocr: ocr)
+            try await shotEvidence(
+                asset: asset,
+                graph: graph,
+                keyframes: keyframes,
+                raw: transcription.raw,
+                corrected: corrected,
+                ocr: ocr,
+                shotIDs: Set(graph.shots.map(\.id)),
+                run: evidenceRun
+            )
         }
         await onStage(.scripting)
-        let understandings: [ShotUnderstandingOutput]
+        if let stored: [ShotUnderstandingOutput] = try await artifactStore.loadArtifact(
+            [ShotUnderstandingOutput].self,
+            stage: .shotUnderstanding,
+            from: run
+        ), stored.contains(where: Self.isFailedUnderstanding) {
+            run = try await artifactStore.invalidate(
+                stages: Set(AnalysisStage.allCases.drop {
+                    $0 != .shotUnderstanding
+                }),
+                from: run
+            )
+        }
+        var understandings: [ShotUnderstandingOutput]
         (run, understandings) = try await stage(.shotUnderstanding, run: run) {
             try await understand(
                 graph: graph,
                 keyframes: keyframes,
                 evidence: localEvidence,
                 corrected: corrected,
-                ocr: ocr
+                ocr: ocr,
+                run: run
             )
         }
         let cloud: CloudStoryboardEnrichment
@@ -359,8 +475,23 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 }
             )
         }
+        run = try await artifactStore.recordCloudTelemetry(cloud.context.telemetry, for: run)
         try await artifactStore.deleteAuxiliaryArtifact(name: "cloud-job", from: run)
         let evidence = (localEvidence + cloud.evidence).sorted { $0.id < $1.id }
+        let refinementIDs = Set(cloud.context.refinementShotIDs)
+        if !refinementIDs.isEmpty {
+            let refined = try await understand(
+                graph: graph,
+                keyframes: keyframes,
+                evidence: evidence,
+                corrected: corrected,
+                ocr: ocr,
+                selectedShotIDs: refinementIDs,
+                run: run
+            )
+            let replacements = Dictionary(uniqueKeysWithValues: refined.map { ($0.shot.id, $0) })
+            understandings = understandings.map { replacements[$0.shot.id] ?? $0 }
+        }
         let finalAssembly: ShotEvidenceAssemblyResult
         (run, finalAssembly) = try await stage(.timelineAlignment, run: run) {
             ShotEvidenceAssembler.assemble(graph: graph, evidence: evidence)
@@ -428,14 +559,28 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             ocr = await recognizer.recognizeText(in: source)
         }
         let corrected = try await correctedTranscript(transcription.raw, ocr: ocr)
-        let keyframes = try await keyframeSelector.select(in: document.shotGraph, sourceURL: source.localFileURL)
-        let evidence = Self.makeLocalEvidence(
+        if let resumable {
+            try await artifactStore.invalidateShotArtifacts(
+                stages: [.keyframes, .evidenceAssembly, .shotUnderstanding, .synthesis, .quality, .indexing],
+                shotIDs: selected,
+                from: resumable
+            )
+        }
+        let keyframes = try await shotKeyframes(
+            graph: document.shotGraph,
+            sourceURL: source.localFileURL,
+            shotIDs: selected,
+            run: resumable
+        )
+        let evidence = try await shotEvidence(
             asset: asset,
             graph: document.shotGraph,
             keyframes: keyframes,
             raw: transcription.raw,
             corrected: corrected,
-            ocr: ocr
+            ocr: ocr,
+            shotIDs: selected,
+            run: resumable
         )
         let refreshed = try await understand(
             graph: document.shotGraph,
@@ -443,7 +588,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             evidence: evidence,
             corrected: corrected,
             ocr: ocr,
-            selectedShotIDs: selected
+            selectedShotIDs: selected,
+            run: resumable
         )
 
         var updated = document
@@ -451,9 +597,10 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             guard let existingIndex = updated.shots.firstIndex(where: { $0.id == output.shot.id }) else { continue }
             if updated.shots[existingIndex].productionPlan == nil {
                 var shots = updated.shots
+                let userFacts = shots[existingIndex].observedFacts.facts.filter { $0.source == .user }
                 shots[existingIndex] = StoryboardShotV2(
                     id: output.shot.id,
-                    observedFacts: output.shot.observedFacts,
+                    observedFacts: Self.mergingUserFacts(output.shot.observedFacts, userFacts: userFacts),
                     productionPlan: output.shot.productionPlan,
                     userLockedFields: updated.shots[existingIndex].userLockedFields
                 )
@@ -481,9 +628,10 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             var shots = edit.document.shots
             guard let index = shots.firstIndex(where: { $0.id == output.shot.id }) else { continue }
             let current = shots[index]
+            let userFacts = current.observedFacts.facts.filter { $0.source == .user }
             shots[index] = StoryboardShotV2(
                 id: current.id,
-                observedFacts: output.shot.observedFacts,
+                observedFacts: Self.mergingUserFacts(output.shot.observedFacts, userFacts: userFacts),
                 productionPlan: current.productionPlan,
                 userLockedFields: current.userLockedFields
             )
@@ -509,13 +657,119 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         }
     }
 
+    private func shotKeyframes(
+        graph: ShotGraph,
+        sourceURL: URL,
+        shotIDs: Set<ShotID>,
+        run: AnalysisRun?
+    ) async throws -> [ShotKeyframe] {
+        var result: [ShotKeyframe] = []
+        for shot in graph.shots where shotIDs.contains(shot.id) {
+            let cacheKey = try Self.cacheKey(ShotKeyframeCacheIdentity(
+                pipelineVersion: pipelineVersion,
+                shot: shot,
+                framesPerShot: representativeFramesPerShot
+            ))
+            if let run,
+               let cached: [ShotKeyframe] = try await artifactStore.loadShotArtifact(
+                   [ShotKeyframe].self,
+                   stage: .keyframes,
+                   shotID: shot.id,
+                   cacheKey: cacheKey,
+                   from: run
+               ) {
+                result.append(contentsOf: cached)
+                continue
+            }
+            let selected = try await keyframeSelector.select(
+                in: graph,
+                sourceURL: sourceURL,
+                shotIDs: [shot.id],
+                framesPerShot: representativeFramesPerShot
+            ).filter { $0.shotID == shot.id }
+            let bounded = Array(selected.sorted { $0.frame.timestampSeconds < $1.frame.timestampSeconds }.prefix(3))
+            guard !bounded.isEmpty else {
+                throw VideoUnderstandingError.unreadableAsset("no representative frame for \(shot.id.rawValue)")
+            }
+            if let run {
+                try await artifactStore.saveShotArtifact(
+                    bounded,
+                    stage: .keyframes,
+                    shotID: shot.id,
+                    cacheKey: cacheKey,
+                    for: run
+                )
+            }
+            result.append(contentsOf: bounded)
+        }
+        return result
+    }
+
+    private func shotEvidence(
+        asset: VideoAssetDescriptor,
+        graph: ShotGraph,
+        keyframes: [ShotKeyframe],
+        raw: [TranscriptSegment],
+        corrected: [TranscriptSegment],
+        ocr: [FrameText],
+        shotIDs: Set<ShotID>,
+        run: AnalysisRun?
+    ) async throws -> [EvidenceRef] {
+        var result: [EvidenceRef] = []
+        for shot in graph.shots where shotIDs.contains(shot.id) {
+            let shotKeyframes = keyframes.filter { $0.shotID == shot.id }
+            let cacheKey = try Self.cacheKey(ShotEvidenceCacheIdentity(
+                pipelineVersion: pipelineVersion,
+                shot: shot,
+                keyframes: shotKeyframes,
+                raw: raw.filter { Self.overlaps($0.startSeconds, $0.endSeconds, shot.timeRange) },
+                corrected: corrected.filter { Self.overlaps($0.startSeconds, $0.endSeconds, shot.timeRange) },
+                ocr: ocr.filter { shot.timeRange.contains($0.timestampSeconds) }
+            ))
+            if let run,
+               let cached: [EvidenceRef] = try await artifactStore.loadShotArtifact(
+                   [EvidenceRef].self,
+                   stage: .evidenceAssembly,
+                   shotID: shot.id,
+                   cacheKey: cacheKey,
+                   from: run
+               ) {
+                result.append(contentsOf: cached)
+                continue
+            }
+            let assembled = Self.makeLocalEvidence(
+                asset: asset,
+                graph: graph,
+                keyframes: shotKeyframes,
+                raw: raw,
+                corrected: corrected,
+                ocr: ocr,
+                selectedShotIDs: [shot.id]
+            )
+            if let run {
+                try await artifactStore.saveShotArtifact(
+                    assembled,
+                    stage: .evidenceAssembly,
+                    shotID: shot.id,
+                    cacheKey: cacheKey,
+                    for: run
+                )
+            }
+            result.append(contentsOf: assembled)
+        }
+        return Dictionary(result.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            .values
+            .sorted { $0.id < $1.id }
+    }
+
     private func understand(
         graph: ShotGraph,
         keyframes: [ShotKeyframe],
         evidence: [EvidenceRef],
         corrected: [TranscriptSegment],
         ocr: [FrameText],
-        selectedShotIDs: Set<ShotID>? = nil
+        selectedShotIDs: Set<ShotID>? = nil,
+        run: AnalysisRun? = nil
     ) async throws -> [ShotUnderstandingOutput] {
         var outputs: [ShotUnderstandingOutput] = []
         for (index, shot) in graph.shots.enumerated()
@@ -528,18 +782,56 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 transcript: corrected.filter { Self.overlaps($0.startSeconds, $0.endSeconds, shot.timeRange) },
                 onScreenText: ocr.filter { shot.timeRange.contains($0.timestampSeconds) }
             )
-            do {
-                outputs.append(try await understandingProvider.understand(input, displayNumber: index + 1))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
+            let cacheKey = Self.shotUnderstandingCacheKey(
+                pipelineVersion: pipelineVersion,
+                input: input,
+                displayNumber: index + 1
+            )
+            if let run,
+               let cached: ShotUnderstandingOutput = try await artifactStore.loadShotArtifact(
+                   ShotUnderstandingOutput.self,
+                   stage: .shotUnderstanding,
+                   shotID: shot.id,
+                   cacheKey: cacheKey,
+                   from: run
+               ) {
+                outputs.append(cached)
+                continue
+            }
+
+            var finalError: Error?
+            for _ in 0..<2 {
+                do {
+                    let output = try await understandingProvider.understand(input, displayNumber: index + 1)
+                    guard output.shot.id == shot.id else {
+                        throw VideoUnderstandingError.visionUnavailable("shot understanding returned mismatched ShotID")
+                    }
+                    if let run {
+                        try await artifactStore.saveShotArtifact(
+                            output,
+                            stage: .shotUnderstanding,
+                            shotID: shot.id,
+                            cacheKey: cacheKey,
+                            for: run
+                        )
+                    }
+                    outputs.append(output)
+                    finalError = nil
+                    break
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    finalError = error
+                }
+            }
+            if let finalError {
                 outputs.append(ShotUnderstandingOutput(
                     shot: StoryboardShotV2(
                         id: shot.id,
                         observedFacts: ObservedShotFacts(
                             facts: [],
                             unknownFields: FactField.allCasesForReview,
-                            reviewFlags: ["shot-understanding-failed: \(type(of: error))"]
+                            reviewFlags: ["shot-understanding-failed: \(type(of: finalError))"]
                         ),
                         productionPlan: nil
                     )
@@ -579,10 +871,12 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         keyframes: [ShotKeyframe],
         raw: [TranscriptSegment],
         corrected: [TranscriptSegment],
-        ocr: [FrameText]
+        ocr: [FrameText],
+        selectedShotIDs: Set<ShotID>? = nil
     ) -> [EvidenceRef] {
         var result: [EvidenceRef] = []
-        for shot in graph.shots {
+        let selectedShots = graph.shots.filter { selectedShotIDs?.contains($0.id) ?? true }
+        for shot in selectedShots {
             result.append(EvidenceRef(
                 id: EvidenceID(rawValue: "detector:\(shot.id.rawValue)"),
                 kind: .detector,
@@ -593,10 +887,11 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 confidence: shot.boundaryConfidence
             ))
         }
-        for keyframe in keyframes {
+        let selectedRanges = selectedShots.map(\.timeRange)
+        for (keyframeIndex, keyframe) in keyframes.enumerated() {
             guard let shot = graph.shots.first(where: { $0.id == keyframe.shotID }) else { continue }
             result.append(EvidenceRef(
-                id: EvidenceID(rawValue: "frame:\(keyframe.shotID.rawValue)"),
+                id: EvidenceID(rawValue: "frame:\(keyframe.shotID.rawValue):\(keyframeIndex)"),
                 kind: .frame,
                 timeRange: Self.pointRange(keyframe.frame.timestampSeconds, duration: asset.durationSeconds),
                 frameRange: FrameRange(
@@ -608,7 +903,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 confidence: 1
             ))
         }
-        for (index, segment) in raw.enumerated() {
+        for (index, segment) in raw.enumerated()
+        where selectedRanges.contains(where: { Self.overlaps(segment.startSeconds, segment.endSeconds, $0) }) {
             let fixed = corrected.indices.contains(index) ? corrected[index] : segment
             result.append(EvidenceRef(
                 id: EvidenceID(rawValue: "transcript:\(index)"),
@@ -622,7 +918,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 correctedText: fixed.text == segment.text ? nil : fixed.text
             ))
         }
-        for (frameIndex, text) in ocr.enumerated() {
+        for (frameIndex, text) in ocr.enumerated()
+        where selectedRanges.contains(where: { $0.contains(text.timestampSeconds) }) {
             for (lineIndex, line) in text.lines.enumerated() where !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 result.append(EvidenceRef(
                     id: EvidenceID(rawValue: "ocr:\(frameIndex):\(lineIndex)"),
@@ -637,6 +934,67 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             }
         }
         return result
+    }
+
+    private static func attachingKeyframeReferences(
+        _ keyframes: [ShotKeyframe],
+        to graph: ShotGraph
+    ) throws -> ShotGraph {
+        let refs = Dictionary(grouping: keyframes, by: \.shotID).mapValues { frames in
+            frames.sorted { $0.frame.timestampSeconds < $1.frame.timestampSeconds }.map(\.artifactRef)
+        }
+        let shots = graph.shots.map { shot -> ShotSegment in
+            let selected = refs[shot.id] ?? shot.representativeFrameRefs
+            return ShotSegment(
+                id: shot.id,
+                timeRange: shot.timeRange,
+                frameRange: shot.frameRange,
+                transitionIn: shot.transitionIn,
+                transitionOut: shot.transitionOut,
+                boundaryConfidence: shot.boundaryConfidence,
+                detectorEvidenceIDs: shot.detectorEvidenceIDs,
+                representativeFrameRefs: selected
+            )
+        }
+        return try ShotGraph(asset: graph.asset, shots: shots)
+    }
+
+    private static func mergingUserFacts(
+        _ modelFacts: ObservedShotFacts,
+        userFacts: [GroundedFact]
+    ) -> ObservedShotFacts {
+        let merged = modelFacts.facts.filter { $0.source != .user } + userFacts
+        return ObservedShotFacts(
+            facts: merged,
+            unknownFields: modelFacts.unknownFields,
+            modelConfidence: modelFacts.modelConfidence,
+            reviewFlags: modelFacts.reviewFlags
+        )
+    }
+
+    private static func isFailedUnderstanding(_ output: ShotUnderstandingOutput) -> Bool {
+        output.shot.observedFacts.reviewFlags.contains { $0.hasPrefix("shot-understanding-failed") }
+    }
+
+    private static func shotUnderstandingCacheKey(
+        pipelineVersion: String,
+        input: ShotUnderstandingInput,
+        displayNumber: Int
+    ) -> String {
+        let identity = ShotUnderstandingCacheIdentity(
+            pipelineVersion: pipelineVersion,
+            shot: input.shot,
+            displayNumber: displayNumber,
+            keyframes: input.keyframes,
+            evidence: input.evidence,
+            transcript: input.transcript,
+            onScreenText: input.onScreenText
+        )
+        return (try? encoder().encode(identity).base64EncodedString()) ?? "invalid-cache-identity"
+    }
+
+    private static func cacheKey<T: Encodable>(_ identity: T) throws -> String {
+        try encoder().encode(identity).base64EncodedString()
     }
 
     private static func synthesize(
@@ -692,6 +1050,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 mode: .faithful,
                 actualCloudMode: cloud.context.cloudMode,
                 mediaUploaded: cloud.context.mediaUploaded,
+                cloudTelemetry: cloud.context.telemetry,
                 degradationNote: degradation
             ),
             shotGraph: graph,
@@ -780,6 +1139,31 @@ private struct TranscriptionArtifact: Codable, Hashable, Sendable {
     let degradationNote: String?
 }
 
+private struct ShotUnderstandingCacheIdentity: Codable, Sendable {
+    let pipelineVersion: String
+    let shot: ShotSegment
+    let displayNumber: Int
+    let keyframes: [ShotKeyframe]
+    let evidence: [EvidenceRef]
+    let transcript: [TranscriptSegment]
+    let onScreenText: [FrameText]
+}
+
+private struct ShotKeyframeCacheIdentity: Codable, Sendable {
+    let pipelineVersion: String
+    let shot: ShotSegment
+    let framesPerShot: Int
+}
+
+private struct ShotEvidenceCacheIdentity: Codable, Sendable {
+    let pipelineVersion: String
+    let shot: ShotSegment
+    let keyframes: [ShotKeyframe]
+    let raw: [TranscriptSegment]
+    let corrected: [TranscriptSegment]
+    let ocr: [FrameText]
+}
+
 private struct IndexingArtifact: Codable, Hashable, Sendable {
     let legacy: Script
     let documentID: String
@@ -788,12 +1172,6 @@ private struct IndexingArtifact: Codable, Hashable, Sendable {
 
 private struct CompletionArtifact: Codable, Hashable, Sendable {
     let completed: Bool
-}
-
-private extension MediaTimeRange {
-    func contains(_ seconds: Double) -> Bool {
-        seconds >= startSeconds && seconds < endSeconds
-    }
 }
 
 private extension FactField {

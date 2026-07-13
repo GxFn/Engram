@@ -192,6 +192,8 @@ public enum StoryboardShotEditCommand: Hashable, Sendable {
     case editDialogue(String?)
     case moveEndBoundary(toSeconds: Double)
     case editPlan(StoryboardPlanEditValues)
+    case editObservedFact(field: FactField, value: String?)
+    case selectRepresentativeFrames([String])
     case undo
     case reanalyze
 }
@@ -918,6 +920,8 @@ private struct MemoryDetailView: View {
     @State private var editingShot: StoryboardShot?
     @State private var editingBoundary: BoundaryEditContext?
     @State private var editingPlan: PlanEditContext?
+    @State private var editingObservedFact: ObservedFactEditContext?
+    @State private var selectingFrames: RepresentativeFrameSelectionContext?
 
     private var displayedBreakdown: Script? {
         revisedScript ?? item.breakdown
@@ -985,6 +989,26 @@ private struct MemoryDetailView: View {
                         LabeledContent("质量", value: item.qualityStatusRaw ?? "unknown")
                         LabeledContent("实际模式", value: storyboard.source.actualCloudMode.rawValue)
                         LabeledContent("完整视频上传", value: storyboard.source.mediaUploaded ? "是" : "否")
+                        if let telemetry = storyboard.source.cloudTelemetry {
+                            LabeledContent("请求模式", value: telemetry.requestedMode)
+                            if let bytes = telemetry.mediaBytesUploaded {
+                                LabeledContent("上传字节", value: bytes.formatted())
+                            }
+                            if let requests = telemetry.requestCount {
+                                LabeledContent("云请求数", value: requests.formatted())
+                            }
+                            if let cost = telemetry.estimatedUSD {
+                                LabeledContent("服务商估算", value: "$\(NSDecimalNumber(decimal: cost).stringValue)")
+                            }
+                            if !telemetry.refinementShotIDs.isEmpty {
+                                LabeledContent("逐镜复核", value: telemetry.refinementShotIDs.joined(separator: ", "))
+                            }
+                            if let error = telemetry.sanitizedError, !error.isEmpty {
+                                Label(error, systemImage: "exclamationmark.shield")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                         if let note = storyboard.source.degradationNote, !note.isEmpty {
                             Label(note, systemImage: "exclamationmark.triangle")
                                 .font(.caption)
@@ -995,6 +1019,24 @@ private struct MemoryDetailView: View {
                     Section("原片事实 · SourceBreakdown") {
                         ForEach(storyboard.shotGraph.shots.indices, id: \.self) { index in
                             StoryboardSourceShotRow(document: storyboard, index: index)
+                                .contextMenu {
+                                    Button {
+                                        editingObservedFact = ObservedFactEditContext(
+                                            shotIndex: index,
+                                            facts: storyboard.shots.first { $0.id == storyboard.shotGraph.shots[index].id }?.observedFacts.facts ?? []
+                                        )
+                                    } label: {
+                                        Label("订正原片事实…", systemImage: "checkmark.seal")
+                                    }
+                                    Button {
+                                        selectingFrames = RepresentativeFrameSelectionContext(
+                                            shotIndex: index,
+                                            artifactRefs: storyboard.shotGraph.shots[index].representativeFrameRefs
+                                        )
+                                    } label: {
+                                        Label("选择代表帧…", systemImage: "photo.stack")
+                                    }
+                                }
                         }
                     }
 
@@ -1318,6 +1360,30 @@ private struct MemoryDetailView: View {
                 }
             }
         }
+        .sheet(item: $editingObservedFact) { context in
+            ObservedFactEditSheet(context: context) { field, value in
+                Task {
+                    if let updated = await onEditStoryboardShot(
+                        context.shotIndex,
+                        .editObservedFact(field: field, value: value)
+                    ) {
+                        apply(updated)
+                    }
+                }
+            }
+        }
+        .sheet(item: $selectingFrames) { context in
+            RepresentativeFrameSelectionSheet(context: context) { refs in
+                Task {
+                    if let updated = await onEditStoryboardShot(
+                        context.shotIndex,
+                        .selectRepresentativeFrames(refs)
+                    ) {
+                        apply(updated)
+                    }
+                }
+            }
+        }
         #if os(iOS)
         .sheet(item: $shareParcel) { parcel in
             ShareSheet(items: parcel.items)
@@ -1504,6 +1570,107 @@ private struct BoundaryEditSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { save(value); dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct ObservedFactEditContext: Identifiable, Hashable {
+    var id: Int { shotIndex }
+    let shotIndex: Int
+    let facts: [GroundedFact]
+}
+
+private struct ObservedFactEditSheet: View {
+    let context: ObservedFactEditContext
+    let save: (FactField, String?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var field: FactField
+    @State private var value: String
+
+    init(context: ObservedFactEditContext, save: @escaping (FactField, String?) -> Void) {
+        self.context = context
+        self.save = save
+        let initial = context.facts.first?.field ?? .action
+        _field = State(initialValue: initial)
+        _value = State(initialValue: context.facts.first(where: { $0.field == initial })?.value ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("事实字段", selection: $field) {
+                    ForEach(FactField.allCases, id: \.self) { value in
+                        Text(value.rawValue).tag(value)
+                    }
+                }
+                .onChange(of: field) { _, newValue in
+                    value = context.facts.first(where: { $0.field == newValue })?.value ?? ""
+                }
+                TextField("用户核对后的事实", text: $value, axis: .vertical)
+                Text("保存后来源标记为 user；后续模型刷新保留该事实和原证据引用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("订正原片事实")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { save(field, value.trimmedNil); dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct RepresentativeFrameSelectionContext: Identifiable, Hashable {
+    var id: Int { shotIndex }
+    let shotIndex: Int
+    let artifactRefs: [String]
+}
+
+private struct RepresentativeFrameSelectionSheet: View {
+    let context: RepresentativeFrameSelectionContext
+    let save: ([String]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<String>
+
+    init(context: RepresentativeFrameSelectionContext, save: @escaping ([String]) -> Void) {
+        self.context = context
+        self.save = save
+        _selected = State(initialValue: Set(context.artifactRefs.prefix(3)))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if context.artifactRefs.isEmpty {
+                    Text("此镜头尚无可用代表帧；请先局部重新分析。")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(context.artifactRefs, id: \.self) { ref in
+                        Toggle(isOn: Binding(
+                            get: { selected.contains(ref) },
+                            set: { enabled in
+                                if enabled, selected.count < 3 { selected.insert(ref) }
+                                if !enabled, selected.count > 1 { selected.remove(ref) }
+                            }
+                        )) {
+                            Text(ref).font(.caption.monospaced())
+                        }
+                    }
+                }
+                Text("至少选择 1 帧，最多 3 帧；选择会持久化并只使该镜头的证据、理解、质量和索引失效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("选择代表帧")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { save(context.artifactRefs.filter(selected.contains)); dismiss() }
+                        .disabled(selected.isEmpty)
                 }
             }
         }

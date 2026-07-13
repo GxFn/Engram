@@ -22,6 +22,7 @@ public final class ClipRecord {
     public var indexPreview: String?
     public var scriptJSON: String?
     public var storyboardJSON: String?
+    public var storyboardEditJournalJSON: String?
     public var activeRunID: String?
     public var qualityStatusRaw: String?
     public var analysisSchemaVersion: Int?
@@ -42,6 +43,7 @@ public final class ClipRecord {
         indexPreview: String? = nil,
         scriptJSON: String? = nil,
         storyboardJSON: String? = nil,
+        storyboardEditJournalJSON: String? = nil,
         activeRunID: String? = nil,
         qualityStatusRaw: String? = nil,
         analysisSchemaVersion: Int? = nil,
@@ -61,6 +63,7 @@ public final class ClipRecord {
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
         self.storyboardJSON = storyboardJSON
+        self.storyboardEditJournalJSON = storyboardEditJournalJSON
         self.activeRunID = activeRunID
         self.qualityStatusRaw = qualityStatusRaw
         self.analysisSchemaVersion = analysisSchemaVersion
@@ -82,6 +85,7 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
     public let indexPreview: String?
     public let scriptJSON: String?
     public let storyboardJSON: String?
+    public let storyboardEditJournalJSON: String?
     public let activeRunID: String?
     public let qualityStatusRaw: String?
     public let analysisSchemaVersion: Int?
@@ -102,6 +106,7 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         indexPreview: String?,
         scriptJSON: String? = nil,
         storyboardJSON: String? = nil,
+        storyboardEditJournalJSON: String? = nil,
         activeRunID: String? = nil,
         qualityStatusRaw: String? = nil,
         analysisSchemaVersion: Int? = nil,
@@ -121,6 +126,7 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
         self.storyboardJSON = storyboardJSON
+        self.storyboardEditJournalJSON = storyboardEditJournalJSON
         self.activeRunID = activeRunID
         self.qualityStatusRaw = qualityStatusRaw
         self.analysisSchemaVersion = analysisSchemaVersion
@@ -256,6 +262,7 @@ public actor ClipRecordStore {
         indexPreview: String?,
         scriptJSON: String? = nil,
         storyboardJSON: String? = nil,
+        storyboardEditJournalJSON: String? = nil,
         activeRunID: String? = nil,
         qualityStatusRaw: String? = nil,
         analysisSchemaVersion: Int? = nil,
@@ -279,6 +286,9 @@ public actor ClipRecordStore {
         }
         if let storyboardJSON {
             record.storyboardJSON = storyboardJSON
+        }
+        if let storyboardEditJournalJSON {
+            record.storyboardEditJournalJSON = storyboardEditJournalJSON
         }
         if let activeRunID {
             record.activeRunID = activeRunID
@@ -436,6 +446,7 @@ public actor ClipRecordStore {
             indexPreview: record.indexPreview,
             scriptJSON: record.scriptJSON,
             storyboardJSON: record.storyboardJSON,
+            storyboardEditJournalJSON: record.storyboardEditJournalJSON,
             activeRunID: record.activeRunID,
             qualityStatusRaw: record.qualityStatusRaw,
             analysisSchemaVersion: record.analysisSchemaVersion,

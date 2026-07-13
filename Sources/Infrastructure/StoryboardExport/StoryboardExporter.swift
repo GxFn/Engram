@@ -1,7 +1,8 @@
-import Foundation
 import CoreGraphics
 import CoreText
+import Foundation
 import ImageIO
+import PDFKit
 import StoryboardCore
 import VideoUnderstanding
 
@@ -41,6 +42,7 @@ public struct StoryboardExporter: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
+        let references = try validatedReferences(document: document, keyframes: keyframes)
 
         let jsonURL = rootURL.appendingPathComponent("storyboard.json")
         try encoder.encode(document).write(to: jsonURL, options: .atomic)
@@ -49,24 +51,17 @@ public struct StoryboardExporter: Sendable {
         let csvURL = rootURL.appendingPathComponent("storyboard.csv")
         try csv(document).data(using: .utf8)!.write(to: csvURL, options: .atomic)
         let pdfURL = rootURL.appendingPathComponent("storyboard.pdf")
-        try pdf(document, keyframes: keyframes).write(to: pdfURL, options: .atomic)
+        try pdf(document, references: references).write(to: pdfURL, options: .atomic)
 
         let referenceURL = rootURL.appendingPathComponent("reference-frames", isDirectory: true)
         try fileManager.createDirectory(at: referenceURL, withIntermediateDirectories: true)
-        var manifest: [ReferenceFrameManifestItem] = []
-        for keyframe in keyframes {
-            let name = "\(safe(keyframe.shotID.rawValue)).jpg"
-            try keyframe.frame.jpegData.write(to: referenceURL.appendingPathComponent(name), options: .atomic)
-            guard let segment = document.shotGraph.shots.first(where: { $0.id == keyframe.shotID }) else { continue }
-            manifest.append(ReferenceFrameManifestItem(
-                shotID: keyframe.shotID.rawValue,
-                fileName: name,
-                timestampSeconds: keyframe.frame.timestampSeconds,
-                startSeconds: segment.timeRange.startSeconds,
-                endSeconds: segment.timeRange.endSeconds
-            ))
+        for reference in references {
+            try reference.data.write(
+                to: referenceURL.appendingPathComponent(reference.manifest.fileName),
+                options: .atomic
+            )
         }
-        try encoder.encode(ReferenceFrameManifest(items: manifest.sorted { $0.shotID < $1.shotID }))
+        try encoder.encode(ReferenceFrameManifest(items: references.map(\.manifest)))
             .write(to: referenceURL.appendingPathComponent("manifest.json"), options: .atomic)
         return StoryboardExportBundle(rootURL: rootURL, artifacts: [
             StoryboardExportArtifact(format: .markdown, url: markdownURL),
@@ -77,85 +72,123 @@ public struct StoryboardExporter: Sendable {
         ])
     }
 
-    private func markdown(_ document: StoryboardDocumentV2) -> String {
+    fileprivate func markdown(_ document: StoryboardDocumentV2) -> String {
         var lines = ["# \(document.contentAnalysis.title ?? "视频分镜")", "", document.contentAnalysis.summary, ""]
-        for (index, segment) in document.shotGraph.shots.enumerated() {
-            let plan = document.shots.first { $0.id == segment.id }?.productionPlan
-            lines.append("## \(index + 1). \(segment.id.rawValue) [\(segment.timeRange.startSeconds)s–\(segment.timeRange.endSeconds)s]")
+        for row in Self.rows(document) {
+            lines.append("## \(row.displayNumber). \(row.segment.id.rawValue) [\(Self.seconds(row.segment.timeRange.startSeconds))s–\(Self.seconds(row.segment.timeRange.endSeconds))s]")
             lines.append("")
-            lines.append("- 目的：\(plan?.purpose ?? "待确认")")
-            lines.append("- 画面：\(plan?.subjectAction ?? "待确认")")
-            lines.append("- 台词：\(plan?.dialogueOrVO ?? "无")")
+            lines.append(contentsOf: row.professionalLines.map { "- \($0)" })
             lines.append("")
         }
         return lines.joined(separator: "\n")
     }
 
-    private func csv(_ document: StoryboardDocumentV2) -> String {
-        var rows = ["shot_id,start_seconds,end_seconds,purpose,subject_action,dialogue_or_vo"]
-        for segment in document.shotGraph.shots {
-            let plan = document.shots.first { $0.id == segment.id }?.productionPlan
-            rows.append([
-                segment.id.rawValue,
-                String(segment.timeRange.startSeconds),
-                String(segment.timeRange.endSeconds),
-                plan?.purpose ?? "", plan?.subjectAction ?? "", plan?.dialogueOrVO ?? "",
-            ].map(csvCell).joined(separator: ","))
+    fileprivate func csv(_ document: StoryboardDocumentV2) -> String {
+        let header = StoryboardExportRow.csvHeader.joined(separator: ",")
+        let rows = Self.rows(document).map { row in
+            row.csvValues.map(csvCell).joined(separator: ",")
         }
-        return rows.joined(separator: "\n") + "\n"
+        return ([header] + rows).joined(separator: "\n") + "\n"
     }
 
-    private func pdf(_ document: StoryboardDocumentV2, keyframes: [ShotKeyframe]) throws -> Data {
+    private func pdf(_ document: StoryboardDocumentV2, references: [ValidatedReference]) throws -> Data {
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
               let context = CGContext(
                   consumer: consumer,
                   mediaBox: nil,
-                  [
-                      kCGPDFContextTitle as String: document.contentAnalysis.title ?? "视频分镜",
-                      kCGPDFContextSubject as String: document.shotGraph.shots.map(\.id.rawValue).joined(separator: ","),
-                  ] as CFDictionary
+                  [kCGPDFContextTitle as String: document.contentAnalysis.title ?? "视频分镜"] as CFDictionary
               )
         else { throw StoryboardExportError.pdfCreationFailed }
         let page = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let frames = Dictionary(uniqueKeysWithValues: keyframes.map { ($0.shotID, $0.frame.jpegData) })
+        let firstReference = Dictionary(
+            grouping: references,
+            by: { $0.manifest.shotID }
+        ).compactMapValues { $0.first }
 
-        for chunkStart in stride(from: 0, to: document.shotGraph.shots.count, by: 3) {
+        for row in Self.rows(document) {
             context.beginPDFPage([kCGPDFContextMediaBox as String: page] as CFDictionary)
             context.setFillColor(CGColor(gray: 1, alpha: 1))
             context.fill(page)
             drawText(document.contentAnalysis.title ?? "视频分镜", in: CGRect(x: 36, y: 742, width: 540, height: 28), size: 20, context: context)
             drawText(document.contentAnalysis.summary, in: CGRect(x: 36, y: 704, width: 540, height: 34), size: 10, context: context)
+            let timecode = "\(Self.seconds(row.segment.timeRange.startSeconds))s – \(Self.seconds(row.segment.timeRange.endSeconds))s"
+            drawText("\(row.displayNumber). \(row.segment.id.rawValue)  \(timecode)", in: CGRect(x: 36, y: 666, width: 540, height: 24), size: 14, context: context)
 
-            for offset in 0..<3 {
-                let index = chunkStart + offset
-                guard document.shotGraph.shots.indices.contains(index) else { continue }
-                let segment = document.shotGraph.shots[index]
-                let shot = document.shots.first { $0.id == segment.id }
-                let bottom = 474 - CGFloat(offset) * 214
-                context.setStrokeColor(CGColor(gray: 0.82, alpha: 1))
-                context.stroke(CGRect(x: 36, y: bottom, width: 540, height: 198))
-                if let bytes = frames[segment.id],
-                   let source = CGImageSourceCreateWithData(bytes as CFData, nil),
-                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                    context.draw(image, in: aspectFit(image, in: CGRect(x: 46, y: bottom + 12, width: 190, height: 142)))
-                }
-                let timecode = String(format: "%.2fs – %.2fs", segment.timeRange.startSeconds, segment.timeRange.endSeconds)
-                drawText("\(index + 1). \(segment.id.rawValue)  \(timecode)", in: CGRect(x: 250, y: bottom + 164, width: 314, height: 22), size: 13, context: context)
-                drawText("目的：\(shot?.productionPlan?.purpose ?? "待确认")", in: CGRect(x: 250, y: bottom + 132, width: 314, height: 28), size: 10, context: context)
-                drawText("画面：\(shot?.productionPlan?.subjectAction ?? "待确认")", in: CGRect(x: 250, y: bottom + 90, width: 314, height: 38), size: 10, context: context)
-                drawText("台词：\(shot?.productionPlan?.dialogueOrVO ?? "无")", in: CGRect(x: 250, y: bottom + 48, width: 314, height: 38), size: 10, context: context)
-                let facts = shot?.observedFacts.facts.prefix(2).map { "\($0.field.rawValue): \($0.value)" }.joined(separator: "；") ?? ""
-                drawText("证据事实：\(facts)", in: CGRect(x: 250, y: bottom + 12, width: 314, height: 32), size: 9, context: context)
+            if let reference = firstReference[row.segment.id.rawValue] {
+                context.draw(reference.image, in: aspectFit(reference.image, in: CGRect(x: 36, y: 510, width: 190, height: 142)))
+                drawText("参考帧：\(reference.manifest.fileName)", in: CGRect(x: 250, y: 610, width: 326, height: 28), size: 9, context: context)
+                drawText("参考时间：\(Self.seconds(reference.manifest.timestampSeconds))s", in: CGRect(x: 250, y: 574, width: 326, height: 28), size: 9, context: context)
             }
+            drawText(
+                row.professionalLines.joined(separator: "\n"),
+                in: CGRect(x: 36, y: 42, width: 540, height: 455),
+                size: 8,
+                context: context
+            )
             context.endPDFPage()
         }
         context.closePDF()
         return data as Data
     }
 
+    private func validatedReferences(
+        document: StoryboardDocumentV2,
+        keyframes: [ShotKeyframe]
+    ) throws -> [ValidatedReference] {
+        let segments = Dictionary(uniqueKeysWithValues: document.shotGraph.shots.map { ($0.id, $0) })
+        let order = Dictionary(uniqueKeysWithValues: document.shotGraph.shots.enumerated().map { ($0.element.id, $0.offset) })
+        let ordered = keyframes.sorted {
+            let left = order[$0.shotID] ?? .max
+            let right = order[$1.shotID] ?? .max
+            return left == right ? $0.frame.timestampSeconds < $1.frame.timestampSeconds : left < right
+        }
+        var perShotCount: [ShotID: Int] = [:]
+        var signatures = Set<String>()
+        var references: [ValidatedReference] = []
+        for keyframe in ordered {
+            guard let segment = segments[keyframe.shotID],
+                  keyframe.frame.timestampSeconds >= segment.timeRange.startSeconds,
+                  keyframe.frame.timestampSeconds <= segment.timeRange.endSeconds,
+                  let source = CGImageSourceCreateWithData(keyframe.frame.jpegData as CFData, nil),
+                  CGImageSourceGetCount(source) > 0,
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            else { throw StoryboardExportError.invalidReferenceFrame(keyframe.shotID.rawValue) }
+            let signature = "\(keyframe.shotID.rawValue)|\(Self.seconds(keyframe.frame.timestampSeconds))"
+            guard signatures.insert(signature).inserted else {
+                throw StoryboardExportError.invalidReferenceFrame(keyframe.shotID.rawValue)
+            }
+            let index = perShotCount[keyframe.shotID, default: 0] + 1
+            perShotCount[keyframe.shotID] = index
+            let name = "\(safe(keyframe.shotID.rawValue))_\(Self.timecodeFileName(keyframe.frame.timestampSeconds))_\(index).jpg"
+            references.append(ValidatedReference(
+                manifest: ReferenceFrameManifestItem(
+                    shotID: keyframe.shotID.rawValue,
+                    fileName: name,
+                    timestampSeconds: keyframe.frame.timestampSeconds,
+                    startSeconds: segment.timeRange.startSeconds,
+                    endSeconds: segment.timeRange.endSeconds
+                ),
+                data: keyframe.frame.jpegData,
+                image: image
+            ))
+        }
+        let missing = Set(document.shotGraph.shots.map(\.id)).subtracting(perShotCount.keys)
+        guard missing.isEmpty else {
+            throw StoryboardExportError.missingReferenceFrame(missing.sorted().map(\.rawValue).joined(separator: ","))
+        }
+        return references
+    }
+
+    private static func rows(_ document: StoryboardDocumentV2) -> [StoryboardExportRow] {
+        let shots = Dictionary(uniqueKeysWithValues: document.shots.map { ($0.id, $0) })
+        return document.shotGraph.shots.enumerated().map { index, segment in
+            StoryboardExportRow(segment: segment, shot: shots[segment.id], fallbackDisplayNumber: index + 1)
+        }
+    }
+
     private func drawText(_ text: String, in rect: CGRect, size: CGFloat, context: CGContext) {
-        let font = CTFontCreateWithName("PingFangSC-Regular" as CFString, size, nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
         let attributed = NSAttributedString(
             string: text,
             attributes: [
@@ -164,8 +197,7 @@ public struct StoryboardExporter: Sendable {
             ]
         )
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let path = CGPath(rect: rect, transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(), path, nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRange(), CGPath(rect: rect, transform: nil), nil)
         CTFrameDraw(frame, context)
     }
 
@@ -177,10 +209,27 @@ public struct StoryboardExporter: Sendable {
 
     private func csvCell(_ value: String) -> String { "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\"" }
     private func safe(_ value: String) -> String { value.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" }.reduce("") { $0 + String($1) } }
+    fileprivate static func seconds(_ value: Double) -> String { String(format: "%.3f", value) }
+    private static func timecodeFileName(_ seconds: Double) -> String {
+        let milliseconds = max(0, Int((seconds * 1_000).rounded()))
+        let hours = milliseconds / 3_600_000
+        let minutes = (milliseconds / 60_000) % 60
+        let secs = (milliseconds / 1_000) % 60
+        let millis = milliseconds % 1_000
+        return String(format: "%02d-%02d-%02d-%03d", hours, minutes, secs, millis)
+    }
 }
 
 public enum StoryboardExportError: Error, Hashable, Sendable {
     case pdfCreationFailed
+    case missingReferenceFrame(String)
+    case invalidReferenceFrame(String)
+}
+
+private struct ValidatedReference {
+    let manifest: ReferenceFrameManifestItem
+    let data: Data
+    let image: CGImage
 }
 
 private struct ReferenceFrameManifest: Codable {
@@ -195,6 +244,102 @@ private struct ReferenceFrameManifestItem: Codable {
     let endSeconds: Double
 }
 
+private struct StoryboardExportRow {
+    static let csvHeader = [
+        "shot_id", "start_seconds", "end_seconds", "sequence_id", "display_number", "purpose",
+        "narrative_beat", "hook_role", "target_duration", "shot_size", "angle", "movement", "lens_intent",
+        "subject_action", "composition", "background", "lighting_color", "props_wardrobe", "dialogue_or_vo",
+        "on_screen_copy", "music_sfx", "transition", "continuity", "generation_prompt", "production_notes",
+        "source_shot_refs", "confidence", "user_locked_fields", "observed_facts", "unknown_fields", "review_flags",
+    ]
+
+    let segment: ShotSegment
+    let shot: StoryboardShotV2?
+    let fallbackDisplayNumber: Int
+    var plan: ShotProductionPlan? { shot?.productionPlan }
+    var displayNumber: Int { plan?.displayNumber ?? fallbackDisplayNumber }
+    var facts: String {
+        shot?.observedFacts.facts.map {
+            "\($0.field.rawValue): \($0.value) [\($0.evidenceIDs.map(\.rawValue).joined(separator: ";"))]"
+        }.joined(separator: " | ") ?? ""
+    }
+    var unknownFields: String { shot?.observedFacts.unknownFields.map(\.rawValue).sorted().joined(separator: ";") ?? "" }
+    var reviewFlags: String { shot?.observedFacts.reviewFlags.sorted().joined(separator: ";") ?? "" }
+    var sourceRefs: String { plan?.sourceShotRefs.map(\.rawValue).joined(separator: ";") ?? "" }
+    var lockedFields: String { plan?.userLockedFields.sorted().joined(separator: ";") ?? "" }
+
+    var professionalLines: [String] {
+        [
+            "序列：\(value(plan?.sequenceID))",
+            "目的：\(value(plan?.purpose))",
+            "叙事节拍：\(value(plan?.narrativeBeat))",
+            "钩子作用：\(value(plan?.hookRole))",
+            "目标时长：\(number(plan?.targetDuration))",
+            "景别：\(value(plan?.shotSize))",
+            "角度：\(value(plan?.angle))",
+            "运镜：\(value(plan?.movement))",
+            "镜头意图：\(value(plan?.lensIntent))",
+            "主体动作：\(value(plan?.subjectAction))",
+            "构图：\(value(plan?.composition))",
+            "背景：\(value(plan?.background))",
+            "光色：\(value(plan?.lightingColor))",
+            "道具服装：\(value(plan?.propsWardrobe))",
+            "台词旁白：\(value(plan?.dialogueOrVO))",
+            "屏幕文案：\(value(plan?.onScreenCopy))",
+            "音乐音效：\(value(plan?.musicSFX))",
+            "转场：\(value(plan?.transition))",
+            "连续性：\(value(plan?.continuity))",
+            "生成提示：\(value(plan?.generationPrompt))",
+            "制作备注：\(value(plan?.productionNotes))",
+            "来源镜头：\(sourceRefs)",
+            "置信度：\(number(plan?.confidence))",
+            "人工锁定：\(lockedFields)",
+            "证据事实：\(facts)",
+            "未知字段：\(unknownFields)",
+            "复核标记：\(reviewFlags)",
+        ]
+    }
+
+    var csvValues: [String] {
+        [
+            segment.id.rawValue,
+            StoryboardExporter.seconds(segment.timeRange.startSeconds),
+            StoryboardExporter.seconds(segment.timeRange.endSeconds),
+            value(plan?.sequenceID),
+            String(displayNumber),
+            value(plan?.purpose),
+            value(plan?.narrativeBeat),
+            value(plan?.hookRole),
+            number(plan?.targetDuration),
+            value(plan?.shotSize),
+            value(plan?.angle),
+            value(plan?.movement),
+            value(plan?.lensIntent),
+            value(plan?.subjectAction),
+            value(plan?.composition),
+            value(plan?.background),
+            value(plan?.lightingColor),
+            value(plan?.propsWardrobe),
+            value(plan?.dialogueOrVO),
+            value(plan?.onScreenCopy),
+            value(plan?.musicSFX),
+            value(plan?.transition),
+            value(plan?.continuity),
+            value(plan?.generationPrompt),
+            value(plan?.productionNotes),
+            sourceRefs,
+            number(plan?.confidence),
+            lockedFields,
+            facts,
+            unknownFields,
+            reviewFlags,
+        ]
+    }
+
+    private func value(_ value: String?) -> String { value ?? "" }
+    private func number(_ value: Double?) -> String { value.map { String(format: "%.3f", $0) } ?? "" }
+}
+
 public enum StoryboardExportValidator {
     public static func validate(
         _ bundle: StoryboardExportBundle,
@@ -202,6 +347,7 @@ public enum StoryboardExportValidator {
     ) -> StoryboardExportValidation {
         var issues: [String] = []
         let formats = Set(bundle.artifacts.map(\.format))
+        if bundle.artifacts.count != formats.count { issues.append("duplicate-format") }
         for format in StoryboardExportFormat.allCases where !formats.contains(format) {
             issues.append("missing-format:\(format.rawValue)")
         }
@@ -214,41 +360,184 @@ public enum StoryboardExportValidator {
             switch artifact.format {
             case .json:
                 guard let data = try? Data(contentsOf: artifact.url),
+                      !ExportSafetyScanner.containsSensitive(data),
                       let decoded = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data),
-                      decoded.id == document.id
+                      decoded == document
                 else { issues.append("invalid-json"); continue }
-            case .pdf:
-                guard let provider = CGDataProvider(url: artifact.url as CFURL),
-                      let pdf = CGPDFDocument(provider),
-                      pdf.numberOfPages == max(1, Int(ceil(Double(document.shots.count) / 3))),
-                      ((try? Data(contentsOf: artifact.url).count) ?? 0) > 1_000
-                else { issues.append("invalid-pdf"); continue }
             case .csv:
                 let text = (try? String(contentsOf: artifact.url, encoding: .utf8)) ?? ""
-                if !text.hasPrefix("shot_id,start_seconds,end_seconds") || text.split(separator: "\n").count != document.shots.count + 1 {
-                    issues.append("invalid-csv")
-                }
+                let expected = StoryboardExporter().csv(document)
+                guard !ExportSafetyScanner.containsSensitive(text),
+                      let actualTable = CSVTable.parse(text),
+                      let expectedTable = CSVTable.parse(expected),
+                      actualTable == expectedTable
+                else { issues.append("invalid-csv"); continue }
             case .markdown:
                 let text = (try? String(contentsOf: artifact.url, encoding: .utf8)) ?? ""
-                if !text.contains(document.contentAnalysis.summary)
-                    || !document.shotGraph.shots.allSatisfy({ text.contains($0.id.rawValue) }) {
-                    issues.append("invalid-markdown")
-                }
+                let expected = StoryboardExporter().markdown(document)
+                guard !ExportSafetyScanner.containsSensitive(text),
+                      MarkdownStoryboard.parse(text) == MarkdownStoryboard.parse(expected)
+                else { issues.append("invalid-markdown"); continue }
+            case .pdf:
+                guard let pdf = PDFDocument(url: artifact.url),
+                      pdf.pageCount == document.shots.count,
+                      ((try? Data(contentsOf: artifact.url).count) ?? 0) > 1_000,
+                      validatePDF(pdf, document: document)
+                else { issues.append("invalid-pdf"); continue }
             case .referenceFramePackage:
-                let manifestURL = artifact.url.appendingPathComponent("manifest.json")
-                guard isDirectory.boolValue,
-                      let data = try? Data(contentsOf: manifestURL),
-                      let manifest = try? JSONDecoder().decode(ReferenceFrameManifest.self, from: data),
-                      Set(manifest.items.map(\.shotID)) == Set(document.shots.map(\.id.rawValue)),
-                      manifest.items.allSatisfy({ item in
-                          !item.fileName.contains("/")
-                              && item.timestampSeconds >= item.startSeconds
-                              && item.timestampSeconds <= item.endSeconds
-                              && ((try? Data(contentsOf: artifact.url.appendingPathComponent(item.fileName)))?.starts(with: [0xff, 0xd8]) ?? false)
-                      })
-                else { issues.append("invalid-reference-package"); continue }
+                if !validateReferences(at: artifact.url, isDirectory: isDirectory.boolValue, document: document) {
+                    issues.append("invalid-reference-package")
+                }
             }
         }
         return StoryboardExportValidation(issues: issues)
+    }
+
+    private static func validatePDF(_ pdf: PDFDocument, document: StoryboardDocumentV2) -> Bool {
+        let rows = document.shotGraph.shots.enumerated().map { index, segment in
+            let shot = document.shots.first { $0.id == segment.id }
+            return StoryboardExportRow(segment: segment, shot: shot, fallbackDisplayNumber: index + 1)
+        }
+        guard rows.count == pdf.pageCount else { return false }
+        for (index, row) in rows.enumerated() {
+            guard let text = pdf.page(at: index)?.string,
+                  !ExportSafetyScanner.containsSensitive(text),
+                  text.contains(row.segment.id.rawValue),
+                  text.contains(StoryboardExporter.seconds(row.segment.timeRange.startSeconds)),
+                  text.contains(StoryboardExporter.seconds(row.segment.timeRange.endSeconds)),
+                  row.professionalLines.allSatisfy({ line in
+                      let value = line.split(separator: "：", maxSplits: 1).last.map(String.init) ?? ""
+                      return value.isEmpty || text.contains(value)
+                  })
+            else { return false }
+        }
+        return true
+    }
+
+    private static func validateReferences(
+        at root: URL,
+        isDirectory: Bool,
+        document: StoryboardDocumentV2
+    ) -> Bool {
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        guard isDirectory,
+              let data = try? Data(contentsOf: manifestURL),
+              !ExportSafetyScanner.containsSensitive(data),
+              let manifest = try? JSONDecoder().decode(ReferenceFrameManifest.self, from: data)
+        else { return false }
+        let segments = Dictionary(uniqueKeysWithValues: document.shotGraph.shots.map { ($0.id.rawValue, $0) })
+        let fileNames = manifest.items.map(\.fileName)
+        let signatures = manifest.items.map { "\($0.shotID)|\(StoryboardExporter.seconds($0.timestampSeconds))" }
+        guard Set(fileNames).count == fileNames.count,
+              Set(signatures).count == signatures.count,
+              Set(manifest.items.map(\.shotID)) == Set(segments.keys),
+              manifest.items.allSatisfy({ item in
+                  guard let segment = segments[item.shotID],
+                        item.fileName == URL(fileURLWithPath: item.fileName).lastPathComponent,
+                        !item.fileName.contains(".."),
+                        abs(item.startSeconds - segment.timeRange.startSeconds) < 0.000_001,
+                        abs(item.endSeconds - segment.timeRange.endSeconds) < 0.000_001,
+                        item.timestampSeconds >= segment.timeRange.startSeconds,
+                        item.timestampSeconds <= segment.timeRange.endSeconds,
+                        let bytes = try? Data(contentsOf: root.appendingPathComponent(item.fileName)),
+                        let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+                        CGImageSourceGetCount(source) > 0,
+                        CGImageSourceCreateImageAtIndex(source, 0, nil) != nil
+                  else { return false }
+                  return true
+              })
+        else { return false }
+        let actualFiles = ((try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? [])
+            .filter { $0.lastPathComponent != "manifest.json" }
+            .map(\.lastPathComponent)
+        return Set(actualFiles) == Set(fileNames) && actualFiles.count == fileNames.count
+    }
+}
+
+private enum ExportSafetyScanner {
+    static func containsSensitive(_ data: Data) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        return containsSensitive(text)
+    }
+
+    static func containsSensitive(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let markers = [
+            "authorization:", "bearer ", "api_key", "api-key", "signedurl", "signed_url",
+            "x-amz-signature", "x-tos-signature", "sk-", "/users/", "/private/var/",
+            "/var/mobile/containers/", ":\\users\\",
+        ]
+        return markers.contains { lowered.contains($0) }
+    }
+}
+
+private enum CSVTable {
+    static func parse(_ text: String) -> [[String]]? {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var inQuotes = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "\"" {
+                let next = text.index(after: index)
+                if inQuotes, next < text.endIndex, text[next] == "\"" {
+                    field.append("\"")
+                    index = next
+                } else {
+                    inQuotes.toggle()
+                }
+            } else if character == ",", !inQuotes {
+                row.append(field)
+                field = ""
+            } else if character == "\n", !inQuotes {
+                row.append(field)
+                rows.append(row)
+                row = []
+                field = ""
+            } else if character != "\r" || inQuotes {
+                field.append(character)
+            }
+            index = text.index(after: index)
+        }
+        guard !inQuotes else { return nil }
+        if !field.isEmpty || !row.isEmpty {
+            row.append(field)
+            rows.append(row)
+        }
+        return rows
+    }
+}
+
+private struct MarkdownStoryboard: Equatable {
+    let preamble: [String]
+    let sections: [String: [String]]
+
+    static func parse(_ text: String) -> MarkdownStoryboard? {
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var preamble: [String] = []
+        var sections: [String: [String]] = [:]
+        var currentID: String?
+        for line in lines {
+            if line.hasPrefix("## ") {
+                let components = line.dropFirst(3).split(separator: " ", maxSplits: 2)
+                guard components.count >= 2 else { return nil }
+                let id = String(components[1])
+                guard sections[id] == nil else { return nil }
+                currentID = id
+                sections[id] = [line]
+            } else if let currentID {
+                sections[currentID, default: []].append(line)
+            } else {
+                preamble.append(line)
+            }
+        }
+        guard !sections.isEmpty else { return nil }
+        return MarkdownStoryboard(preamble: preamble, sections: sections)
     }
 }

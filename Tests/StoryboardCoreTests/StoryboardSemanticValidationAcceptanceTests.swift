@@ -31,6 +31,46 @@ import VideoUnderstanding
     #expect(report.issues.map(\.code).contains("evidence-kind-mismatch"))
 }
 
+@Test func semanticValidatorRejectsUnsupportedEvidenceMixedWithAValidKind() throws {
+    let fixture = try semanticFixture()
+    let fact = GroundedFact(
+        field: .visibleText,
+        value: "ENTER",
+        evidenceIDs: [EvidenceID(rawValue: "ocr:S001"), EvidenceID(rawValue: "frame:S001")],
+        source: .onDeviceModel,
+        confidence: 0.9
+    )
+    let evidence = [
+        EvidenceRef(
+            id: EvidenceID(rawValue: "ocr:S001"),
+            kind: .ocr,
+            timeRange: MediaTimeRange(startSeconds: 0.4, endSeconds: 0.41),
+            frameRange: FrameRange(startFrame: 12, endFrameExclusive: 13),
+            payloadRef: "ocr/S001.json",
+            source: .deterministic,
+            confidence: 0.9,
+            rawText: "ENTER"
+        ),
+        EvidenceRef(
+            id: EvidenceID(rawValue: "frame:S001"),
+            kind: .frame,
+            timeRange: MediaTimeRange(startSeconds: 0.4, endSeconds: 0.41),
+            frameRange: FrameRange(startFrame: 12, endFrameExclusive: 13),
+            payloadRef: "shots/S001/representative-1.jpg",
+            source: .deterministic,
+            confidence: 1
+        ),
+    ]
+
+    let report = StoryboardValidator.validate(
+        document: semanticDocument(graph: fixture.graph, facts: [fact]),
+        evidence: evidence
+    )
+
+    #expect(report.status != .clean)
+    #expect(report.issues.map(\.code).contains("evidence-kind-mismatch"))
+}
+
 @Test func semanticValidatorRejectsEvidenceOutsideOwningShot() throws {
     let fixture = try semanticFixture()
     let fact = GroundedFact(

@@ -48,7 +48,8 @@ import VideoUnderstanding
     )
 
     #expect(result.document.source.runID == "run-grounded")
-    #expect(result.document.shotGraph == graph)
+    #expect(result.document.shotGraph.shots.map(\.id) == graph.shots.map(\.id))
+    #expect(result.document.shotGraph.shots.allSatisfy { $0.representativeFrameRefs.count == 1 })
     #expect(result.legacy.shots[0].startSeconds == graph.shots[0].timeRange.startSeconds)
     #expect(result.quality.evidenceLinkCoverage == 1)
     #expect(result.evidence.contains { $0.kind == EvidenceKind.frame })
@@ -62,18 +63,23 @@ import VideoUnderstanding
     #expect(resumedResult.run.id == result.run.id)
     #expect(await calls.value("probe") == 2)
     #expect(await calls.value("detector") == 1)
-    #expect(await calls.value("keyframes") == 1)
+    #expect(await calls.value("keyframes") == 2)
     #expect(await calls.value("transcriber") == 1)
     #expect(await calls.value("ocr") == 1)
-    #expect(await calls.value("understanding") == 2)
+    #expect(await calls.value("understanding") == 3)
     #expect(await calls.value("cloud") == 1)
+    #expect(result.run.cloudTelemetry?.requestedMode == EffectiveCloudMode.cloudDeep.rawValue)
+    #expect(result.run.cloudTelemetry?.effectiveMode == EffectiveCloudMode.cloudDeep.rawValue)
+    #expect(result.run.cloudTelemetry?.mediaBytesUploaded == 3)
+    #expect(result.run.cloudTelemetry?.refinementShotIDs == [graph.shots[0].id.rawValue])
+    #expect(resumed?.cloudTelemetry == result.run.cloudTelemetry)
     let partiallyRefreshed = try await analyzer.reanalyzeGrounded(
         source,
         document: result.document,
         shotIDs: [graph.shots[0].id]
     )
     #expect(partiallyRefreshed.shots.count == 2)
-    #expect(await calls.value("understanding") == 3)
+    #expect(await calls.value("understanding") == 4)
 }
 
 private struct GroundedTranscriber: Transcriber {
@@ -102,7 +108,9 @@ private struct GroundedUnderstanding: ShotUnderstandingProviding {
     let calls: GroundedCallLedger
     func understand(_ input: ShotUnderstandingInput, displayNumber: Int) async throws -> ShotUnderstandingOutput {
         await calls.increment("understanding")
-        let evidenceIDs = input.evidence.map(\.id)
+        let evidenceIDs = input.evidence
+            .filter { $0.kind == .frame || $0.kind == .ocr || $0.kind == .cloudTimeline }
+            .map(\.id)
         return ShotUnderstandingOutput(
             shot: StoryboardShotV2(
                 id: input.shot.id,
@@ -139,7 +147,19 @@ private struct GroundedCloud: CloudStoryboardEnriching {
     ) async throws -> CloudStoryboardEnrichment {
         await calls.increment("cloud")
         return CloudStoryboardEnrichment(
-            context: StoryboardExecutionContext(cloudMode: .cloudDeep, mediaUploaded: true),
+            context: StoryboardExecutionContext(
+                requestedCloudMode: .cloudDeep,
+                cloudMode: .cloudDeep,
+                mediaUploaded: true,
+                mediaBytesUploaded: asset.fileSizeBytes,
+                requestBytes: 128,
+                requestCount: 2,
+                inputTokens: 64,
+                outputTokens: 16,
+                mediaMilliseconds: 1_000,
+                estimatedUSD: Decimal(string: "0.01"),
+                refinementShotIDs: [graph.shots[0].id]
+            ),
             evidence: [EvidenceRef(
                 id: EvidenceID(rawValue: "cloud:timeline"),
                 kind: .cloudTimeline,
@@ -177,11 +197,14 @@ private struct GroundedKeyframes: ShotKeyframeSelecting {
     let calls: GroundedCallLedger
     func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe] {
         await calls.increment("keyframes")
-        return [ShotKeyframe(
-            shotID: shotID,
-            frame: SampledFrame(timestampSeconds: 0.25, jpegData: Data([1, 2, 3])),
-            artifactRef: "shots/S001/representative.jpg"
-        )]
+        return graph.shots.map { shot in
+            let midpoint = (shot.timeRange.startSeconds + shot.timeRange.endSeconds) / 2
+            return ShotKeyframe(
+                shotID: shot.id,
+                frame: SampledFrame(timestampSeconds: midpoint, jpegData: Data([1, 2, 3])),
+                artifactRef: "shots/\(shot.id.rawValue)/representative.jpg"
+            )
+        }
     }
 }
 
