@@ -91,7 +91,8 @@ public actor HybridRetriever: Retriever {
                 citation: CitationRef(
                     chunkID: chunk.id,
                     clipID: chunk.clipID,
-                    snippet: Self.snippet(for: chunk)
+                    snippet: Self.snippet(for: chunk),
+                    storyboardAnchors: chunk.storyboardAnchors
                 )
             )
         }

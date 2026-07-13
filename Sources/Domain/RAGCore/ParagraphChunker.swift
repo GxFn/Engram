@@ -1,3 +1,5 @@
+import Foundation
+
 /// Paragraph-first chunker for local retrieval indexing.
 ///
 /// The implementation stays pure domain logic: no model, persistence, network,
@@ -27,7 +29,8 @@ public struct ParagraphChunker: Chunker {
                 indexInClip: index,
                 startOffset: overlapStart,
                 endOffset: base.endOffset,
-                preview: Self.preview(for: chunkText)
+                preview: Self.preview(for: chunkText),
+                storyboardAnchors: Self.storyboardAnchors(in: chunkText)
             )
         }
     }
@@ -181,6 +184,27 @@ private extension ParagraphChunker {
         }
 
         return text
+    }
+
+    static func storyboardAnchors(in text: String) -> [StoryboardCitationAnchor] {
+        var result: [StoryboardCitationAnchor] = []
+        for line in text.components(separatedBy: .newlines) where line.hasPrefix("## 分镜 ") {
+            let remainder = line.dropFirst("## 分镜 ".count)
+            guard let opening = remainder.firstIndex(of: "("),
+                  let closing = remainder[opening...].firstIndex(of: ")")
+            else { continue }
+            let numberText = remainder[..<opening].trimmingCharacters(in: .whitespaces)
+            let rangeText = remainder[remainder.index(after: opening)..<closing]
+            let bounds = rangeText.split(separator: "–", maxSplits: 1).map {
+                $0.trimmingCharacters(in: CharacterSet(charactersIn: "s "))
+            }
+            guard let displayNumber = Int(numberText), bounds.count == 2,
+                  let start = Double(bounds[0]), let end = Double(bounds[1])
+            else { continue }
+            let anchor = StoryboardCitationAnchor(displayNumber: displayNumber, startSeconds: start, endSeconds: end)
+            if !result.contains(anchor) { result.append(anchor) }
+        }
+        return result
     }
 
     static func preferredBoundary(in range: Range<Int>, characters: [Character]) -> Int? {
