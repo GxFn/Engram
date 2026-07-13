@@ -174,6 +174,45 @@ import Testing
     #expect(retryClip.state == .queued)
 }
 
+@Test func preparingNewRunPreservesLastGoodStoryboardAndLegacyProjection() async throws {
+    let container = try PersistenceStack.makeContainer(inMemory: true)
+    let context = ModelContext(container)
+    let record = ClipRecord(
+        id: "last-good-video",
+        title: "Last good",
+        note: nil,
+        bodyText: "last-good-index",
+        urlString: "/tmp/last-good.mov",
+        sourceKindRaw: "videoFile",
+        createdAt: Date(timeIntervalSince1970: 1_800_000_400),
+        stateRaw: ClipState.transcribing.rawValue,
+        indexPreview: "last-good-preview",
+        scriptJSON: "{\"legacy\":true}",
+        storyboardJSON: "{\"schemaVersion\":2}",
+        activeRunID: "run-last-good",
+        qualityStatusRaw: "clean",
+        analysisSchemaVersion: 2,
+        videoFileName: "last-good.mov"
+    )
+    context.insert(record)
+    try context.save()
+
+    let store = ClipRecordStore(modelContainer: container)
+    let prepared = try await store.prepareQueuedClipForDigest(Clip(
+        id: record.id,
+        source: .videoFile(URL(fileURLWithPath: "/tmp/last-good.mov")),
+        title: record.title,
+        note: nil,
+        createdAt: record.createdAt
+    ))
+
+    #expect(prepared.scriptJSON == "{\"legacy\":true}")
+    #expect(prepared.storyboardJSON == "{\"schemaVersion\":2}")
+    #expect(prepared.activeRunID == "run-last-good")
+    #expect(prepared.qualityStatusRaw == "clean")
+    #expect(prepared.analysisSchemaVersion == 2)
+}
+
 private func makeTemporaryDirectory() throws -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("EngramPersistenceTests-\(UUID().uuidString)", isDirectory: true)
