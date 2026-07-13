@@ -6,6 +6,7 @@ import SwiftUI
 
 #if os(iOS)
 import AVFoundation
+import AVKit
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
@@ -713,7 +714,13 @@ private struct MemoryRow: View {
             // 拆解 rows lead with a poster frame (first shot midpoint) — instantly recognizable,
             // unlike the UUID filenames these clips used to be listed by.
             if item.isVideoBreakdown, let url = item.sourceURL, url.isFileURL {
-                ShotThumbnail(videoURL: url, seconds: posterSeconds, shotIndex: 0)
+                ShotThumbnail(
+                    videoURL: url,
+                    seconds: posterSeconds,
+                    startSeconds: posterShot?.startSeconds ?? 0,
+                    endSeconds: posterShot?.endSeconds ?? max(0.1, posterSeconds),
+                    shotIndex: 0
+                )
             }
             #endif
 
@@ -767,8 +774,12 @@ private struct MemoryRow: View {
     }
 
     private var posterSeconds: Double {
-        guard let first = item.breakdown?.shots.min(by: { $0.index < $1.index }) else { return 0.5 }
+        guard let first = posterShot else { return 0.5 }
         return (first.startSeconds + max(first.startSeconds, first.endSeconds)) / 2
+    }
+
+    private var posterShot: StoryboardShot? {
+        item.breakdown?.shots.min(by: { $0.index < $1.index })
     }
 }
 
@@ -1381,6 +1392,8 @@ private struct ShotRowView: View {
                 ShotThumbnail(
                     videoURL: videoURL,
                     seconds: (shot.startSeconds + max(shot.startSeconds, shot.endSeconds)) / 2,
+                    startSeconds: shot.startSeconds,
+                    endSeconds: shot.endSeconds,
                     shotIndex: shot.index
                 )
             }
@@ -1426,6 +1439,8 @@ private struct ShotRowView: View {
 private struct ShotThumbnail: View {
     let videoURL: URL
     let seconds: Double
+    let startSeconds: Double
+    let endSeconds: Double
     let shotIndex: Int
     @State private var image: UIImage?
     @State private var isEnlarged = false
@@ -1450,34 +1465,41 @@ private struct ShotThumbnail: View {
             image = await ShotThumbnailCache.shared.load(url: videoURL, seconds: seconds)
         }
         .fullScreenCover(isPresented: $isEnlarged) {
-            ShotFramePreview(videoURL: videoURL, seconds: seconds, shotIndex: shotIndex)
+            ShotRangePlaybackPreview(
+                videoURL: videoURL,
+                startSeconds: startSeconds,
+                endSeconds: endSeconds,
+                shotIndex: shotIndex
+            )
         }
         .accessibilityLabel("分镜 \(shotIndex + 1) 画面")
     }
 }
 
-/// Full-screen frame preview, regenerated at higher resolution than the row thumbnail.
-private struct ShotFramePreview: View {
+/// Full-screen player constrained to the selected authoritative shot boundary.
+private struct ShotRangePlaybackPreview: View {
     let videoURL: URL
-    let seconds: Double
+    let startSeconds: Double
+    let endSeconds: Double
     let shotIndex: Int
     @Environment(\.dismiss) private var dismiss
-    @State private var image: UIImage?
+    @State private var player: AVPlayer?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+            if let player {
+                VideoPlayer(player: player)
             } else {
                 ProgressView().tint(.white)
             }
             VStack {
                 HStack {
                     Spacer()
-                    Button { dismiss() } label: {
+                    Button {
+                        player?.pause()
+                        dismiss()
+                    } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.largeTitle)
                             .foregroundStyle(.white.opacity(0.85))
@@ -1489,7 +1511,19 @@ private struct ShotFramePreview: View {
             }
         }
         .task {
-            image = await ShotThumbnailCache.shared.load(url: videoURL, seconds: seconds, maxSize: 1280)
+            let playback = AVPlayer(url: videoURL)
+            player = playback
+            await playback.seek(to: CMTime(seconds: max(0, startSeconds), preferredTimescale: 600))
+            playback.play()
+            while !Task.isCancelled {
+                let current = playback.currentTime().seconds
+                if current.isFinite, current >= endSeconds {
+                    await playback.seek(to: CMTime(seconds: max(0, startSeconds), preferredTimescale: 600))
+                    playback.play()
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            playback.pause()
         }
     }
 }
