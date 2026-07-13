@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "ClipCore", targets: ["ClipCore"]),
         .library(name: "MetricsKit", targets: ["MetricsKit"]),
         .library(name: "VideoUnderstanding", targets: ["VideoUnderstanding"]),
+        .library(name: "StoryboardCore", targets: ["StoryboardCore"]),
         .library(name: "ScriptCore", targets: ["ScriptCore"]),
         .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "FrameVision", targets: ["FrameVision"]),
@@ -54,6 +55,11 @@ let package = Package(
         .target(name: "ClipCore", path: "Sources/Domain/ClipCore"),
         .target(name: "MetricsKit", path: "Sources/Domain/MetricsKit"),
         .target(name: "VideoUnderstanding", path: "Sources/Domain/VideoUnderstanding"),
+        .target(
+            name: "StoryboardCore",
+            dependencies: ["VideoUnderstanding"],
+            path: "Sources/Domain/StoryboardCore"
+        ),
         .target(
             name: "ScriptCore",
             dependencies: ["VideoUnderstanding", "EngineKit"],
@@ -304,6 +310,11 @@ let package = Package(
         .testTarget(name: "PersistenceTests", dependencies: ["AppGroupSupport", "Persistence", "ScriptCore"], path: "Tests/PersistenceTests"),
         .testTarget(name: "RAGCoreTests", dependencies: ["RAGCore"], path: "Tests/RAGCoreTests"),
         .testTarget(name: "VideoUnderstandingTests", dependencies: ["VideoUnderstanding"], path: "Tests/VideoUnderstandingTests"),
+        .testTarget(
+            name: "StoryboardCoreTests",
+            dependencies: ["StoryboardCore", "VideoUnderstanding"],
+            path: "Tests/StoryboardCoreTests"
+        ),
         .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),
         .testTarget(name: "SpeechTranscriptionTests", dependencies: ["SpeechTranscription", "VideoUnderstanding"], path: "Tests/SpeechTranscriptionTests"),
         .testTarget(name: "FrameVisionTests", dependencies: ["FrameVision", "VideoUnderstanding"], path: "Tests/FrameVisionTests"),
