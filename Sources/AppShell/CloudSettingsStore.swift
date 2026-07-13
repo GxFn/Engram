@@ -18,6 +18,7 @@ enum CloudSettingsDefaultsKey {
     static let tosCredentialReferenceID = "cloud.tos.credentialReferenceID"
     static let tosCredentialExpiresAt = "cloud.tos.credentialExpiresAt"
     static let tosMaximumUploadMegabytes = "cloud.tos.maximumUploadMegabytes"
+    static let capabilitySnapshots = "cloud.capabilitySnapshots.v1"
 
     static func credentialRevision(_ slot: CloudCredentialSlot) -> String {
         "cloud.credentials.\(slot.rawValue).revision"
@@ -92,6 +93,7 @@ struct CloudSettingsStore: @unchecked Sendable {
     }
 
     func save(_ settings: VisionBackendSettings) {
+        let oldFingerprints = configurationFingerprints()
         defaults?.set(settings.requestedMode.rawValue, forKey: CloudSettingsDefaultsKey.requestedMode)
         defaults?.set(settings.ark.baseURL, forKey: CloudSettingsDefaultsKey.arkBaseURL)
         defaults?.set(settings.ark.textModelID, forKey: CloudSettingsDefaultsKey.arkTextModelID)
@@ -116,6 +118,12 @@ struct CloudSettingsStore: @unchecked Sendable {
         defaults?.set(settings.cloudVideoMode.rawValue, forKey: VisionBackendDefaultsKey.cloudVideoMode)
         defaults?.set(false, forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent)
         defaults?.set(settings.staging.maximumUploadMegabytes, forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB)
+
+        let newFingerprints = configurationFingerprints()
+        let changedRoles = Set(CloudProviderRole.allCases.filter {
+            oldFingerprints[$0] != newFingerprints[$0]
+        })
+        invalidateCapabilitySnapshots(for: changedRoles)
     }
 
     @discardableResult
@@ -123,6 +131,7 @@ struct CloudSettingsStore: @unchecked Sendable {
         guard KeychainStore.set(value, for: Self.account(for: slot)) else { return false }
         let key = CloudSettingsDefaultsKey.credentialRevision(slot)
         defaults?.set((defaults?.integer(forKey: key) ?? 0) + 1, forKey: key)
+        invalidateCapabilitySnapshots(for: Self.rolesOwned(by: slot))
         return true
     }
 
@@ -146,6 +155,7 @@ struct CloudSettingsStore: @unchecked Sendable {
             settings.staging.bucket,
             settings.staging.objectPrefix,
             settings.staging.credentialReferenceID,
+            settings.staging.temporaryCredentialExpiresAt.map(String.init(describing:)) ?? "",
             stagingRevision,
             Self.contractRevision,
         ]
@@ -160,6 +170,31 @@ struct CloudSettingsStore: @unchecked Sendable {
         ]
     }
 
+    func loadCapabilitySnapshots() -> [CloudRoleCapabilitySnapshot] {
+        guard let data = defaults?.data(forKey: CloudSettingsDefaultsKey.capabilitySnapshots),
+              let decoded = try? JSONDecoder().decode([CloudRoleCapabilitySnapshot].self, from: data)
+        else { return [] }
+        var byRole: [CloudProviderRole: CloudRoleCapabilitySnapshot] = [:]
+        for snapshot in decoded { byRole[snapshot.role] = snapshot }
+        return byRole.values.sorted { $0.role < $1.role }
+    }
+
+    func saveCapabilitySnapshot(_ snapshot: CloudRoleCapabilitySnapshot) {
+        guard configurationFingerprints()[snapshot.role] == snapshot.configurationFingerprint,
+              snapshot.officialContractRevision == Self.contractRevision
+        else { return }
+        var byRole = Dictionary(uniqueKeysWithValues: loadCapabilitySnapshots().map { ($0.role, $0) })
+        byRole[snapshot.role] = snapshot
+        persistCapabilitySnapshots(Array(byRole.values))
+    }
+
+    func invalidateCapabilitySnapshot(role: CloudProviderRole, httpStatus: Int) {
+        var snapshots = loadCapabilitySnapshots()
+        guard let index = snapshots.firstIndex(where: { $0.role == role }) else { return }
+        snapshots[index] = snapshots[index].invalidated(forHTTPStatus: httpStatus)
+        persistCapabilitySnapshots(snapshots)
+    }
+
     var routingSignature: String {
         let settings = load()
         return ([settings.requestedMode.rawValue] + configurationFingerprints().keys.sorted().map {
@@ -169,6 +204,35 @@ struct CloudSettingsStore: @unchecked Sendable {
 
     private func revision(_ slot: CloudCredentialSlot) -> String {
         String(defaults?.integer(forKey: CloudSettingsDefaultsKey.credentialRevision(slot)) ?? 0)
+    }
+
+    private func invalidateCapabilitySnapshots(for roles: Set<CloudProviderRole>) {
+        guard !roles.isEmpty else { return }
+        persistCapabilitySnapshots(loadCapabilitySnapshots().filter { !roles.contains($0.role) })
+    }
+
+    private func persistCapabilitySnapshots(_ snapshots: [CloudRoleCapabilitySnapshot]) {
+        let sorted = snapshots.sorted { $0.role < $1.role }
+        guard !sorted.isEmpty else {
+            defaults?.removeObject(forKey: CloudSettingsDefaultsKey.capabilitySnapshots)
+            return
+        }
+        if let data = try? JSONEncoder().encode(sorted) {
+            defaults?.set(data, forKey: CloudSettingsDefaultsKey.capabilitySnapshots)
+        }
+    }
+
+    private static func rolesOwned(by slot: CloudCredentialSlot) -> Set<CloudProviderRole> {
+        switch slot {
+        case .arkAPIKey: CloudProviderRole.arkStandardRoles
+        case .lasAPIKey: Set([
+            .lasVideoStoryboard,
+            .lasVideoFineUnderstanding,
+            .lasScriptGeneration,
+            .lasEnhancedASR,
+        ])
+        case .tosAccessKeyID, .tosSecretAccessKey, .tosSecurityToken: [.mediaStaging]
+        }
     }
 
     private static func account(for slot: CloudCredentialSlot) -> String {
