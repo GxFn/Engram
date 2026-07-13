@@ -21,6 +21,10 @@ public final class ClipRecord {
     public var failureRetryable: Bool
     public var indexPreview: String?
     public var scriptJSON: String?
+    public var storyboardJSON: String?
+    public var activeRunID: String?
+    public var qualityStatusRaw: String?
+    public var analysisSchemaVersion: Int?
     public var videoFileName: String?
 
     public init(
@@ -37,6 +41,10 @@ public final class ClipRecord {
         failureRetryable: Bool = false,
         indexPreview: String? = nil,
         scriptJSON: String? = nil,
+        storyboardJSON: String? = nil,
+        activeRunID: String? = nil,
+        qualityStatusRaw: String? = nil,
+        analysisSchemaVersion: Int? = nil,
         videoFileName: String? = nil
     ) {
         self.id = id
@@ -52,6 +60,10 @@ public final class ClipRecord {
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
+        self.storyboardJSON = storyboardJSON
+        self.activeRunID = activeRunID
+        self.qualityStatusRaw = qualityStatusRaw
+        self.analysisSchemaVersion = analysisSchemaVersion
         self.videoFileName = videoFileName
     }
 }
@@ -69,6 +81,10 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
     public let failureRetryable: Bool
     public let indexPreview: String?
     public let scriptJSON: String?
+    public let storyboardJSON: String?
+    public let activeRunID: String?
+    public let qualityStatusRaw: String?
+    public let analysisSchemaVersion: Int?
     public let videoFileName: String?
     public let sourceKind: ClipSourceKind
 
@@ -85,6 +101,10 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         failureRetryable: Bool,
         indexPreview: String?,
         scriptJSON: String? = nil,
+        storyboardJSON: String? = nil,
+        activeRunID: String? = nil,
+        qualityStatusRaw: String? = nil,
+        analysisSchemaVersion: Int? = nil,
         videoFileName: String? = nil,
         sourceKind: ClipSourceKind = .text
     ) {
@@ -100,6 +120,10 @@ public struct ClipRecordSnapshot: Identifiable, Equatable, Sendable {
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
+        self.storyboardJSON = storyboardJSON
+        self.activeRunID = activeRunID
+        self.qualityStatusRaw = qualityStatusRaw
+        self.analysisSchemaVersion = analysisSchemaVersion
         self.videoFileName = videoFileName
         self.sourceKind = sourceKind
     }
@@ -140,8 +164,6 @@ public actor ClipRecordStore {
             record.stateRaw = ClipState.queued.rawValue
             record.failureReason = nil
             record.failureRetryable = false
-            record.indexPreview = nil
-            record.scriptJSON = nil
         } else {
             let newRecord = ClipRecord(
                 id: clip.id,
@@ -180,8 +202,6 @@ public actor ClipRecordStore {
             record.stateRaw = ClipState.queued.rawValue
             record.failureReason = nil
             record.failureRetryable = false
-            record.indexPreview = nil
-            record.scriptJSON = nil
         } else {
             let newRecord = ClipRecord(
                 id: clip.id,
@@ -235,6 +255,10 @@ public actor ClipRecordStore {
         bodyText: String?,
         indexPreview: String?,
         scriptJSON: String? = nil,
+        storyboardJSON: String? = nil,
+        activeRunID: String? = nil,
+        qualityStatusRaw: String? = nil,
+        analysisSchemaVersion: Int? = nil,
         now: Date = Date()
     ) throws -> ClipRecordSnapshot {
         let record = try requiredRecord(for: id)
@@ -250,7 +274,21 @@ public actor ClipRecordStore {
             record.bodyText = bodyText
         }
         record.indexPreview = indexPreview
-        record.scriptJSON = scriptJSON
+        if let scriptJSON {
+            record.scriptJSON = scriptJSON
+        }
+        if let storyboardJSON {
+            record.storyboardJSON = storyboardJSON
+        }
+        if let activeRunID {
+            record.activeRunID = activeRunID
+        }
+        if let qualityStatusRaw {
+            record.qualityStatusRaw = qualityStatusRaw
+        }
+        if let analysisSchemaVersion {
+            record.analysisSchemaVersion = analysisSchemaVersion
+        }
         record.failureReason = nil
         record.failureRetryable = false
         record.updatedAt = now
@@ -397,6 +435,10 @@ public actor ClipRecordStore {
             failureRetryable: record.failureRetryable,
             indexPreview: record.indexPreview,
             scriptJSON: record.scriptJSON,
+            storyboardJSON: record.storyboardJSON,
+            activeRunID: record.activeRunID,
+            qualityStatusRaw: record.qualityStatusRaw,
+            analysisSchemaVersion: record.analysisSchemaVersion,
             videoFileName: record.videoFileName,
             sourceKind: clipSourceKind(of: record)
         )
