@@ -176,6 +176,7 @@ public struct MemoryClient: Sendable {
 public enum StoryboardShotEditCommand: Hashable, Sendable {
     case split(atSeconds: Double)
     case mergeWithNext
+    case editDialogue(String?)
 }
 
 public enum MemoryClientError: Error, LocalizedError {
@@ -947,7 +948,7 @@ private struct MemoryDetailView: View {
                                             let caption = shot.onScreenText.joined(separator: "，")
                                             Task {
                                                 let index = shot.index
-                                                if let updated = await onUpdateScript({ Self.replacingNarration($0, shotIndex: index, narration: caption) }) {
+                                                if let updated = await onEditStoryboardShot(index, .editDialogue(caption)) {
                                                     revisedScript = updated
                                                 }
                                             }
@@ -1104,7 +1105,7 @@ private struct MemoryDetailView: View {
             ShotNarrationEditSheet(shot: shot) { newNarration in
                 Task {
                     let index = shot.index
-                    if let updated = await onUpdateScript({ Self.replacingNarration($0, shotIndex: index, narration: newNarration) }) {
+                    if let updated = await onEditStoryboardShot(index, .editDialogue(newNarration)) {
                         revisedScript = updated
                     }
                 }

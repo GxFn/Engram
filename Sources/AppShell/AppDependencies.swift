@@ -481,6 +481,14 @@ public final class AppDependencies {
                             }
                             let nextID = document.shotGraph.shots[index + 1].id
                             return try StoryboardEditor.merge(document, first: shotID, second: nextID).document
+                        case let .editDialogue(value):
+                            return try StoryboardEditor.editPlanField(
+                                document,
+                                shotID: shotID,
+                                field: .dialogueOrVO,
+                                value: value,
+                                lock: true
+                            ).document
                         }
                     }
                 }
