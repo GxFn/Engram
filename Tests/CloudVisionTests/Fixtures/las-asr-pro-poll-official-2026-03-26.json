@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "task_id": "xxxxx123ef24ea40546c",
+    "task_status": "COMPLETED",
+    "business_code": "0",
+    "error_msg": "",
+    "request_id": "d204c21f5c7c8f8cfeb85d211b9c20ac"
+  },
+  "data": {
+    "audio_info": {
+      "duration": 3575
+    },
+    "result": {
+      "additions": {
+        "duration": "3575"
+      },
+      "text": "参观达*长城。",
+      "utterances": [
+        {
+          "additions": {
+            "channel_id": "1"
+          },
+          "end_time": 2320,
+          "start_time": 640,
+          "text": "参观达*长城。",
+          "words": [
+            {
+              "confidence": 0,
+              "end_time": 920,
+              "start_time": 640,
+              "text": "参"
+            },
+            {
+              "confidence": 0,
+              "end_time": 1120,
+              "start_time": 920,
+              "text": "观"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

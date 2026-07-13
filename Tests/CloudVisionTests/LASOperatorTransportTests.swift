@@ -188,6 +188,38 @@ struct LASOperatorTransportTests {
         #expect(receipt.observations.isEmpty)
     }
 
+    @Test func enhancedASRUsesOfficialWordConfidenceAndKeepsMissingConfidenceUnknown() async throws {
+        // Source-grounded fixture copied from the official BytePlus LAS mirror of las_asr_pro,
+        // last updated 2026-03-26: https://docs.byteplus.com/en/docs/Byteplus_LAS/las_asr_pro
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "las-asr-pro-poll-official-2026-03-26",
+            withExtension: "json"
+        ))
+        let responses = [
+            try String(contentsOf: fixtureURL, encoding: .utf8),
+            #"{"metadata":{"task_id":"asr-unknown","task_status":"COMPLETED","business_code":"0","error_msg":""},"data":{"result":{"utterances":[{"start_time":0,"end_time":1000,"text":"No provider confidence."}]}}}"#,
+        ]
+        let index = ResponseIndex()
+        let session = makeLASSession { request in
+            try lasResponse(for: request, body: responses[index.take()])
+        }
+        let client = URLSessionLASOperatorClient(region: .cnBeijing, session: session)
+
+        let official = try await client.poll(
+            contract: .enhancedASR,
+            taskID: "xxxxx123ef24ea40546c",
+            apiKey: "las-secret"
+        )
+        let unknown = try await client.poll(
+            contract: .enhancedASR,
+            taskID: "asr-unknown",
+            apiKey: "las-secret"
+        )
+
+        #expect(official.observations.first?.confidence == 0)
+        #expect(unknown.observations.first?.confidence == nil)
+    }
+
     @Test func pollKeepsOnlyNonSignedTOSArtifactReferencesForStoryboardAndScripts() async throws {
         let responses = [
             #"{"metadata":{"task_id":"story-1","task_status":"COMPLETED","business_code":"0","error_msg":""},"data":{"segments_url":"tos://fixture-bucket/engram/runs/output/segments.json","characters_registry_url":"tos://fixture-bucket/engram/runs/output/characters.json"}}"#,

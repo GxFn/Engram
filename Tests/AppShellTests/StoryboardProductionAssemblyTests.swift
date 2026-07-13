@@ -21,7 +21,7 @@ import VideoUnderstanding
 @Suite(.serialized)
 struct SavedCloudProductionAssemblyTests {
     @MainActor
-    @Test func savedLASSettingsFlowThroughAppDependenciesAndRetrievalAssembly() async throws {
+    @Test func savedLASSettingsExposeUnverifiedScriptSchemaAsRetryableFailure() async throws {
       try await AppShellKeychainTestMutex.shared.withMainActorLock {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("EngramSavedCloudAssembly-\(UUID().uuidString)", isDirectory: true)
@@ -111,89 +111,19 @@ struct SavedCloudProductionAssemblyTests {
         await memory.digestAndRefresh()
 
         let item = try #require(memory.items.first)
-        let storyboard = try #require(item.storyboard)
-        #expect(item.state == .indexed)
-        #expect(storyboard.source.actualCloudMode == .cloudDeep)
-        #expect(storyboard.source.mediaUploaded)
-        #expect(storyboard.source.cloudTelemetry?.requestedMode == "lasDeep")
-        #expect(storyboard.source.cloudTelemetry?.effectiveMode == "lasDeep")
-        #expect(storyboard.source.cloudTelemetry?.cleanupState == "deleted")
-        #expect(item.qualityStatusRaw == "needsReview")
-        #expect(storyboard.shotGraph.shots.map(\.timeRange) == [
-            MediaTimeRange(startSeconds: 0, endSeconds: 1),
-            MediaTimeRange(startSeconds: 1, endSeconds: 2),
-        ])
-        #expect(storyboard.contentAnalysis.summary.contains("Grounded generated script"))
-        #expect(storyboard.shots.map { $0.productionPlan?.subjectAction } == [
-            "LAS cloud action one",
-            "LAS cloud action two",
-        ])
-        #expect(storyboard.shots.map { $0.productionPlan?.dialogueOrVO } == [
-            "LAS cloud dialogue one",
-            "LAS cloud dialogue two",
-        ])
-        #expect(storyboard.shots[1].productionPlan?.targetDuration == 0.8)
-        #expect(storyboard.shots.enumerated().allSatisfy { index, shot in
-            shot.productionPlan?.sourceShotRefs == [shot.id]
-                && shot.productionPlan?.isDerivedCreativePlan == true
-                && storyboard.shotGraph.shots[index].id == shot.id
-        })
-        #expect(storyboard.shots.flatMap(\.observedFacts.facts).contains(where: {
-            $0.source == .cloudModel && $0.value.contains("A verified provider scene")
-        }))
-        let cloudFacts = storyboard.shots.flatMap(\.observedFacts.facts).filter { $0.source == .cloudModel }
-        #expect(cloudFacts.contains { $0.field == .action && $0.value.contains("A verified provider scene") })
-        #expect(cloudFacts.contains { $0.field == .audioSummary && $0.value == "A spoken line." })
-        #expect(cloudFacts.allSatisfy { fact in
-            !fact.evidenceIDs.isEmpty && fact.evidenceIDs.allSatisfy { $0.rawValue.hasPrefix("cloud:") }
-        })
+        #expect(item.state == .failed)
+        #expect(item.storyboard == nil)
+        #expect(item.failureRetryable)
+        #expect(item.failureReason?.contains("generated-script-result-schema-unverified") == true)
+        #expect(item.failureReason?.contains("official-doc-2371959-publishes-prefix-only") == true)
         #expect(await stager.newUploadCount == 1)
+        #expect(await stager.cleanupCount == 1)
         #expect(await client.submittedContracts == [
             .videoStoryboard,
             .videoFineUnderstanding,
             .scriptGeneration,
             .enhancedASR,
         ])
-
-        let edited = try #require(await memory.editStoryboardShot(
-            item,
-            shotIndex: 0,
-            command: .editDialogue("user locked LAS dialogue")
-        ))
-        #expect(edited.document.shots[0].productionPlan?.dialogueOrVO == "user locked LAS dialogue")
-        #expect(edited.document.shots[0].userLockedFields.contains(EditablePlanField.dialogueOrVO.rawValue))
-
-        let editedItem = try #require(memory.items.first)
-        let rerun = try #require(await memory.editStoryboardShot(
-            editedItem,
-            shotIndex: 0,
-            command: .reanalyze
-        ))
-        #expect(rerun.document.shots[0].productionPlan?.dialogueOrVO == "user locked LAS dialogue")
-        #expect(rerun.document.shots[0].productionPlan?.subjectAction == "LAS cloud action one")
-        #expect(rerun.document.shots[0].observedFacts.facts.contains { $0.source == .cloudModel })
-
-        let exportRoot = root.appendingPathComponent("las-cloud-export", isDirectory: true)
-        let bundle = try StoryboardExporter().export(
-            rerun.document,
-            keyframes: try productionAssemblyExportKeyframes(for: rerun.document),
-            to: exportRoot
-        )
-        let validation = StoryboardExportValidator.validate(bundle, document: rerun.document)
-        #expect(validation.isValid)
-        #expect(Set(bundle.artifacts.map(\.format)) == Set(StoryboardExportFormat.allCases))
-        let markdown = try String(contentsOf: productionArtifactURL(.markdown, in: bundle), encoding: .utf8)
-        let CSV = try String(contentsOf: productionArtifactURL(.csv, in: bundle), encoding: .utf8)
-        let JSON = try String(contentsOf: productionArtifactURL(.json, in: bundle), encoding: .utf8)
-        #expect(markdown.contains("LAS cloud action one"))
-        #expect(markdown.contains("user locked LAS dialogue"))
-        #expect(CSV.contains("LAS cloud copy two"))
-        #expect(JSON.contains("LAS cloud note two"))
-        #expect(try Data(contentsOf: productionArtifactURL(.pdf, in: bundle)).count > 1_000)
-        let referencePackage = try productionArtifactURL(.referenceFramePackage, in: bundle)
-        #expect(FileManager.default.fileExists(
-            atPath: referencePackage.appendingPathComponent("manifest.json").path
-        ))
       }
     }
 

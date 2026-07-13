@@ -369,7 +369,8 @@ let package = Package(
         .testTarget(
             name: "CloudVisionTests",
             dependencies: ["CloudVision", "ScriptCore", "StoryboardCore", "VideoUnderstanding", "EngineKit"],
-            path: "Tests/CloudVisionTests"
+            path: "Tests/CloudVisionTests",
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "ScriptComposerTests",

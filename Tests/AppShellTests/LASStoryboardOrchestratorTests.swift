@@ -6,7 +6,7 @@ import StoryboardCore
 import Testing
 import VideoUnderstanding
 
-@Test func lasOnlyOrchestratorStagesOnceRunsFourOfficialRolesAndKeepsLocalGraphAuthoritative() async throws {
+@Test func lasOnlyOrchestratorBlocksUnverifiedScriptArtifactSchemaWithoutInventingTypedPlans() async throws {
     let now = Date(timeIntervalSince1970: 10_000)
     let stager = RecordingTOSStager(now: now)
     let client = RecordingLASClient(includesArtifacts: true)
@@ -23,13 +23,19 @@ import VideoUnderstanding
     let sourceURL = try orchestratorMediaFixture()
     defer { try? FileManager.default.removeItem(at: sourceURL) }
 
-    let result = try await enricher.enrich(
-        source: orchestratorSource(sourceURL),
-        asset: graph.asset,
-        graph: graph,
-        resume: nil,
-        checkpoint: { await checkpoints.append($0) }
-    )
+    do {
+        _ = try await enricher.enrich(
+            source: orchestratorSource(sourceURL),
+            asset: graph.asset,
+            graph: graph,
+            resume: nil,
+            checkpoint: { await checkpoints.append($0) }
+        )
+        Issue.record("An unverified scripts_path artifact schema must not produce typed shot plans")
+    } catch let VideoUnderstandingError.visionUnavailable(message) {
+        #expect(message.contains("generated-script-result-schema-unverified"))
+        #expect(message.contains("official-doc-2371959-publishes-prefix-only"))
+    }
 
     #expect(await stager.newUploadCount == 1)
     #expect(await stager.cleanupCount == 1)
@@ -39,18 +45,6 @@ import VideoUnderstanding
         .scriptGeneration,
         .enhancedASR,
     ])
-    #expect(result.context.cloudMode == .cloudDeep)
-    #expect(result.context.mediaUploaded)
-    #expect(result.context.mediaBytesUploaded == graph.asset.fileSizeBytes)
-    #expect(result.evidence.allSatisfy { evidence in
-        graph.shots.contains { shot in
-            min(shot.timeRange.endSeconds, evidence.timeRange.endSeconds)
-                > max(shot.timeRange.startSeconds, evidence.timeRange.startSeconds)
-        }
-    })
-    #expect(result.shotsNeedingReview == [ShotID(rawValue: "S001")])
-    #expect(result.globalSummary?.contains("Grounded generated script") == true)
-    #expect(result.evidence.contains(where: { $0.rawText?.contains("A verified provider scene") == true }))
     #expect(await checkpoints.values.count >= 6)
 }
 
