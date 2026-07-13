@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "MetricsKit", targets: ["MetricsKit"]),
         .library(name: "VideoUnderstanding", targets: ["VideoUnderstanding"]),
         .library(name: "StoryboardCore", targets: ["StoryboardCore"]),
+        .library(name: "StoryboardExport", targets: ["StoryboardExport"]),
         .library(name: "AnalysisStore", targets: ["AnalysisStore"]),
         .library(name: "ShotDetection", targets: ["ShotDetection"]),
         .library(name: "ScriptCore", targets: ["ScriptCore"]),
@@ -66,6 +67,11 @@ let package = Package(
             name: "AnalysisStore",
             dependencies: ["VideoUnderstanding", "StoryboardCore"],
             path: "Sources/Infrastructure/AnalysisStore"
+        ),
+        .target(
+            name: "StoryboardExport",
+            dependencies: ["StoryboardCore", "VideoUnderstanding"],
+            path: "Sources/Infrastructure/StoryboardExport"
         ),
         .target(
             name: "ShotDetection",
@@ -336,6 +342,11 @@ let package = Package(
             name: "AnalysisStoreTests",
             dependencies: ["AnalysisStore", "VideoUnderstanding"],
             path: "Tests/AnalysisStoreTests"
+        ),
+        .testTarget(
+            name: "StoryboardExportTests",
+            dependencies: ["StoryboardExport", "StoryboardCore", "VideoUnderstanding"],
+            path: "Tests/StoryboardExportTests"
         ),
         .testTarget(
             name: "ShotDetectionTests",
