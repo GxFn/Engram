@@ -59,7 +59,7 @@ let package = Package(
         .target(name: "VideoUnderstanding", path: "Sources/Domain/VideoUnderstanding"),
         .target(
             name: "StoryboardCore",
-            dependencies: ["VideoUnderstanding"],
+            dependencies: ["VideoUnderstanding", "ScriptCore"],
             path: "Sources/Domain/StoryboardCore"
         ),
         .target(
@@ -324,7 +324,7 @@ let package = Package(
         .testTarget(name: "VideoUnderstandingTests", dependencies: ["VideoUnderstanding"], path: "Tests/VideoUnderstandingTests"),
         .testTarget(
             name: "StoryboardCoreTests",
-            dependencies: ["StoryboardCore", "VideoUnderstanding"],
+            dependencies: ["StoryboardCore", "ScriptCore", "VideoUnderstanding"],
             path: "Tests/StoryboardCoreTests"
         ),
         .testTarget(
