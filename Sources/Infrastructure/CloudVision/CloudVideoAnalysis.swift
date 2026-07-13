@@ -398,6 +398,8 @@ public enum CloudVideoJobError: Error, Hashable, Sendable {
     case invalidRemoteMediaURL
     case missingProviderAppKey
     case jobTransportUnsupported
+    case rateLimited
+    case providerUnavailable(Int)
     case cancellationUnsupported
     case invalidResponse(String)
 }
@@ -411,12 +413,25 @@ public protocol CloudVideoJobClient: Sendable {
     ) async throws -> CloudVideoJobReceipt
     func status(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt
     func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt
+    func inlineRequestByteCount(_ request: CloudVideoJobRequest, media: Data) throws -> Int64
 }
 
 public extension CloudVideoJobClient {
     func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt {
         throw CloudVideoJobError.cancellationUnsupported
     }
+
+    func inlineRequestByteCount(_ request: CloudVideoJobRequest, media: Data) throws -> Int64 {
+        Int64(try JSONEncoder().encode(CustomJSONJobBody(
+            request: request,
+            mediaBase64: media.base64EncodedString()
+        )).count)
+    }
+}
+
+private struct CustomJSONJobBody: Encodable {
+    let request: CloudVideoJobRequest
+    let mediaBase64: String
 }
 
 /// Async full-video/cloud-ASR job transport. Callers must probe capabilities and
@@ -514,7 +529,14 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
     public func cancel(jobID: String, bearerToken: String) async throws -> CloudVideoJobReceipt {
         // Doubao recording-file ASR documents submit/query but no provider-side cancellation API.
         // Do not synthesize DELETE /jobs/{id}; local callers can stop polling and retain the job ID.
-        throw CloudVideoJobError.cancellationUnsupported
+        guard profile.transport == .customJSONJob,
+              profile.declaredCapabilities.contains(.jobCancellation)
+        else { throw CloudVideoJobError.cancellationUnsupported }
+        let safeID = jobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
+        var request = URLRequest(url: profile.jobURL.appendingPathComponent(safeID))
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        return try await execute(request)
     }
 
     private func submitDoubaoASR(
@@ -556,11 +578,7 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
     }
 
     private func customJobBody(_ request: CloudVideoJobRequest, media: Data) throws -> Data {
-        struct Body: Encodable {
-            let request: CloudVideoJobRequest
-            let mediaBase64: String
-        }
-        return try JSONEncoder().encode(Body(
+        try JSONEncoder().encode(CustomJSONJobBody(
             request: request,
             mediaBase64: media.base64EncodedString()
         ))
@@ -620,12 +638,7 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
         let (data, response) = try await session.data(for: request)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
-        guard (200..<300).contains(status) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw CloudVideoJobError.invalidResponse(
-                CloudErrorSanitizer.sanitize("HTTP \(status): \(body)")
-            )
-        }
+        try validateHTTPStatus(status)
         if let receipt = try? JSONDecoder().decode(CloudVideoJobReceipt.self, from: data) {
             return receipt
         }
@@ -689,11 +702,23 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
     private func execute(_ request: URLRequest) async throws -> CloudVideoJobReceipt {
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status), let receipt = try? JSONDecoder().decode(CloudVideoJobReceipt.self, from: data) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw CloudVideoJobError.invalidResponse(CloudErrorSanitizer.sanitize("HTTP \(status): \(body)"))
+        try validateHTTPStatus(status)
+        guard let receipt = try? JSONDecoder().decode(CloudVideoJobReceipt.self, from: data) else {
+            throw CloudVideoJobError.invalidResponse("HTTP \(status): undecodable provider response")
         }
         return receipt
+    }
+
+    private func validateHTTPStatus(_ status: Int) throws {
+        if status == 429 { throw CloudVideoJobError.rateLimited }
+        if (500..<600).contains(status) {
+            throw CloudVideoJobError.providerUnavailable(status)
+        }
+        guard (200..<300).contains(status) else {
+            // Provider bodies can contain transcripts, object URLs or vendor request details.
+            // Preserve only the status classification at the transport boundary.
+            throw CloudVideoJobError.invalidResponse("HTTP \(status): provider request failed")
+        }
     }
 }
 

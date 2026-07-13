@@ -204,8 +204,32 @@ enum RetrievalAssembly {
     }
 }
 
-private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
+struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
     let configuration: CloudAIResolver.VideoConfiguration
+    private let capabilityProbe: any CloudCapabilityProbing
+    private let clientFactory: @Sendable (CloudProviderProfile) -> any CloudVideoJobClient
+    private let sleep: @Sendable (Duration) async throws -> Void
+
+    init(_ configuration: CloudAIResolver.VideoConfiguration) {
+        self.init(
+            configuration: configuration,
+            capabilityProbe: HTTPCloudCapabilityProbe(),
+            clientFactory: { URLSessionCloudVideoJobClient(profile: $0) },
+            sleep: { try await Task.sleep(for: $0) }
+        )
+    }
+
+    init(
+        configuration: CloudAIResolver.VideoConfiguration,
+        capabilityProbe: any CloudCapabilityProbing,
+        clientFactory: @escaping @Sendable (CloudProviderProfile) -> any CloudVideoJobClient,
+        sleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
+        self.configuration = configuration
+        self.capabilityProbe = capabilityProbe
+        self.clientFactory = clientFactory
+        self.sleep = sleep
+    }
 
     func enrich(
         source: VideoSource,
@@ -214,7 +238,7 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
         resume: CloudVideoJobCheckpoint?,
         checkpoint: @Sendable (CloudVideoJobCheckpoint) async throws -> Void
     ) async throws -> CloudStoryboardEnrichment {
-        let rawProbe = await HTTPCloudCapabilityProbe().probe(configuration.profile)
+        let rawProbe = await capabilityProbe.probe(configuration.profile)
         // A configured cloud VLM has already completed the per-shot frame-understanding stage by
         // the time this enhancer runs. Preserve the unauthenticated probe evidence while recording
         // that observed standard capability instead of incorrectly labelling the result local.
@@ -243,8 +267,8 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
         var hasSubmittedJob = false
         var requestBytes: Int64?
         var activeJobID: String?
+        let client = clientFactory(configuration.profile)
         do {
-            let client = URLSessionCloudVideoJobClient(profile: configuration.profile)
             var receipt: CloudVideoJobReceipt
             if let resume,
                resume.providerID == configuration.profile.id,
@@ -285,7 +309,7 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
                 guard polls < 60 else {
                     throw CloudVideoJobError.invalidResponse("cloud video job timed out")
                 }
-                try await Task.sleep(for: .seconds(1))
+                try await sleep(.seconds(1))
                 receipt = try await client.status(jobID: receipt.jobID, bearerToken: configuration.bearerToken)
                 try await checkpoint(Self.checkpoint(receipt, configuration: configuration, asset: asset))
                 polls += 1
@@ -332,6 +356,18 @@ private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
                 globalSummary: summary.isEmpty ? nil : summary
             )
         } catch is CancellationError {
+            if let activeJobID,
+               configuration.profile.declaredCapabilities.contains(.jobCancellation),
+               let receipt = try? await client.cancel(
+                   jobID: activeJobID,
+                   bearerToken: configuration.bearerToken
+               ) {
+                try? await checkpoint(Self.checkpoint(
+                    receipt,
+                    configuration: configuration,
+                    asset: asset
+                ))
+            }
             throw CancellationError()
         } catch {
             let sanitized = CloudErrorSanitizer.sanitize(String(describing: error))

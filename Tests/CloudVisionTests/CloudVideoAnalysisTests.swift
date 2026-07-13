@@ -229,7 +229,77 @@ struct ProviderHTTPContractTests {
         #expect(!message.contains("sk-secret"))
         #expect(!message.contains("/Users/alice"))
         #expect(!message.contains("raw-token"))
-        #expect(message.contains("[REDACTED]"))
+        #expect(message == "HTTP 403: provider request failed")
+    }
+}
+
+@Test func customJobCancellationUsesOnlyAnExplicitCancellationCapability() async throws {
+    let session = makeContractSession { request in
+        #expect(request.url?.absoluteString == "https://provider.invalid/jobs/job-1")
+        #expect(request.httpMethod == "DELETE")
+        return try contractResponse(for: request, state: "cancelled")
+    }
+    let profile = CloudProviderProfile(
+        id: "custom-cancellable",
+        displayName: "Custom cancellable gateway",
+        capabilityURL: URL(string: "https://provider.invalid/capabilities")!,
+        jobURL: URL(string: "https://provider.invalid/jobs")!,
+        declaredCapabilities: [.fullVideo, .asyncJobs, .jobCancellation],
+        transport: .customJSONJob
+    )
+    let client = URLSessionCloudVideoJobClient(profile: profile, session: session)
+
+    let receipt = try await client.cancel(jobID: "job-1", bearerToken: "secret")
+
+    #expect(receipt.state == .cancelled)
+}
+
+@Test func customJobTransportClassifies429And5xxWithoutPersistingRawBodies() async throws {
+    let statuses = ContractResponseQueue(["429", "503"])
+    let session = makeContractSession { request in
+        let status = Int(statuses.removeFirst())!
+        let response = HTTPURLResponse(
+            url: try #require(request.url),
+            statusCode: status,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (response, Data("private transcript and Bearer sk-secret".utf8))
+    }
+    let client = URLSessionCloudVideoJobClient(
+        profile: providerFixture(jobURL: URL(string: "https://provider.invalid/jobs")!),
+        session: session
+    )
+
+    await #expect(throws: CloudVideoJobError.rateLimited) {
+        try await client.status(jobID: "job-1", bearerToken: "secret")
+    }
+    await #expect(throws: CloudVideoJobError.providerUnavailable(503)) {
+        try await client.status(jobID: "job-1", bearerToken: "secret")
+    }
+}
+
+@Test func customJobTransportRejectsTruncatedSuccessWithoutEchoingTheResponse() async throws {
+    let session = makeContractSession { request in
+        let response = HTTPURLResponse(
+            url: try #require(request.url),
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (response, Data(#"{"jobID":"job-1""#.utf8))
+    }
+    let client = URLSessionCloudVideoJobClient(
+        profile: providerFixture(jobURL: URL(string: "https://provider.invalid/jobs")!),
+        session: session
+    )
+
+    do {
+        _ = try await client.status(jobID: "job-1", bearerToken: "secret")
+        Issue.record("Expected truncated response failure")
+    } catch let CloudVideoJobError.invalidResponse(message) {
+        #expect(message == "HTTP 200: undecodable provider response")
+        #expect(!message.contains("jobID"))
     }
 }
 

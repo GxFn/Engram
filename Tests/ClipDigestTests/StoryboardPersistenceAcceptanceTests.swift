@@ -57,6 +57,32 @@ import VideoUnderstanding
     #expect(try await fixture.persistedDocument() == original)
 }
 
+@Test func failedStoryboardVectorStoreIndexPreservesLastGoodDocumentAndJournal() async throws {
+    let fixture = try StoryboardPersistenceFixture()
+    let original = try persistenceStoryboardDocument()
+    try await fixture.seed(document: original, quality: .clean)
+    let before = try await fixture.records.snapshot(id: fixture.clipID)
+    let service = fixture.makeService(indexer: FailingVectorStoreIndexer())
+
+    let receipt = try? await service.applyStoryboardEdit(id: fixture.clipID) { document in
+        try StoryboardEditor.editPlanField(
+            document,
+            shotID: ShotID(rawValue: "S001"),
+            field: .dialogueOrVO,
+            value: "must not publish",
+            lock: true
+        )
+    }
+
+    #expect(receipt == nil)
+    let after = try await fixture.records.snapshot(id: fixture.clipID)
+    #expect(after.storyboardJSON == before.storyboardJSON)
+    #expect(after.scriptJSON == before.scriptJSON)
+    #expect(after.storyboardEditJournalJSON == before.storyboardEditJournalJSON)
+    #expect(after.qualityStatusRaw == QualityStatus.clean.rawValue)
+    #expect(try await fixture.persistedDocument() == original)
+}
+
 private final class StoryboardPersistenceFixture {
     let clipID = "storyboard-persistence-acceptance"
     let rootURL: URL
@@ -77,12 +103,15 @@ private final class StoryboardPersistenceFixture {
         try? FileManager.default.removeItem(at: rootURL)
     }
 
-    func makeService(videoAnalyzer: (any VideoAnalyzing)? = nil) -> ClipDigestService {
+    func makeService(
+        videoAnalyzer: (any VideoAnalyzing)? = nil,
+        indexer: any ClipDigestIndexing = DigestPreviewIndexer()
+    ) -> ClipDigestService {
         ClipDigestService(
             queueStore: queueStore,
             recordStore: records,
             fetcher: PersistenceAcceptanceFetcher(),
-            indexer: DigestPreviewIndexer(),
+            indexer: indexer,
             videoAnalyzer: videoAnalyzer,
             now: { Date(timeIntervalSince1970: 2_000_000_000) }
         )
@@ -132,6 +161,13 @@ private struct PersistenceAcceptanceFetcher: ArticleFetching {
 
 private enum PersistenceAcceptanceError: Error {
     case unusedFullAnalysis
+    case indexFailure
+}
+
+private struct FailingVectorStoreIndexer: ClipDigestIndexing {
+    func index(_ payload: ClipDigestIndexingPayload) async throws -> ClipDigestIndexingResult {
+        throw PersistenceAcceptanceError.indexFailure
+    }
 }
 
 private struct FactlessPartialReanalysisAnalyzer: EvidenceGroundedVideoAnalyzing {
