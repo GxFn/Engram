@@ -42,3 +42,28 @@ import Testing
         try gap.validate()
     }
 }
+
+@Test func boundaryEvaluationIsDeterministicAndKeepsTransitionBucketsSeparate() throws {
+    let labels = [
+        BoundaryLabel(startFrame: 0, endFrameExclusive: 30, transitionOut: .cut),
+        BoundaryLabel(startFrame: 30, endFrameExclusive: 60, transitionOut: .fade),
+        BoundaryLabel(startFrame: 60, endFrameExclusive: 90, transitionOut: .end),
+    ]
+    let predictions = [
+        BoundaryPrediction(frame: 29, transition: .cut, confidence: 0.95),
+        BoundaryPrediction(frame: 61, transition: .fade, confidence: 0.85),
+        BoundaryPrediction(frame: 75, transition: .cut, confidence: 0.7),
+    ]
+
+    let first = BoundaryEvaluator.evaluate(labels: labels, predictions: predictions, toleranceFrames: 2)
+    let second = BoundaryEvaluator.evaluate(labels: labels, predictions: predictions, toleranceFrames: 2)
+
+    #expect(first == second)
+    #expect(first.hard.truePositive == 1)
+    #expect(first.hard.falsePositive == 1)
+    #expect(first.hard.falseNegative == 0)
+    #expect(abs(first.hard.f1 - (2.0 / 3.0)) < 0.000_001)
+    #expect(first.gradual.f1 == 1)
+    #expect(abs(first.overall.f1 - 0.8) < 0.000_001)
+    #expect(first.matches.map(\.predictionFrame) == [29, 61])
+}
