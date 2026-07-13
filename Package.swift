@@ -167,6 +167,7 @@ let package = Package(
             dependencies: [
                 "ScriptCore",
                 "VideoUnderstanding",
+                "StoryboardCore",
                 "EngineKit",
                 "EngramLogging",
             ],
@@ -363,7 +364,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CloudVisionTests",
-            dependencies: ["CloudVision", "ScriptCore", "VideoUnderstanding", "EngineKit"],
+            dependencies: ["CloudVision", "ScriptCore", "StoryboardCore", "VideoUnderstanding", "EngineKit"],
             path: "Tests/CloudVisionTests"
         ),
         .testTarget(
