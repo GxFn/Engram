@@ -289,38 +289,15 @@ public final class AppDependencies {
         // @Sendable closures. The vision-backend client owns UserDefaults + Keychain access so
         // SettingsFeature never touches infrastructure directly.
         nonisolated(unsafe) let capturedDefaults = defaults
+        let cloudSettings = CloudSettingsStore(defaults: capturedDefaults)
         let visionBackendClient = VisionBackendClient(
-            load: {
-                // Default to cloud when unset so Settings opens on the 云端 tab.
-                let kind = VisionBackendKind(
-                    rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud"
-                ) ?? .cloud
-                let hasKey = (KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false)
-                return VisionBackendSettings(
-                    kind: kind,
-                    cloudBaseURL: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? "",
-                    cloudModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? "",
-                    cloudTextModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? "",
-                    hasCloudKey: hasKey,
-                    cloudVideoMode: CloudVideoAnalysisMode(
-                        rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
-                    ) ?? .standard,
-                    allowsFullVideoUpload: capturedDefaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false,
-                    maximumUploadMegabytes: max(1, capturedDefaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200)
-                )
+            load: { cloudSettings.load() },
+            saveNonSecret: { [weak self] settings in
+                cloudSettings.save(settings)
+                Task { @MainActor in self?.reloadAIRouting() }
             },
-            save: { [weak self] settings, newKey in
-                capturedDefaults?.set(settings.kind.rawValue, forKey: VisionBackendDefaultsKey.kind)
-                capturedDefaults?.set(settings.cloudBaseURL, forKey: VisionBackendDefaultsKey.cloudBaseURL)
-                capturedDefaults?.set(settings.cloudModel, forKey: VisionBackendDefaultsKey.cloudModel)
-                capturedDefaults?.set(settings.cloudTextModel, forKey: VisionBackendDefaultsKey.cloudTextModel)
-                capturedDefaults?.set(settings.cloudVideoMode.rawValue, forKey: VisionBackendDefaultsKey.cloudVideoMode)
-                capturedDefaults?.set(settings.allowsFullVideoUpload, forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent)
-                capturedDefaults?.set(settings.maximumUploadMegabytes, forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB)
-                if let newKey {
-                    KeychainStore.set(newKey, for: VisionBackendKeychainAccount.cloudAPIKey)
-                }
-                // Apply a mode/credential change to the live dependency graph immediately.
+            setCredential: { [weak self] slot, value in
+                _ = cloudSettings.setCredential(slot, value: value)
                 Task { @MainActor in self?.reloadAIRouting() }
             }
         )

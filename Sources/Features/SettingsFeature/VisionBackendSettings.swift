@@ -105,6 +105,14 @@ public enum LASConfigurationRole: String, Sendable, CaseIterable, Codable, Compa
     }
 }
 
+public enum CloudCredentialSlot: String, Sendable, CaseIterable, Codable {
+    case arkAPIKey
+    case lasAPIKey
+    case tosAccessKeyID
+    case tosSecretAccessKey
+    case tosSecurityToken
+}
+
 public struct LASBackendSettings: Sendable, Equatable {
     public var isEnabled: Bool
     public var region: LASServiceRegion
@@ -289,6 +297,7 @@ public struct VisionBackendSettings: Sendable, Equatable {
 public struct VisionBackendClient: Sendable {
     public let load: @Sendable () -> VisionBackendSettings
     public let save: @Sendable (VisionBackendSettings, String?) -> Void
+    public let setCredential: @Sendable (CloudCredentialSlot, String?) -> Void
 
     public init(
         load: @escaping @Sendable () -> VisionBackendSettings,
@@ -296,6 +305,23 @@ public struct VisionBackendClient: Sendable {
     ) {
         self.load = load
         self.save = save
+        self.setCredential = { slot, value in
+            guard slot == .arkAPIKey else { return }
+            save(load(), value)
+        }
+    }
+
+    public init(
+        load: @escaping @Sendable () -> VisionBackendSettings,
+        saveNonSecret: @escaping @Sendable (VisionBackendSettings) -> Void,
+        setCredential: @escaping @Sendable (CloudCredentialSlot, String?) -> Void
+    ) {
+        self.load = load
+        self.save = { settings, legacyArkKey in
+            saveNonSecret(settings)
+            if let legacyArkKey { setCredential(.arkAPIKey, legacyArkKey) }
+        }
+        self.setCredential = setCredential
     }
 
     public static let empty = VisionBackendClient(load: { VisionBackendSettings() }, save: { _, _ in })

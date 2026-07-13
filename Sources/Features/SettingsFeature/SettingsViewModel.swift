@@ -114,7 +114,38 @@ public final class SettingsViewModel {
     public func setCloudAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         visionBackend.hasCloudKey = !trimmed.isEmpty
-        visionBackendClient.save(visionBackend, trimmed)
+        visionBackendClient.setCredential(.arkAPIKey, trimmed)
+        visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
+    }
+
+    public func setLASAPIKey(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        visionBackend.las.hasAPIKey = !trimmed.isEmpty
+        visionBackendClient.setCredential(.lasAPIKey, trimmed)
+        visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
+    }
+
+    public func setTemporaryTOSCredentials(
+        accessKeyID: String,
+        secretAccessKey: String,
+        securityToken: String,
+        expiresAt: Date
+    ) {
+        let values: [(CloudCredentialSlot, String)] = [
+            (.tosAccessKeyID, accessKeyID),
+            (.tosSecretAccessKey, secretAccessKey),
+            (.tosSecurityToken, securityToken),
+        ]
+        for (slot, value) in values {
+            visionBackendClient.setCredential(slot, value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        visionBackend.staging.hasTemporaryCredentials = values.allSatisfy {
+            !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        visionBackend.staging.temporaryCredentialExpiresAt = expiresAt
+        visionBackendClient.save(visionBackend, nil)
         scheduleRolesReload()
     }
 

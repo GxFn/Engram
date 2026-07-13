@@ -15,7 +15,21 @@ enum VisionBackendDefaultsKey {
 }
 
 enum VisionBackendKeychainAccount {
-    static let cloudAPIKey = "cloudVLMAPIKey" // shared by text + vision
+    /// Keep the existing account value so an installed user's Ark credential migrates in place.
+    static let arkAPIKey = "cloudVLMAPIKey"
+    static let cloudAPIKey = arkAPIKey // source compatibility for pre-LAS tests and callers
+    static let lasAPIKey = "lasOperatorAPIKey"
+    static let tosAccessKeyID = "tosTemporaryAccessKeyID"
+    static let tosSecretAccessKey = "tosTemporarySecretAccessKey"
+    static let tosSecurityToken = "tosTemporarySecurityToken"
+
+    static let allAccounts = [
+        arkAPIKey,
+        lasAPIKey,
+        tosAccessKeyID,
+        tosSecretAccessKey,
+        tosSecurityToken,
+    ]
 }
 
 /// The app-wide AI mode is a single switch (本地 ↔ 云端). In 云端 mode, both the text LLM and
@@ -38,15 +52,7 @@ enum CloudAIResolver {
     /// key exists). It changes whenever the user edits any of these, so the shell can rebuild the
     /// engine + video pipeline on a model-string change — not only on a 云端/本地 switch.
     static func configSignature(defaults: UserDefaults?) -> String {
-        let kind = defaults?.string(forKey: VisionBackendDefaultsKey.kind) ?? "cloud"
-        let base = defaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? ""
-        let vision = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
-        let text = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
-        let hasKey = KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false
-        let videoMode = defaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
-        let uploadConsent = defaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false
-        let uploadMB = defaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200
-        return [kind, base, vision, text, hasKey ? "k" : "-", videoMode, uploadConsent ? "upload" : "no-upload", String(uploadMB)].joined(separator: "|")
+        CloudSettingsStore(defaults: defaults).routingSignature
     }
 
     /// Cloud is usable only when mode is cloud AND base URL + Keychain key are present.

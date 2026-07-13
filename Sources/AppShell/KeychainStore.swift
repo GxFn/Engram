@@ -1,8 +1,8 @@
 import Foundation
 import Security
 
-/// Minimal Keychain-backed string store for secrets (the cloud VLM API key). Kept out of
-/// UserDefaults so the key is never in plists/backups in the clear.
+/// Minimal Keychain-backed string store for provider credentials. Values are device-only and
+/// unavailable until the first unlock; they never enter UserDefaults or analysis artifacts.
 enum KeychainStore {
     private static let service = "com.gxfn.engram.secrets"
 
@@ -36,6 +36,7 @@ enum KeychainStore {
         }
         if status == errSecItemNotFound {
             query[kSecValueData as String] = data
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
         }
         return false
