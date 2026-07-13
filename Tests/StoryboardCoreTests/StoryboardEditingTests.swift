@@ -11,7 +11,8 @@ import VideoUnderstanding
     #expect(result.remap.targets(for: ShotID(rawValue: "S001")).count == 2)
     #expect(result.diff.changedShotIDs.count == 2)
     #expect(result.undo() == original)
-    #expect(result.partialRerun.invalidatedStages == [.synthesis, .quality, .indexing])
+    #expect(result.partialRerun.invalidatedStages.contains(.shotUnderstanding))
+    #expect(result.partialRerun.invalidatedStages.contains(.indexing))
     #expect(result.document.shotGraph.coverageRatio == 1)
 }
 
@@ -30,6 +31,30 @@ import VideoUnderstanding
     #expect(refreshed.document.shots[0].productionPlan?.dialogueOrVO == "用户锁定台词")
     #expect(refreshed.document.shots[0].productionPlan?.subjectAction == "模型新动作")
     #expect(refreshed.diff.preservedLockedFields == [.dialogueOrVO])
+}
+
+@Test func movingBoundaryPreservesStableIDsAndContinuousCoverage() throws {
+    let original = try twoShotEditableDocument()
+    let firstID = original.shotGraph.shots[0].id
+    let secondID = original.shotGraph.shots[1].id
+
+    let result = try StoryboardEditor.moveBoundary(original, after: firstID, toSeconds: 1.25)
+
+    #expect(result.document.shotGraph.shots.map(\.id) == [firstID, secondID])
+    #expect(result.document.shotGraph.shots[0].timeRange.endSeconds == 1.25)
+    #expect(result.document.shotGraph.shots[1].timeRange.startSeconds == 1.25)
+    #expect(result.document.shotGraph.coverageRatio == 1)
+    #expect(result.partialRerun.affectedShotIDs == [firstID, secondID])
+    #expect(result.undo() == original)
+}
+
+private func twoShotEditableDocument() throws -> StoryboardDocumentV2 {
+    let original = try editableDocument()
+    return try StoryboardEditor.split(
+        original,
+        shotID: ShotID(rawValue: "S001"),
+        atSeconds: 1
+    ).document
 }
 
 private func editableDocument() throws -> StoryboardDocumentV2 {

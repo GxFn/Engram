@@ -15,6 +15,13 @@ public enum VisionBackendKind: String, Sendable, CaseIterable, Codable {
     }
 }
 
+public enum CloudVideoAnalysisMode: String, Sendable, CaseIterable, Codable {
+    case standard
+    case deep
+
+    public var displayName: String { self == .deep ? "云端深度" : "云端标准" }
+}
+
 /// User-facing vision-backend settings. The API key itself is never surfaced back to the UI
 /// (`hasCloudKey` only reports whether one is stored), so it stays in the Keychain.
 public struct VisionBackendSettings: Sendable, Equatable {
@@ -23,19 +30,28 @@ public struct VisionBackendSettings: Sendable, Equatable {
     public var cloudModel: String      // vision model id
     public var cloudTextModel: String  // text/LLM model id
     public var hasCloudKey: Bool
+    public var cloudVideoMode: CloudVideoAnalysisMode
+    public var allowsFullVideoUpload: Bool
+    public var maximumUploadMegabytes: Int
 
     public init(
         kind: VisionBackendKind = .onDevice,
         cloudBaseURL: String = "",
         cloudModel: String = "",
         cloudTextModel: String = "",
-        hasCloudKey: Bool = false
+        hasCloudKey: Bool = false,
+        cloudVideoMode: CloudVideoAnalysisMode = .standard,
+        allowsFullVideoUpload: Bool = false,
+        maximumUploadMegabytes: Int = 200
     ) {
         self.kind = kind
         self.cloudBaseURL = cloudBaseURL
         self.cloudModel = cloudModel
         self.cloudTextModel = cloudTextModel
         self.hasCloudKey = hasCloudKey
+        self.cloudVideoMode = cloudVideoMode
+        self.allowsFullVideoUpload = allowsFullVideoUpload
+        self.maximumUploadMegabytes = max(1, maximumUploadMegabytes)
     }
 }
 

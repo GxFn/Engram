@@ -30,38 +30,62 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
     public func detect(signals: [ShotFrameSignal], asset: VideoAssetDescriptor) throws -> ShotGraph {
         let ordered = signals.sorted { $0.frame < $1.frame }
         guard !ordered.isEmpty else { throw VideoUnderstandingError.unreadableAsset("shot detector received no frames") }
-        var boundaries: [(frame: Int, confidence: Double)] = []
+        var boundaries: [(frame: Int, confidence: Double, transition: ShotTransition)] = []
         var recent: [Double] = []
         var lastBoundary = 0
         let minimumShotFrames = max(3, Int((asset.nominalFrameRate * 0.25).rounded()))
+        var gradualStart: Int?
+        var gradualScore = 0.0
 
         for index in 1..<ordered.count {
             let previous = ordered[index - 1]
             let current = ordered[index]
-            let histogramDelta = zip(previous.histogram, current.histogram).reduce(0) { $0 + abs($1.0 - $1.1) }
-                / Double(max(1, min(previous.histogram.count, current.histogram.count)))
-            let score = histogramDelta + abs(previous.luma - current.luma) * 0.6
-                + abs(previous.edgeEnergy - current.edgeEnergy) * 0.2
+            let score = Self.distance(previous, current)
             let median = Self.median(recent)
             let mad = Self.median(recent.map { abs($0 - median) })
             let threshold = max(0.32, median + max(0.08, mad * 6))
             let flashOrBlack = current.blackRatio > 0.95 || previous.blackRatio > 0.95
             if score >= threshold, !flashOrBlack, current.frame - lastBoundary >= minimumShotFrames {
-                boundaries.append((current.frame, min(1, score / max(threshold, 0.001))))
+                boundaries.append((current.frame, min(1, score / max(threshold, 0.001)), .cut))
                 lastBoundary = current.frame
+                gradualStart = nil
+                gradualScore = 0
+            } else if score >= 0.025, score < threshold {
+                gradualStart = gradualStart ?? (index - 1)
+                gradualScore += score
+            } else if let start = gradualStart {
+                let count = index - start
+                if count >= 4, gradualScore >= 0.18 {
+                    let window = Array(ordered[start...index])
+                    let darkest = window.enumerated().min(by: { $0.element.luma < $1.element.luma })
+                    let isFade = (darkest?.element.luma ?? 1) < 0.16
+                    let candidate = isFade
+                        ? (darkest?.element.frame ?? window[window.count / 2].frame)
+                        : window[window.count / 2].frame
+                    if candidate - lastBoundary >= minimumShotFrames {
+                        boundaries.append((candidate, min(0.95, gradualScore), isFade ? .fade : .dissolve))
+                        lastBoundary = candidate
+                    }
+                }
+                gradualStart = nil
+                gradualScore = 0
             }
             recent.append(score)
             if recent.count > 16 { recent.removeFirst() }
         }
 
         let frameCount = asset.frameCount ?? max(1, Int((asset.durationSeconds * asset.nominalFrameRate).rounded()))
-        let usable = boundaries.filter { $0.frame > 0 && $0.frame < frameCount }
+        let usable = boundaries
+            .filter { $0.frame > 0 && $0.frame < frameCount }
+            .sorted { $0.frame < $1.frame }
         let starts = [0] + usable.map(\.frame)
         let ends = usable.map(\.frame) + [frameCount]
         let shots = zip(starts, ends).enumerated().map { index, pair in
             let isFirst = index == 0
             let isLast = index == starts.count - 1
             let confidence = isLast ? 1 : usable[index].confidence
+            let transitionIn = isFirst ? ShotTransition.start : usable[index - 1].transition
+            let transitionOut = isLast ? ShotTransition.end : usable[index].transition
             return ShotSegment(
                 id: ShotID(rawValue: String(format: "S%03d-%d-%d", index + 1, pair.0, pair.1)),
                 timeRange: MediaTimeRange(
@@ -69,8 +93,8 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
                     endSeconds: isLast ? asset.durationSeconds : Double(pair.1) / asset.nominalFrameRate
                 ),
                 frameRange: FrameRange(startFrame: pair.0, endFrameExclusive: pair.1),
-                transitionIn: isFirst ? .start : .cut,
-                transitionOut: isLast ? .end : .cut,
+                transitionIn: transitionIn,
+                transitionOut: transitionOut,
                 boundaryConfidence: confidence,
                 detectorEvidenceIDs: ["adaptive:\(pair.0)-\(pair.1)"]
             )
@@ -83,6 +107,13 @@ public struct AdaptiveShotBoundaryDetector: Sendable {
         let sorted = values.sorted()
         let middle = sorted.count / 2
         return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+    }
+
+    static func distance(_ previous: ShotFrameSignal, _ current: ShotFrameSignal) -> Double {
+        let histogramDelta = zip(previous.histogram, current.histogram).reduce(0) { $0 + abs($1.0 - $1.1) }
+            / Double(max(1, min(previous.histogram.count, current.histogram.count)))
+        return histogramDelta + abs(previous.luma - current.luma) * 0.6
+            + abs(previous.edgeEnergy - current.edgeEnergy) * 0.2
     }
 }
 
@@ -129,7 +160,63 @@ public struct AVFoundationShotBoundaryDetector: ShotBoundaryDetecting {
             signals.append(Self.signal(image: image, time: actual.seconds, fps: asset.nominalFrameRate))
             time += 1 / rate
         }
-        return try detector.detect(signals: signals, asset: asset)
+        let coarse = try detector.detect(signals: signals, asset: asset)
+        return try Self.refine(coarse, generator: generator, asset: asset, sampleRate: rate)
+    }
+
+    private static func refine(
+        _ graph: ShotGraph,
+        generator: AVAssetImageGenerator,
+        asset: VideoAssetDescriptor,
+        sampleRate: Double
+    ) throws -> ShotGraph {
+        guard graph.shots.count > 1 else { return graph }
+        let frameCount = asset.frameCount ?? max(1, Int((asset.durationSeconds * asset.nominalFrameRate).rounded()))
+        let radius = max(2, Int((asset.nominalFrameRate / sampleRate).rounded(.up)))
+        var boundaries: [(frame: Int, transition: ShotTransition, confidence: Double)] = []
+        for index in 1..<graph.shots.count {
+            let candidate = graph.shots[index].frameRange.startFrame
+            let lower = max(1, candidate - radius)
+            let upper = min(frameCount - 1, candidate + radius)
+            var local: [ShotFrameSignal] = []
+            for frame in (lower - 1)...upper {
+                let requested = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(asset.nominalFrameRate.rounded()))
+                var actual = CMTime.zero
+                let image = try generator.copyCGImage(at: requested, actualTime: &actual)
+                local.append(signal(image: image, time: actual.seconds, fps: asset.nominalFrameRate))
+            }
+            let transition = graph.shots[index].transitionIn
+            let refined: Int
+            if transition == .fade {
+                refined = local.min(by: { $0.luma < $1.luma })?.frame ?? candidate
+            } else if transition == .dissolve {
+                refined = local[local.count / 2].frame
+            } else {
+                refined = zip(local, local.dropFirst()).max(by: {
+                    AdaptiveShotBoundaryDetector.distance($0.0, $0.1) < AdaptiveShotBoundaryDetector.distance($1.0, $1.1)
+                })?.1.frame ?? candidate
+            }
+            boundaries.append((max(lower, min(upper, refined)), transition, graph.shots[index - 1].boundaryConfidence))
+        }
+        let starts = [0] + boundaries.map(\.frame)
+        let ends = boundaries.map(\.frame) + [frameCount]
+        let shots = zip(starts, ends).enumerated().map { index, pair in
+            let first = index == 0
+            let last = index == starts.count - 1
+            return ShotSegment(
+                id: ShotID(rawValue: String(format: "S%03d-%d-%d", index + 1, pair.0, pair.1)),
+                timeRange: MediaTimeRange(
+                    startSeconds: Double(pair.0) / asset.nominalFrameRate,
+                    endSeconds: last ? asset.durationSeconds : Double(pair.1) / asset.nominalFrameRate
+                ),
+                frameRange: FrameRange(startFrame: pair.0, endFrameExclusive: pair.1),
+                transitionIn: first ? .start : boundaries[index - 1].transition,
+                transitionOut: last ? .end : boundaries[index].transition,
+                boundaryConfidence: last ? 1 : boundaries[index].confidence,
+                detectorEvidenceIDs: ["adaptive-refined:\(pair.0)-\(pair.1)"]
+            )
+        }
+        return try ShotGraph(asset: asset, shots: shots)
     }
 
     private static func signal(image: CGImage, time: Double, fps: Double) -> ShotFrameSignal {

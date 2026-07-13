@@ -105,6 +105,7 @@ public final class AppDependencies {
                 generationConfig: resolvedGenerationConfig,
                 videoAnalyzer: videoAnalyzer,
                 visionGenerator: resolvedVisionGenerator,
+                cloudVideoConfiguration: CloudAIResolver.makeVideoConfiguration(defaults: defaults),
                 appGroupLocations: appGroupLocations,
                 embeddingEngine: retrievalEmbeddingEngine
             )
@@ -198,6 +199,7 @@ public final class AppDependencies {
                   generationConfig: generationConfig,
                   videoAnalyzer: videoAnalyzer,
                   visionGenerator: CloudAIResolver.makeVisionGenerator(defaults: defaults),
+                  cloudVideoConfiguration: CloudAIResolver.makeVideoConfiguration(defaults: defaults),
                   appGroupLocations: appGroupLocations,
                   embeddingEngine: retrievalEmbeddingEngine
               )
@@ -299,7 +301,12 @@ public final class AppDependencies {
                     cloudBaseURL: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudBaseURL) ?? "",
                     cloudModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? "",
                     cloudTextModel: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? "",
-                    hasCloudKey: hasKey
+                    hasCloudKey: hasKey,
+                    cloudVideoMode: CloudVideoAnalysisMode(
+                        rawValue: capturedDefaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
+                    ) ?? .standard,
+                    allowsFullVideoUpload: capturedDefaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false,
+                    maximumUploadMegabytes: max(1, capturedDefaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200)
                 )
             },
             save: { [weak self] settings, newKey in
@@ -307,6 +314,9 @@ public final class AppDependencies {
                 capturedDefaults?.set(settings.cloudBaseURL, forKey: VisionBackendDefaultsKey.cloudBaseURL)
                 capturedDefaults?.set(settings.cloudModel, forKey: VisionBackendDefaultsKey.cloudModel)
                 capturedDefaults?.set(settings.cloudTextModel, forKey: VisionBackendDefaultsKey.cloudTextModel)
+                capturedDefaults?.set(settings.cloudVideoMode.rawValue, forKey: VisionBackendDefaultsKey.cloudVideoMode)
+                capturedDefaults?.set(settings.allowsFullVideoUpload, forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent)
+                capturedDefaults?.set(settings.maximumUploadMegabytes, forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB)
                 if let newKey {
                     KeychainStore.set(newKey, for: VisionBackendKeychainAccount.cloudAPIKey)
                 }
@@ -467,30 +477,49 @@ public final class AppDependencies {
                     return bundle.artifacts.map(\.url)
                 },
                 editStoryboardShot: { id, index, command in
-                    try await clipDigestService.updateStoryboard(id: id) { document in
-                        guard document.shotGraph.shots.indices.contains(index) else {
-                            throw MemoryClientError.editingUnavailable
-                        }
-                        let shotID = document.shotGraph.shots[index].id
-                        switch command {
-                        case let .split(atSeconds):
-                            return try StoryboardEditor.split(document, shotID: shotID, atSeconds: atSeconds).document
-                        case .mergeWithNext:
-                            guard document.shotGraph.shots.indices.contains(index + 1) else {
+                    let receipt: StoryboardEditReceipt
+                    if command == .undo {
+                        receipt = try await clipDigestService.undoStoryboard(id: id)
+                    } else if command == .reanalyze {
+                        receipt = try await clipDigestService.reanalyzeStoryboard(id: id, shotIndex: index)
+                    } else {
+                        receipt = try await clipDigestService.applyStoryboardEdit(id: id) { document in
+                            guard document.shotGraph.shots.indices.contains(index) else {
                                 throw MemoryClientError.editingUnavailable
                             }
-                            let nextID = document.shotGraph.shots[index + 1].id
-                            return try StoryboardEditor.merge(document, first: shotID, second: nextID).document
-                        case let .editDialogue(value):
-                            return try StoryboardEditor.editPlanField(
-                                document,
-                                shotID: shotID,
-                                field: .dialogueOrVO,
-                                value: value,
-                                lock: true
-                            ).document
+                            let shotID = document.shotGraph.shots[index].id
+                            switch command {
+                            case let .split(atSeconds):
+                                return try StoryboardEditor.split(document, shotID: shotID, atSeconds: atSeconds)
+                            case .mergeWithNext:
+                                guard document.shotGraph.shots.indices.contains(index + 1) else {
+                                    throw MemoryClientError.editingUnavailable
+                                }
+                                let nextID = document.shotGraph.shots[index + 1].id
+                                return try StoryboardEditor.merge(document, first: shotID, second: nextID)
+                            case let .editDialogue(value):
+                                return try StoryboardEditor.editPlanField(
+                                    document,
+                                    shotID: shotID,
+                                    field: .dialogueOrVO,
+                                    value: value,
+                                    lock: true
+                                )
+                            case let .moveEndBoundary(toSeconds):
+                                return try StoryboardEditor.moveBoundary(document, after: shotID, toSeconds: toSeconds)
+                            case let .editPlan(values):
+                                return try StoryboardEditor.editPlanFields(
+                                    document,
+                                    shotID: shotID,
+                                    values: values.domainValues,
+                                    lock: true
+                                )
+                            case .undo, .reanalyze:
+                                throw MemoryClientError.editingUnavailable
+                            }
                         }
                     }
+                    return Self.storyboardEditPresentation(receipt)
                 }
             ))
         } else {
@@ -773,7 +802,26 @@ public final class AppDependencies {
             indexPreview: snapshot.indexPreview,
             scriptJSON: snapshot.scriptJSON,
             storyboardJSON: snapshot.storyboardJSON,
+            activeRunID: snapshot.activeRunID,
+            qualityStatusRaw: snapshot.qualityStatusRaw,
             sourceKind: snapshot.sourceKind
+        )
+    }
+
+    private nonisolated static func storyboardEditPresentation(
+        _ receipt: StoryboardEditReceipt
+    ) -> StoryboardEditPresentation {
+        let remap = receipt.remap.mapping
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key.rawValue)→\($0.value.map(\.rawValue).joined(separator: "+"))" }
+            .joined(separator: ", ")
+        return StoryboardEditPresentation(
+            script: receipt.legacy,
+            document: receipt.document,
+            changedShotIDs: receipt.diff.changedShotIDs.map(\.rawValue),
+            changedFields: receipt.diff.changedFields.map(\.rawValue).sorted(),
+            invalidatedStages: receipt.partialRerun.invalidatedStages.map(\.rawValue),
+            remapSummary: remap.isEmpty ? nil : remap
         )
     }
 

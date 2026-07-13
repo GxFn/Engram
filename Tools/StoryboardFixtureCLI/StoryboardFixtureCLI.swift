@@ -1,6 +1,7 @@
 import AVFoundation
 import CryptoKit
 import Foundation
+import StoryboardCore
 import VideoUnderstanding
 
 @main
@@ -108,7 +109,7 @@ enum StoryboardFixtureCLI {
 
     private static func validateArtifacts(_ path: String) throws -> ValidationResult {
         let root = URL(fileURLWithPath: path, isDirectory: true)
-        let required = ["manifest.json", "asset.json", "shot-graph.json", "quality.json"]
+        let required = ["manifest.json"] + AnalysisStage.allCases.map { "\($0.rawValue).json" }
         for name in required {
             let file = root.appendingPathComponent(name)
             let data = try Data(contentsOf: file)
@@ -120,11 +121,30 @@ enum StoryboardFixtureCLI {
 
     private static func validateExport(_ path: String) throws -> ValidationResult {
         let root = URL(fileURLWithPath: path, isDirectory: true)
-        let required = ["manifest.json", "storyboard.json", "storyboard.csv", "storyboard.md", "storyboard.pdf"]
+        let required = ["storyboard.json", "storyboard.csv", "storyboard.md", "storyboard.pdf", "reference-frames/manifest.json"]
+        var files: [String: Data] = [:]
         for name in required {
             let data = try Data(contentsOf: root.appendingPathComponent(name))
             try rejectSensitiveContent(data)
+            files[name] = data
         }
+        guard let documentData = files["storyboard.json"],
+              let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: documentData),
+              let csvData = files["storyboard.csv"],
+              let csv = String(data: csvData, encoding: .utf8),
+              csv.split(separator: "\n").count == document.shots.count + 1,
+              let markdownData = files["storyboard.md"],
+              let markdown = String(data: markdownData, encoding: .utf8),
+              document.shots.allSatisfy({ markdown.contains($0.id.rawValue) }),
+              let pdf = files["storyboard.pdf"], pdf.starts(with: Data("%PDF-".utf8)), pdf.count > 1_000,
+              let manifestData = files["reference-frames/manifest.json"],
+              let manifest = try? JSONDecoder().decode(CLIReferenceManifest.self, from: manifestData),
+              Set(manifest.items.map(\.shotID)) == Set(document.shots.map(\.id.rawValue)),
+              manifest.items.allSatisfy({ item in
+                  !item.fileName.contains("/")
+                      && ((try? Data(contentsOf: root.appendingPathComponent("reference-frames/\(item.fileName)")))?.starts(with: [0xff, 0xd8]) ?? false)
+              })
+        else { throw CLIError.invalidArtifact }
         return ValidationResult(kind: "storyboard-export", valid: true, filesChecked: required.count)
     }
 
@@ -216,6 +236,7 @@ private enum CLIError: Error, CustomStringConvertible {
     case fileMissing
     case unreadableVideo
     case sensitiveArtifact
+    case invalidArtifact
 
     var description: String {
         switch self {
@@ -231,6 +252,17 @@ private enum CLIError: Error, CustomStringConvertible {
             return "input has no readable video track"
         case .sensitiveArtifact:
             return "artifact contains a secret marker or absolute user path"
+        case .invalidArtifact:
+            return "artifact structure or round-trip validation failed"
         }
     }
+}
+
+private struct CLIReferenceManifest: Decodable {
+    let items: [CLIReferenceManifestItem]
+}
+
+private struct CLIReferenceManifestItem: Decodable {
+    let shotID: String
+    let fileName: String
 }

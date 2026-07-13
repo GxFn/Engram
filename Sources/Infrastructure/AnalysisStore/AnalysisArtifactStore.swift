@@ -148,6 +148,64 @@ public actor AnalysisArtifactStore {
         return rootURL.appendingPathComponent(runID).appendingPathComponent(Self.fileName(for: stage))
     }
 
+    public func loadArtifact<T: Decodable & Sendable>(
+        _ type: T.Type,
+        stage: AnalysisStage,
+        from run: AnalysisRun
+    ) throws -> T? {
+        guard let checkpoint = run.checkpoints.first(where: { $0.stage == stage }) else {
+            return nil
+        }
+        let url = runDirectory(clipID: run.clipID, runID: run.id)
+            .appendingPathComponent(checkpoint.relativePath)
+        let data = try Data(contentsOf: url)
+        guard data.count == checkpoint.byteCount, Self.sha256(data) == checkpoint.sha256 else {
+            throw AnalysisArtifactStoreError.invalidManifest
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(T.self, from: data)
+    }
+
+    public func saveAuxiliaryArtifact<T: Encodable & Sendable>(
+        _ value: T,
+        name: String,
+        for run: AnalysisRun
+    ) throws {
+        try Self.validateIdentifier(name)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try writeAtomically(
+            encoder.encode(value),
+            to: runDirectory(clipID: run.clipID, runID: run.id)
+                .appendingPathComponent("aux-\(name).json")
+        )
+    }
+
+    public func loadAuxiliaryArtifact<T: Decodable & Sendable>(
+        _ type: T.Type,
+        name: String,
+        from run: AnalysisRun
+    ) throws -> T? {
+        try Self.validateIdentifier(name)
+        let url = runDirectory(clipID: run.clipID, runID: run.id)
+            .appendingPathComponent("aux-\(name).json")
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(T.self, from: Data(contentsOf: url))
+    }
+
+    public func deleteAuxiliaryArtifact(name: String, from run: AnalysisRun) throws {
+        try Self.validateIdentifier(name)
+        let url = runDirectory(clipID: run.clipID, runID: run.id)
+            .appendingPathComponent("aux-\(name).json")
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
     public func deleteArtifacts(clipID: String) throws {
         try Self.validateIdentifier(clipID)
         let directory = rootURL.appendingPathComponent(clipID, isDirectory: true)

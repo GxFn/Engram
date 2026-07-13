@@ -2,7 +2,9 @@ import ClipCore
 import Foundation
 import Observation
 import ScriptCore
+import StoryboardCore
 import SwiftUI
+import VideoUnderstanding
 
 #if os(iOS)
 import AVFoundation
@@ -28,6 +30,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     public let scriptJSON: String?
     /// Authoritative evidence-grounded storyboard JSON. Legacy Script remains a projection.
     public let storyboardJSON: String?
+    public let activeRunID: String?
+    public let qualityStatusRaw: String?
     /// Coarse content type, used to route the clip into the 剪藏 vs 拆解 library.
     public let sourceKind: ClipSourceKind
 
@@ -45,6 +49,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         indexPreview: String?,
         scriptJSON: String? = nil,
         storyboardJSON: String? = nil,
+        activeRunID: String? = nil,
+        qualityStatusRaw: String? = nil,
         sourceKind: ClipSourceKind = .text
     ) {
         self.id = id
@@ -60,6 +66,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
         self.storyboardJSON = storyboardJSON
+        self.activeRunID = activeRunID
+        self.qualityStatusRaw = qualityStatusRaw
         self.sourceKind = sourceKind
     }
 
@@ -71,6 +79,11 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     /// Decoded breakdown, if this clip carries a persisted script.
     public var breakdown: Script? {
         ScriptCoding.decode(json: scriptJSON)
+    }
+
+    public var storyboard: StoryboardDocumentV2? {
+        guard let storyboardJSON else { return nil }
+        return try? JSONDecoder().decode(StoryboardDocumentV2.self, from: Data(storyboardJSON.utf8))
     }
 
     /// Human-meaningful title for lists/navigation: imported videos carry a UUID temp filename as
@@ -126,7 +139,7 @@ public struct MemoryClient: Sendable {
     public let reanalyzeScript: @Sendable (String) async throws -> Script
     /// Exports Markdown/JSON/CSV/PDF/reference frames from the authoritative V2 document.
     public let exportStoryboard: @Sendable (String) async throws -> [URL]
-    public let editStoryboardShot: @Sendable (String, Int, StoryboardShotEditCommand) async throws -> Script
+    public let editStoryboardShot: @Sendable (String, Int, StoryboardShotEditCommand) async throws -> StoryboardEditPresentation
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
@@ -145,7 +158,7 @@ public struct MemoryClient: Sendable {
         exportStoryboard: @escaping @Sendable (String) async throws -> [URL] = { _ in
             throw MemoryClientError.exportUnavailable
         },
-        editStoryboardShot: @escaping @Sendable (String, Int, StoryboardShotEditCommand) async throws -> Script = { _, _, _ in
+        editStoryboardShot: @escaping @Sendable (String, Int, StoryboardShotEditCommand) async throws -> StoryboardEditPresentation = { _, _, _ in
             throw MemoryClientError.editingUnavailable
         }
     ) {
@@ -177,6 +190,67 @@ public enum StoryboardShotEditCommand: Hashable, Sendable {
     case split(atSeconds: Double)
     case mergeWithNext
     case editDialogue(String?)
+    case moveEndBoundary(toSeconds: Double)
+    case editPlan(StoryboardPlanEditValues)
+    case undo
+    case reanalyze
+}
+
+public struct StoryboardEditPresentation: Sendable {
+    public let script: Script
+    public let document: StoryboardDocumentV2
+    public let changedShotIDs: [String]
+    public let changedFields: [String]
+    public let invalidatedStages: [String]
+    public let remapSummary: String?
+
+    public init(
+        script: Script,
+        document: StoryboardDocumentV2,
+        changedShotIDs: [String],
+        changedFields: [String],
+        invalidatedStages: [String],
+        remapSummary: String?
+    ) {
+        self.script = script
+        self.document = document
+        self.changedShotIDs = changedShotIDs
+        self.changedFields = changedFields
+        self.invalidatedStages = invalidatedStages
+        self.remapSummary = remapSummary
+    }
+}
+
+public struct StoryboardPlanEditValues: Hashable, Sendable {
+    public let purpose: String?
+    public let subjectAction: String?
+    public let dialogueOrVO: String?
+    public let onScreenCopy: String?
+    public let productionNotes: String?
+
+    public init(
+        purpose: String?,
+        subjectAction: String?,
+        dialogueOrVO: String?,
+        onScreenCopy: String?,
+        productionNotes: String?
+    ) {
+        self.purpose = purpose
+        self.subjectAction = subjectAction
+        self.dialogueOrVO = dialogueOrVO
+        self.onScreenCopy = onScreenCopy
+        self.productionNotes = productionNotes
+    }
+
+    public var domainValues: [EditablePlanField: String?] {
+        [
+            .purpose: purpose,
+            .subjectAction: subjectAction,
+            .dialogueOrVO: dialogueOrVO,
+            .onScreenCopy: onScreenCopy,
+            .productionNotes: productionNotes,
+        ]
+    }
 }
 
 public enum MemoryClientError: Error, LocalizedError {
@@ -383,7 +457,7 @@ public final class MemoryViewModel {
         _ item: MemoryClip,
         shotIndex: Int,
         command: StoryboardShotEditCommand
-    ) async -> Script? {
+    ) async -> StoryboardEditPresentation? {
         do {
             let script = try await client.editStoryboardShot(item.id, shotIndex, command)
             items = (try? await client.loadItems()) ?? items
@@ -827,7 +901,7 @@ private struct MemoryDetailView: View {
     /// AI re-analysis from corrected facts + 背景; returns the updated script.
     var onReanalyze: () async -> Script? = { nil }
     var onExportStoryboard: () async -> [URL]? = { nil }
-    var onEditStoryboardShot: (Int, StoryboardShotEditCommand) async -> Script? = { _, _ in nil }
+    var onEditStoryboardShot: (Int, StoryboardShotEditCommand) async -> StoryboardEditPresentation? = { _, _ in nil }
 
     @State private var isEditing = false
     @State private var editDraft = ""
@@ -835,14 +909,22 @@ private struct MemoryDetailView: View {
     // The latest edited/re-analyzed script — `item` is an immutable row copy, so edits display
     // from this override until the list refreshes.
     @State private var revisedScript: Script?
+    @State private var revisedStoryboard: StoryboardDocumentV2?
+    @State private var editFeedback: String?
     @State private var isEditingContext = false
     @State private var contextDraft = ""
     @State private var isEditingFacts = false
     @State private var factsDraft = ScriptFactsDraft()
     @State private var editingShot: StoryboardShot?
+    @State private var editingBoundary: BoundaryEditContext?
+    @State private var editingPlan: PlanEditContext?
 
     private var displayedBreakdown: Script? {
         revisedScript ?? item.breakdown
+    }
+
+    private var displayedStoryboard: StoryboardDocumentV2? {
+        revisedStoryboard ?? item.storyboard
     }
 
     var body: some View {
@@ -855,6 +937,12 @@ private struct MemoryDetailView: View {
                             retry()
                         }
                     }
+                }
+            }
+
+            if let editFeedback {
+                Section("本次分镜变更") {
+                    Text(editFeedback).font(.footnote)
                 }
             }
 
@@ -890,6 +978,59 @@ private struct MemoryDetailView: View {
                     }
                 } footer: {
                     Text("直接说哪里不对（背景/台词/爆点…），AI 会当场修正拆解；长按各区块可手动编辑。")
+                }
+
+                if let storyboard = displayedStoryboard {
+                    Section("证据分镜") {
+                        LabeledContent("质量", value: item.qualityStatusRaw ?? "unknown")
+                        LabeledContent("实际模式", value: storyboard.source.actualCloudMode.rawValue)
+                        LabeledContent("完整视频上传", value: storyboard.source.mediaUploaded ? "是" : "否")
+                        if let note = storyboard.source.degradationNote, !note.isEmpty {
+                            Label(note, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+
+                    Section("原片事实 · SourceBreakdown") {
+                        ForEach(storyboard.shotGraph.shots.indices, id: \.self) { index in
+                            StoryboardSourceShotRow(document: storyboard, index: index)
+                        }
+                    }
+
+                    Section("内容分析") {
+                        Text(storyboard.contentAnalysis.summary)
+                        if !storyboard.contentAnalysis.themes.isEmpty {
+                            LabeledContent("主题", value: storyboard.contentAnalysis.themes.joined(separator: "、"))
+                        }
+                        if let hook = storyboard.contentAnalysis.hook {
+                            LabeledContent("Hook", value: hook)
+                        }
+                    }
+
+                    Section("重拍分镜 · ProductionPlan") {
+                        ForEach(storyboard.shots) { shot in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(shot.id.rawValue).font(.subheadline.weight(.semibold))
+                                Text(shot.productionPlan?.subjectAction ?? "待确认")
+                                if let dialogue = shot.productionPlan?.dialogueOrVO {
+                                    Text("台词：\(dialogue)").font(.footnote)
+                                }
+                                if let locks = shot.productionPlan?.userLockedFields, !locks.isEmpty {
+                                    Text("人工锁：\(locks.sorted().joined(separator: ", "))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    editingPlan = PlanEditContext(shotIndex: max(0, (shot.productionPlan?.displayNumber ?? 1) - 1), plan: shot.productionPlan)
+                                } label: {
+                                    Label("编辑专业字段…", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if let context = breakdown.userContext, !context.isEmpty {
@@ -949,7 +1090,7 @@ private struct MemoryDetailView: View {
                                             Task {
                                                 let index = shot.index
                                                 if let updated = await onEditStoryboardShot(index, .editDialogue(caption)) {
-                                                    revisedScript = updated
+                                                    apply(updated)
                                                 }
                                             }
                                         } label: {
@@ -963,9 +1104,31 @@ private struct MemoryDetailView: View {
                                     }
                                     Button {
                                         Task {
+                                            if let updated = await onEditStoryboardShot(shot.index, .reanalyze) {
+                                                apply(updated)
+                                            }
+                                        }
+                                    } label: {
+                                        Label("只重新分析此镜头", systemImage: "sparkles")
+                                    }
+                                    if shot.index < breakdown.shots.count - 1 {
+                                        Button {
+                                            let nextEnd = breakdown.shots[shot.index + 1].endSeconds
+                                            editingBoundary = BoundaryEditContext(
+                                                shotIndex: shot.index,
+                                                lower: shot.startSeconds + 0.05,
+                                                upper: max(shot.startSeconds + 0.1, nextEnd - 0.05),
+                                                value: shot.endSeconds
+                                            )
+                                        } label: {
+                                            Label("调整结束边界…", systemImage: "arrow.left.and.right")
+                                        }
+                                    }
+                                    Button {
+                                        Task {
                                             let midpoint = (shot.startSeconds + shot.endSeconds) / 2
                                             if let updated = await onEditStoryboardShot(shot.index, .split(atSeconds: midpoint)) {
-                                                revisedScript = updated
+                                                apply(updated)
                                             }
                                         }
                                     } label: {
@@ -975,7 +1138,7 @@ private struct MemoryDetailView: View {
                                         Button {
                                             Task {
                                                 if let updated = await onEditStoryboardShot(shot.index, .mergeWithNext) {
-                                                    revisedScript = updated
+                                                    apply(updated)
                                                 }
                                             }
                                         } label: {
@@ -1080,6 +1243,32 @@ private struct MemoryDetailView: View {
                     .accessibilityLabel("复制或分享剧本，投喂到豆包/即梦")
                 }
             }
+            if displayedStoryboard != nil {
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        Button {
+                            Task {
+                                if let updated = await onEditStoryboardShot(0, .undo) {
+                                    apply(updated)
+                                }
+                            }
+                        } label: {
+                            Label("撤销上次分镜编辑", systemImage: "arrow.uturn.backward")
+                        }
+                        Button {
+                            Task {
+                                if let updated = await onEditStoryboardShot(0, .reanalyze) {
+                                    apply(updated)
+                                }
+                            }
+                        } label: {
+                            Label("局部重新分析", systemImage: "sparkles")
+                        }
+                    } label: {
+                        Label("分镜工具", systemImage: "timeline.selection")
+                    }
+                }
+            }
         }
         .sheet(isPresented: $isEditing) { editSheet }
         .sheet(isPresented: $isEditingContext) {
@@ -1106,7 +1295,25 @@ private struct MemoryDetailView: View {
                 Task {
                     let index = shot.index
                     if let updated = await onEditStoryboardShot(index, .editDialogue(newNarration)) {
-                        revisedScript = updated
+                        apply(updated)
+                    }
+                }
+            }
+        }
+        .sheet(item: $editingBoundary) { context in
+            BoundaryEditSheet(context: context) { seconds in
+                Task {
+                    if let updated = await onEditStoryboardShot(context.shotIndex, .moveEndBoundary(toSeconds: seconds)) {
+                        apply(updated)
+                    }
+                }
+            }
+        }
+        .sheet(item: $editingPlan) { context in
+            PlanEditSheet(context: context) { values in
+                Task {
+                    if let updated = await onEditStoryboardShot(context.shotIndex, .editPlan(values)) {
+                        apply(updated)
                     }
                 }
             }
@@ -1122,6 +1329,22 @@ private struct MemoryDetailView: View {
     /// scripts (their 台词 is auto-corrected during analysis), so they aren't free-text editable here.
     private var canEditContent: Bool {
         item.breakdown == nil && !(item.bodyText ?? "").isEmpty
+    }
+
+    private func apply(_ presentation: StoryboardEditPresentation) {
+        revisedScript = presentation.script
+        revisedStoryboard = presentation.document
+        var parts = ["影响镜头：\(presentation.changedShotIDs.joined(separator: ", "))"]
+        if !presentation.changedFields.isEmpty {
+            parts.append("字段：\(presentation.changedFields.joined(separator: ", "))")
+        }
+        if let remap = presentation.remapSummary {
+            parts.append("映射：\(remap)")
+        }
+        if !presentation.invalidatedStages.isEmpty {
+            parts.append("待重算：\(presentation.invalidatedStages.joined(separator: " → "))")
+        }
+        editFeedback = parts.joined(separator: "；")
     }
 
     /// Only indexed clips have retrievable content, so only they can be asked about.
@@ -1206,6 +1429,149 @@ private struct MemoryDetailView: View {
                 }
             }
         }
+    }
+}
+
+private struct StoryboardSourceShotRow: View {
+    let segment: ShotSegment
+    let shot: StoryboardShotV2?
+
+    init(document: StoryboardDocumentV2, index: Int) {
+        let selected = document.shotGraph.shots[index]
+        segment = selected
+        shot = document.shots.first { $0.id == selected.id }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("\(segment.id.rawValue)  \(segment.timeRange.startSeconds.formatted(.number.precision(.fractionLength(2))))–\(segment.timeRange.endSeconds.formatted(.number.precision(.fractionLength(2))))s")
+                .font(.subheadline.weight(.semibold))
+            if let shot, !shot.observedFacts.facts.isEmpty {
+                ForEach(shot.observedFacts.facts) { fact in
+                    Text("\(fact.field.rawValue)：\(fact.value)")
+                        .font(.footnote)
+                    Text("证据：\(fact.evidenceIDs.map(\.rawValue).joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("暂无可证实事实")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let flags = shot?.observedFacts.reviewFlags, !flags.isEmpty {
+                Text("需复核：\(flags.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+}
+
+private struct BoundaryEditContext: Identifiable, Hashable {
+    var id: Int { shotIndex }
+    let shotIndex: Int
+    let lower: Double
+    let upper: Double
+    let value: Double
+}
+
+private struct BoundaryEditSheet: View {
+    let context: BoundaryEditContext
+    let save: (Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var value: Double
+
+    init(context: BoundaryEditContext, save: @escaping (Double) -> Void) {
+        self.context = context
+        self.save = save
+        _value = State(initialValue: min(context.upper, max(context.lower, context.value)))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("镜头结束边界") {
+                    Slider(value: $value, in: context.lower...context.upper)
+                    LabeledContent("时间", value: "\(value.formatted(.number.precision(.fractionLength(2)))) 秒")
+                }
+                Text("本地 ShotGraph 仍是事实时间轴；移动边界会保持相邻镜头连续，并只使受影响镜头的关键帧、证据、理解和索引失效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("调整边界")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { save(value); dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct PlanEditContext: Identifiable, Hashable {
+    var id: Int { shotIndex }
+    let shotIndex: Int
+    let plan: ShotProductionPlan?
+}
+
+private struct PlanEditSheet: View {
+    let context: PlanEditContext
+    let save: (StoryboardPlanEditValues) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var purpose: String
+    @State private var subjectAction: String
+    @State private var dialogue: String
+    @State private var copy: String
+    @State private var notes: String
+
+    init(context: PlanEditContext, save: @escaping (StoryboardPlanEditValues) -> Void) {
+        self.context = context
+        self.save = save
+        _purpose = State(initialValue: context.plan?.purpose ?? "")
+        _subjectAction = State(initialValue: context.plan?.subjectAction ?? "")
+        _dialogue = State(initialValue: context.plan?.dialogueOrVO ?? "")
+        _copy = State(initialValue: context.plan?.onScreenCopy ?? "")
+        _notes = State(initialValue: context.plan?.productionNotes ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("镜头目的", text: $purpose, axis: .vertical)
+                TextField("主体动作", text: $subjectAction, axis: .vertical)
+                TextField("台词 / 旁白", text: $dialogue, axis: .vertical)
+                TextField("屏幕文字", text: $copy, axis: .vertical)
+                TextField("制作备注", text: $notes, axis: .vertical)
+                Text("保存后的字段会标为人工来源并锁定；后续局部重分析不得覆盖。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("编辑专业字段")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        save(StoryboardPlanEditValues(
+                            purpose: purpose.trimmedNil,
+                            subjectAction: subjectAction.trimmedNil,
+                            dialogueOrVO: dialogue.trimmedNil,
+                            onScreenCopy: copy.trimmedNil,
+                            productionNotes: notes.trimmedNil
+                        ))
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension String {
+    var trimmedNil: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }
 

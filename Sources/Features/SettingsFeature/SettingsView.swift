@@ -108,6 +108,20 @@ public struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+            Picker("视频分析", selection: cloudVideoModeBinding) {
+                ForEach(CloudVideoAnalysisMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            if viewModel.visionBackend.cloudVideoMode == .deep {
+                Toggle("仅允许下一条视频上传完整文件", isOn: fullVideoUploadBinding)
+                Stepper(value: uploadLimitBinding, in: 10...2_000, step: 10) {
+                    LabeledContent("单次上传上限", value: "\(viewModel.visionBackend.maximumUploadMegabytes) MB")
+                }
+                Text("深度模式会先做无密 capability probe；只有服务声明 full-video、云 ASR 与异步任务能力，且你明确允许上传并满足大小上限时，才会上传完整视频。本同意为一次性，提交任务后自动关闭；服务商可能收费，Engram 不编造无法核实的价格。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Text("兼容豆包 / DeepSeek / 通义 / GLM 等 OpenAI 接口；模型请填接入点 ID（豆包形如 ep-…）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -270,6 +284,39 @@ public struct SettingsView: View {
         Binding(
             get: { viewModel.visionBackend.cloudTextModel },
             set: { viewModel.setCloudTextModel($0) }
+        )
+    }
+
+    private var cloudVideoModeBinding: Binding<CloudVideoAnalysisMode> {
+        Binding(
+            get: { viewModel.visionBackend.cloudVideoMode },
+            set: { mode in
+                var settings = viewModel.visionBackend
+                settings.cloudVideoMode = mode
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var fullVideoUploadBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.visionBackend.allowsFullVideoUpload },
+            set: { allowed in
+                var settings = viewModel.visionBackend
+                settings.allowsFullVideoUpload = allowed
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var uploadLimitBinding: Binding<Int> {
+        Binding(
+            get: { viewModel.visionBackend.maximumUploadMegabytes },
+            set: { megabytes in
+                var settings = viewModel.visionBackend
+                settings.maximumUploadMegabytes = megabytes
+                viewModel.updateVisionBackend(settings)
+            }
         )
     }
 

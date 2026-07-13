@@ -53,3 +53,28 @@ import VideoUnderstanding
     #expect(keyframes.count == graph.shots.count)
     #expect(keyframes.allSatisfy { $0.frame.jpegData.starts(with: [0xff, 0xd8]) })
 }
+
+@Test func adaptiveDetectorClassifiesGradualFade() throws {
+    let asset = VideoAssetDescriptor(
+        sourceID: "synthetic-fade", durationSeconds: 2, nominalFrameRate: 30,
+        frameCount: 60, width: 320, height: 180, timescale: 600,
+        codec: "synthetic", hasAudio: false, fileSizeBytes: 1,
+        fingerprint: SourceFingerprint(value: "fade")
+    )
+    let signals = (0..<60).map { frame -> ShotFrameSignal in
+        let progress = frame < 20 ? 0.8 : (frame <= 35 ? 0.8 - Double(frame - 20) * 0.05 : 0.05)
+        return ShotFrameSignal(
+            frame: frame,
+            timestampSeconds: Double(frame) / 30,
+            histogram: [progress, 1 - progress],
+            luma: progress,
+            edgeEnergy: progress * 0.3,
+            blackRatio: progress < 0.08 ? 0.98 : 0
+        )
+    }
+
+    let graph = try AdaptiveShotBoundaryDetector().detect(signals: signals, asset: asset)
+
+    #expect(graph.shots.contains { $0.transitionOut == .fade })
+    #expect(graph.coverageRatio == 1)
+}

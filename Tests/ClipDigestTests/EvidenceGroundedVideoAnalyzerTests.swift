@@ -8,9 +8,14 @@ import Testing
 import VideoUnderstanding
 
 @Test func groundedAnalyzerConnectsV2ToLegacyAndCheckpointStore() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("EngramGroundedAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: root) }
+    let retainedPath = ProcessInfo.processInfo.environment["ENGRAM_ARTIFACT_EVIDENCE_DIR"]
+    let root = retainedPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("EngramGroundedAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        if retainedPath == nil { try? FileManager.default.removeItem(at: root) }
+    }
+    try? FileManager.default.removeItem(at: root)
     let store = try AnalysisArtifactStore(rootURL: root, now: { Date(timeIntervalSince1970: 10) })
     let source = VideoSource(
         id: "clip-grounded",
@@ -19,17 +24,23 @@ import VideoUnderstanding
     )
     let asset = groundedAsset(sourceID: source.id)
     let graph = try groundedGraph(asset: asset)
+    let calls = GroundedCallLedger()
     let analyzer = EvidenceGroundedVideoAnalyzer(
-        base: GroundedBaseAnalyzer(),
-        probe: GroundedProbe(asset: asset),
-        detector: GroundedDetector(graph: graph),
-        keyframeSelector: GroundedKeyframes(shotID: graph.shots[0].id),
+        probe: GroundedProbe(asset: asset, calls: calls),
+        detector: GroundedDetector(graph: graph, calls: calls),
+        keyframeSelector: GroundedKeyframes(shotID: graph.shots[0].id, calls: calls),
+        transcriber: GroundedTranscriber(calls: calls),
+        corrector: GroundedCorrector(),
+        recognizer: GroundedOCR(calls: calls),
+        understandingProvider: GroundedUnderstanding(calls: calls),
+        cloudEnricher: GroundedCloud(calls: calls),
         artifactStore: store,
         pipelineVersion: "test-v2",
         runID: { "run-grounded" }
     )
 
     let result = try await analyzer.analyzeGrounded(source, onStage: { _ in })
+    let resumedResult = try await analyzer.analyzeGrounded(source, onStage: { _ in })
     let resumed = try await store.loadResumableRun(
         clipID: source.id,
         fingerprint: asset.fingerprint,
@@ -40,42 +51,144 @@ import VideoUnderstanding
     #expect(result.document.shotGraph == graph)
     #expect(result.legacy.shots[0].startSeconds == graph.shots[0].timeRange.startSeconds)
     #expect(result.quality.evidenceLinkCoverage == 1)
-    #expect(result.evidence.contains { $0.kind == .frame })
-    #expect(resumed?.completedStages.contains(.quality) == true)
+    #expect(result.evidence.contains { $0.kind == EvidenceKind.frame })
+    #expect(result.evidence.contains { $0.kind == EvidenceKind.transcript && $0.rawText == "原始台词" && $0.correctedText == "校正台词" })
+    #expect(result.evidence.contains { $0.kind == EvidenceKind.ocr && $0.timeRange.startSeconds == 0.4 })
+    #expect(result.evidence.contains { $0.kind == EvidenceKind.cloudTimeline })
+    #expect(result.run.status == .completed)
+    #expect(result.run.completedStages == AnalysisStage.allCases)
+    #expect(resumed?.status == .completed)
+    #expect(resumed?.completedStages == AnalysisStage.allCases)
+    #expect(resumedResult.run.id == result.run.id)
+    #expect(await calls.value("probe") == 2)
+    #expect(await calls.value("detector") == 1)
+    #expect(await calls.value("keyframes") == 1)
+    #expect(await calls.value("transcriber") == 1)
+    #expect(await calls.value("ocr") == 1)
+    #expect(await calls.value("understanding") == 2)
+    #expect(await calls.value("cloud") == 1)
+    let partiallyRefreshed = try await analyzer.reanalyzeGrounded(
+        source,
+        document: result.document,
+        shotIDs: [graph.shots[0].id]
+    )
+    #expect(partiallyRefreshed.shots.count == 2)
+    #expect(await calls.value("understanding") == 3)
 }
 
-private struct GroundedBaseAnalyzer: VideoAnalyzing {
-    func analyze(_ source: VideoSource, onStage: @Sendable (ClipState) async -> Void) async throws -> Script {
-        Script(
-            id: "legacy", videoSourceID: source.id, title: "真实标题", summary: "真实总结",
-            shots: [StoryboardShot(
-                index: 0, startSeconds: 0, endSeconds: 1,
-                narration: "一句台词", visualDescription: "人物转身", onScreenText: ["留下"]
-            )],
-            createdAt: Date(timeIntervalSince1970: 5)
+private struct GroundedTranscriber: Transcriber {
+    let calls: GroundedCallLedger
+    func transcribe(_ source: VideoSource) async throws -> [TranscriptSegment] {
+        await calls.increment("transcriber")
+        return [TranscriptSegment(startSeconds: 0.1, endSeconds: 0.8, text: "原始台词")]
+    }
+}
+
+private struct GroundedCorrector: TranscriptCorrecting {
+    func correct(_ segments: [TranscriptSegment], onScreenText: [FrameText]) async throws -> [TranscriptSegment] {
+        [TranscriptSegment(startSeconds: segments[0].startSeconds, endSeconds: segments[0].endSeconds, text: "校正台词")]
+    }
+}
+
+private struct GroundedOCR: FrameTextRecognizing {
+    let calls: GroundedCallLedger
+    func recognizeText(in source: VideoSource) async -> [FrameText] {
+        await calls.increment("ocr")
+        return [FrameText(timestampSeconds: 0.4, lines: ["画面文字"])]
+    }
+}
+
+private struct GroundedUnderstanding: ShotUnderstandingProviding {
+    let calls: GroundedCallLedger
+    func understand(_ input: ShotUnderstandingInput, displayNumber: Int) async throws -> ShotUnderstandingOutput {
+        await calls.increment("understanding")
+        let evidenceIDs = input.evidence.map(\.id)
+        return ShotUnderstandingOutput(
+            shot: StoryboardShotV2(
+                id: input.shot.id,
+                observedFacts: ObservedShotFacts(facts: [GroundedFact(
+                    field: .action,
+                    value: "人物转身",
+                    evidenceIDs: evidenceIDs,
+                    source: .onDeviceModel,
+                    confidence: 0.9
+                )]),
+                productionPlan: ShotProductionPlan(
+                    shotID: input.shot.id,
+                    displayNumber: displayNumber,
+                    subjectAction: "人物转身",
+                    dialogueOrVO: input.transcript.first?.text,
+                    sourceShotRefs: [input.shot.id],
+                    isDerivedCreativePlan: true
+                )
+            ),
+            title: "真实标题",
+            summary: "真实总结"
+        )
+    }
+}
+
+private struct GroundedCloud: CloudStoryboardEnriching {
+    let calls: GroundedCallLedger
+    func enrich(
+        source: VideoSource,
+        asset: VideoAssetDescriptor,
+        graph: ShotGraph,
+        resume: CloudVideoJobCheckpoint?,
+        checkpoint: @Sendable (CloudVideoJobCheckpoint) async throws -> Void
+    ) async throws -> CloudStoryboardEnrichment {
+        await calls.increment("cloud")
+        return CloudStoryboardEnrichment(
+            context: StoryboardExecutionContext(cloudMode: .cloudDeep, mediaUploaded: true),
+            evidence: [EvidenceRef(
+                id: EvidenceID(rawValue: "cloud:timeline"),
+                kind: .cloudTimeline,
+                timeRange: graph.shots[0].timeRange,
+                frameRange: nil,
+                payloadRef: "cloud/timeline.json",
+                source: .cloudModel,
+                confidence: 0.9,
+                rawText: "云端观察"
+            )]
         )
     }
 }
 
 private struct GroundedProbe: VideoAssetProbing {
     let asset: VideoAssetDescriptor
-    func probe(_ source: VideoSource) async throws -> VideoAssetDescriptor { asset }
+    let calls: GroundedCallLedger
+    func probe(_ source: VideoSource) async throws -> VideoAssetDescriptor {
+        await calls.increment("probe")
+        return asset
+    }
 }
 
 private struct GroundedDetector: ShotBoundaryDetecting {
     let graph: ShotGraph
-    func detect(in asset: VideoAssetDescriptor, sourceURL: URL, quality: AnalysisQuality) async throws -> ShotGraph { graph }
+    let calls: GroundedCallLedger
+    func detect(in asset: VideoAssetDescriptor, sourceURL: URL, quality: AnalysisQuality) async throws -> ShotGraph {
+        await calls.increment("detector")
+        return graph
+    }
 }
 
 private struct GroundedKeyframes: ShotKeyframeSelecting {
     let shotID: ShotID
+    let calls: GroundedCallLedger
     func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe] {
-        [ShotKeyframe(
+        await calls.increment("keyframes")
+        return [ShotKeyframe(
             shotID: shotID,
-            frame: SampledFrame(timestampSeconds: 0.5, jpegData: Data([1, 2, 3])),
+            frame: SampledFrame(timestampSeconds: 0.25, jpegData: Data([1, 2, 3])),
             artifactRef: "shots/S001/representative.jpg"
         )]
     }
+}
+
+private actor GroundedCallLedger {
+    private var counts: [String: Int] = [:]
+    func increment(_ key: String) { counts[key, default: 0] += 1 }
+    func value(_ key: String) -> Int { counts[key, default: 0] }
 }
 
 private func groundedAsset(sourceID: String) -> VideoAssetDescriptor {
@@ -87,11 +200,20 @@ private func groundedAsset(sourceID: String) -> VideoAssetDescriptor {
 }
 
 private func groundedGraph(asset: VideoAssetDescriptor) throws -> ShotGraph {
-    try ShotGraph(asset: asset, shots: [ShotSegment(
-        id: ShotID(rawValue: "S001"),
-        timeRange: MediaTimeRange(startSeconds: 0, endSeconds: 1),
-        frameRange: FrameRange(startFrame: 0, endFrameExclusive: 30),
-        transitionIn: .start, transitionOut: .end, boundaryConfidence: 1,
-        detectorEvidenceIDs: ["detector:S001"]
-    )])
+    try ShotGraph(asset: asset, shots: [
+        ShotSegment(
+            id: ShotID(rawValue: "S001"),
+            timeRange: MediaTimeRange(startSeconds: 0, endSeconds: 0.5),
+            frameRange: FrameRange(startFrame: 0, endFrameExclusive: 15),
+            transitionIn: .start, transitionOut: .cut, boundaryConfidence: 1,
+            detectorEvidenceIDs: ["detector:S001"]
+        ),
+        ShotSegment(
+            id: ShotID(rawValue: "S002"),
+            timeRange: MediaTimeRange(startSeconds: 0.5, endSeconds: 1),
+            frameRange: FrameRange(startFrame: 15, endFrameExclusive: 30),
+            transitionIn: .cut, transitionOut: .end, boundaryConfidence: 1,
+            detectorEvidenceIDs: ["detector:S002"]
+        ),
+    ])
 }

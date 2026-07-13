@@ -14,6 +14,7 @@ import ShotDetection
 import SpeechTranscription
 import SwiftData
 import VectorStoreSQLite
+import VideoUnderstanding
 
 struct RetrievalServices: Sendable {
     let clipDigestService: ClipDigestService
@@ -22,9 +23,6 @@ struct RetrievalServices: Sendable {
 
 enum RetrievalAssembly {
     static let defaultVideoTranscriptionLocale = Locale(identifier: "zh_CN")
-
-    /// Base (floor) of the analyzer's duration-adaptive frame budget (~1 frame / 10s, ceiling 16).
-    private static let videoAnalyzerMaxFrames = 6
 
     @MainActor
     static func makeServices(
@@ -35,6 +33,7 @@ enum RetrievalAssembly {
         generationConfig: GenerationConfig,
         videoAnalyzer: (any VideoAnalyzing)? = nil,
         visionGenerator: (any VisionScriptGenerating)? = nil,
+        cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
         appGroupLocations: AppGroupLocations? = nil,
         embeddingEngine: (any EmbeddingEngine)? = nil
     ) throws -> RetrievalServices {
@@ -71,6 +70,7 @@ enum RetrievalAssembly {
             activeModel: activeModel,
             generationConfig: generationConfig,
             visionGenerator: visionGenerator,
+            cloudVideoConfiguration: cloudVideoConfiguration,
             artifactRoot: locations.rootDirectory.appendingPathComponent("analysis-artifacts", isDirectory: true)
         )
         let digestService = try ClipDigestService.live(
@@ -91,6 +91,7 @@ enum RetrievalAssembly {
         activeModel: ModelIdentity,
         generationConfig: GenerationConfig,
         visionGenerator: (any VisionScriptGenerating)? = nil,
+        cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
         artifactRoot: URL
     ) throws -> any VideoAnalyzing {
         let textConfiguration = ScriptComposerConfiguration(
@@ -125,34 +126,148 @@ enum RetrievalAssembly {
             )
         }
 
-        let base = VideoAnalyzer(
-            transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
-            sampler: AVFoundationFrameSampler(),
-            visionComposer: visionComposer,
-            textComposer: textComposer,
-            // Cleans the raw ASR with the active text engine before scripting (cheap, one call);
-            // gracefully returns the raw transcript if the model/network is unavailable.
-            corrector: LLMTranscriptCorrector(engine: activeEngine, model: activeModel),
-            // Deterministic on-device OCR of burned-in 字幕/on-screen text — runs regardless of the
-            // 云端/本地 vision backend, so captions are captured and attached to shots.
-            recognizer: VisionFrameTextRecognizer(),
-            maxFrames: videoAnalyzerMaxFrames
-        )
         return EvidenceGroundedVideoAnalyzer(
-            base: base,
             probe: AVFoundationVideoAssetProbe(),
             detector: AVFoundationShotBoundaryDetector(),
             keyframeSelector: AVFoundationShotKeyframeSelector(),
+            transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
+            corrector: LLMTranscriptCorrector(engine: activeEngine, model: activeModel),
+            recognizer: VisionFrameTextRecognizer(),
+            understandingProvider: VisionComposerShotUnderstandingProvider(
+                composer: visionComposer,
+                source: visionGenerator == nil ? .onDeviceModel : .cloudModel
+            ),
+            cloudEnricher: cloudVideoConfiguration.map(ConfiguredCloudStoryboardEnricher.init),
             artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
-            executionContext: { _ in
-                visionGenerator == nil
-                    ? .local
-                    : StoryboardExecutionContext(
+            pipelineVersion: "storyboard-v2.1"
+        )
+    }
+}
+
+private struct ConfiguredCloudStoryboardEnricher: CloudStoryboardEnriching {
+    let configuration: CloudAIResolver.VideoConfiguration
+
+    func enrich(
+        source: VideoSource,
+        asset: VideoAssetDescriptor,
+        graph: ShotGraph,
+        resume: CloudVideoJobCheckpoint?,
+        checkpoint: @Sendable (CloudVideoJobCheckpoint) async throws -> Void
+    ) async throws -> CloudStoryboardEnrichment {
+        let rawProbe = await HTTPCloudCapabilityProbe().probe(configuration.profile)
+        // A configured cloud VLM has already completed the per-shot frame-understanding stage by
+        // the time this enhancer runs. Preserve the unauthenticated probe evidence while recording
+        // that observed standard capability instead of incorrectly labelling the result local.
+        let available = rawProbe.available.union([.frameUnderstanding])
+        let probe = CloudCapabilityProbeResult(
+            providerID: rawProbe.providerID,
+            available: available,
+            unavailable: configuration.profile.declaredCapabilities.subtracting(available),
+            checkedAt: rawProbe.checkedAt,
+            evidence: rawProbe.evidence + "; configured per-shot frame endpoint selected"
+        )
+        let decision = CloudModeResolver.resolve(
+            requested: configuration.requestedMode,
+            profile: configuration.profile,
+            probe: probe,
+            consent: configuration.consent
+        )
+        guard decision.effectiveMode == .cloudDeep, decision.mediaUploadAllowed else {
+            return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                cloudMode: decision.effectiveMode,
+                mediaUploaded: false,
+                degradationNote: decision.degradationNote
+            ))
+        }
+        var hasSubmittedJob = false
+        do {
+            let client = URLSessionCloudVideoJobClient(profile: configuration.profile)
+            var receipt: CloudVideoJobReceipt
+            if let resume,
+               resume.providerID == configuration.profile.id,
+               resume.sourceFingerprint == asset.fingerprint.value {
+                hasSubmittedJob = true
+                receipt = try await client.status(jobID: resume.jobID, bearerToken: configuration.bearerToken)
+            } else {
+                guard await configuration.consumeUploadConsent() else {
+                    return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
                         cloudMode: .cloudStandard,
                         mediaUploaded: false,
-                        degradationNote: "cloudStandard sends sampled frames/text only; full-video upload was not requested"
-                    )
+                        degradationNote: "full-video upload consent was already consumed; enable it again for this video"
+                    ))
+                }
+                let media = try Data(contentsOf: source.localFileURL, options: .mappedIfSafe)
+                let request = CloudVideoJobRequest(
+                    sourceID: source.id,
+                    sourceFingerprint: asset.fingerprint.value,
+                    byteCount: Int64(media.count),
+                    requestedCapabilities: [.fullVideo, .cloudASR]
+                )
+                receipt = try await client.submit(
+                    request,
+                    media: media,
+                    consent: configuration.consent,
+                    bearerToken: configuration.bearerToken
+                )
+                hasSubmittedJob = true
+                try await checkpoint(Self.checkpoint(receipt, configuration: configuration, asset: asset))
             }
+            var polls = 0
+            while receipt.state == .queued || receipt.state == .running {
+                try Task.checkCancellation()
+                guard polls < 60 else {
+                    throw CloudVideoJobError.invalidResponse("cloud video job timed out")
+                }
+                try await Task.sleep(for: .seconds(1))
+                receipt = try await client.status(jobID: receipt.jobID, bearerToken: configuration.bearerToken)
+                try await checkpoint(Self.checkpoint(receipt, configuration: configuration, asset: asset))
+                polls += 1
+            }
+            guard receipt.state == .completed else {
+                return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                    cloudMode: .cloudStandard,
+                    mediaUploaded: true,
+                    degradationNote: "cloudDeep job \(receipt.state.rawValue) and degraded to cloudStandard: \(CloudErrorSanitizer.sanitize(receipt.sanitizedError ?? "provider returned no detail"))"
+                ))
+            }
+            let alignment = CloudTimelineAligner.align(receipt.observations, to: graph)
+            let summary = receipt.observations
+                .filter { $0.kind == .visual }
+                .map(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return CloudStoryboardEnrichment(
+                context: StoryboardExecutionContext(cloudMode: .cloudDeep, mediaUploaded: true),
+                evidence: alignment.items.map(\.evidence),
+                shotsNeedingReview: alignment.shotsNeedingReview,
+                globalSummary: summary.isEmpty ? nil : summary
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if hasSubmittedJob {
+                throw VideoUnderstandingError.visionUnavailable(
+                    "cloud video job is checkpointed for resume: \(CloudErrorSanitizer.sanitize(String(describing: error)))"
+                )
+            }
+            return CloudStoryboardEnrichment(context: StoryboardExecutionContext(
+                cloudMode: .cloudStandard,
+                mediaUploaded: false,
+                degradationNote: "cloudDeep failed after probe and degraded to cloudStandard: \(CloudErrorSanitizer.sanitize(String(describing: error)))"
+            ))
+        }
+    }
+
+    private static func checkpoint(
+        _ receipt: CloudVideoJobReceipt,
+        configuration: CloudAIResolver.VideoConfiguration,
+        asset: VideoAssetDescriptor
+    ) -> CloudVideoJobCheckpoint {
+        CloudVideoJobCheckpoint(
+            providerID: configuration.profile.id,
+            sourceFingerprint: asset.fingerprint.value,
+            jobID: receipt.jobID,
+            state: receipt.state.rawValue
         )
     }
 }

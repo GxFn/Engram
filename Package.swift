@@ -228,7 +228,7 @@ let package = Package(
         ),
         .target(
             name: "MemoryFeature",
-            dependencies: ["ClipCore", "ScriptCore", "EngramLogging"],
+            dependencies: ["ClipCore", "ScriptCore", "StoryboardCore", "VideoUnderstanding", "EngramLogging"],
             path: "Sources/Features/MemoryFeature"
         ),
         .target(
@@ -292,7 +292,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "StoryboardFixtureCLI",
-            dependencies: ["VideoUnderstanding"],
+            dependencies: ["VideoUnderstanding", "StoryboardCore"],
             path: "Tools/StoryboardFixtureCLI"
         ),
 

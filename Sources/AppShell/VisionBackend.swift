@@ -2,12 +2,16 @@ import CloudVision
 import EngineKit
 import Foundation
 import ScriptCore
+import StoryboardCore
 
 enum VisionBackendDefaultsKey {
     static let kind = "visionBackend" // "onDevice" | "cloud" — app-wide AI mode
     static let cloudBaseURL = "cloudVLMBaseURL"
     static let cloudModel = "cloudVLMModel" // vision model id
     static let cloudTextModel = "cloudTextModel" // text/LLM model id
+    static let cloudVideoMode = "cloudVideoAnalysisMode"
+    static let cloudVideoUploadConsent = "cloudVideoUploadConsent"
+    static let cloudVideoUploadMaximumMB = "cloudVideoUploadMaximumMB"
 }
 
 enum VisionBackendKeychainAccount {
@@ -17,6 +21,13 @@ enum VisionBackendKeychainAccount {
 /// The app-wide AI mode is a single switch (本地 ↔ 云端). In 云端 mode, both the text LLM and
 /// the vision backend run on the same cloud endpoint/key; in 本地 mode both run on-device.
 enum CloudAIResolver {
+    struct VideoConfiguration: Sendable {
+        let profile: CloudProviderProfile
+        let requestedMode: EffectiveCloudMode
+        let consent: MediaUploadConsent
+        let bearerToken: String
+        let consumeUploadConsent: @Sendable () async -> Bool
+    }
     static func isCloudMode(defaults: UserDefaults?) -> Bool {
         // Default to cloud when the user hasn't chosen a mode yet (low-memory devices can't run
         // the local models well). Unconfigured cloud gracefully falls back to on-device below.
@@ -32,7 +43,10 @@ enum CloudAIResolver {
         let vision = defaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
         let text = defaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
         let hasKey = KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)?.isEmpty == false
-        return [kind, base, vision, text, hasKey ? "k" : "-"].joined(separator: "|")
+        let videoMode = defaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
+        let uploadConsent = defaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false
+        let uploadMB = defaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200
+        return [kind, base, vision, text, hasKey ? "k" : "-", videoMode, uploadConsent ? "upload" : "no-upload", String(uploadMB)].joined(separator: "|")
     }
 
     /// Cloud is usable only when mode is cloud AND base URL + Keychain key are present.
@@ -84,6 +98,38 @@ enum CloudAIResolver {
         )
     }
 
+    static func makeVideoConfiguration(defaults: UserDefaults?) -> VideoConfiguration? {
+        guard cloudReady(defaults: defaults),
+              let (baseURL, apiKey) = credentials(defaults: defaults)
+        else { return nil }
+        let mode = defaults?.string(forKey: VisionBackendDefaultsKey.cloudVideoMode) ?? "standard"
+        let maximumMB = max(1, defaults?.integer(forKey: VisionBackendDefaultsKey.cloudVideoUploadMaximumMB) ?? 200)
+        let uploadEnabled = defaults?.bool(forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent) ?? false
+        let gate = OneShotUploadConsentGate(enabled: uploadEnabled)
+        nonisolated(unsafe) let capturedDefaults = defaults
+        let profile = CloudProviderProfile(
+            id: baseURL.host ?? "configured-cloud",
+            displayName: baseURL.host ?? "Configured cloud video provider",
+            capabilityURL: baseURL.appendingPathComponent("capabilities/video"),
+            jobURL: baseURL.appendingPathComponent("video/jobs"),
+            declaredCapabilities: Set(CloudCapability.allCases)
+        )
+        return VideoConfiguration(
+            profile: profile,
+            requestedMode: mode == "deep" ? .cloudDeep : .cloudStandard,
+            consent: MediaUploadConsent(
+                allowsUpload: uploadEnabled,
+                maximumBytes: Int64(maximumMB) * 1_024 * 1_024
+            ),
+            bearerToken: apiKey,
+            consumeUploadConsent: {
+                guard await gate.consume() else { return false }
+                capturedDefaults?.set(false, forKey: VisionBackendDefaultsKey.cloudVideoUploadConsent)
+                return true
+            }
+        )
+    }
+
     /// Synthetic model identity for the cloud engine (large context so prompt trimming is rare).
     static let cloudModelIdentity = ModelIdentity(
         id: "cloud",
@@ -92,4 +138,16 @@ enum CloudAIResolver {
         contextLength: 32_768,
         estimatedMemoryBytes: 0
     )
+}
+
+private actor OneShotUploadConsentGate {
+    private var enabled: Bool
+
+    init(enabled: Bool) { self.enabled = enabled }
+
+    func consume() -> Bool {
+        guard enabled else { return false }
+        enabled = false
+        return true
+    }
 }

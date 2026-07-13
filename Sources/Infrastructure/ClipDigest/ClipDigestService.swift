@@ -140,6 +140,14 @@ public enum ClipDigestServiceError: Error, Equatable, Sendable {
     case retryUnavailable(String)
 }
 
+public struct StoryboardEditReceipt: Sendable {
+    public let legacy: Script
+    public let document: StoryboardDocumentV2
+    public let remap: ShotRemap
+    public let diff: StoryboardDiff
+    public let partialRerun: PartialRerunPlan
+}
+
 /// In-app capture intent for the 剪藏 library.
 public enum ClipCaptureInput: Sendable, Equatable {
     case text(String)
@@ -156,6 +164,7 @@ public actor ClipDigestService: ClipDigesting {
     private let videoDirectoryURL: URL?
     private let videoImporter: VideoImporter?
     private let now: @Sendable () -> Date
+    private var storyboardUndoStack: [String: [StoryboardDocumentV2]] = [:]
 
     public init(
         queueStore: ClipQueueStore,
@@ -355,6 +364,90 @@ public actor ClipDigestService: ClipDigesting {
               let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data)
         else { throw ClipDigestServiceError.unsupportedEmptyText("clip \(id) has no V2 storyboard to edit") }
         let updatedDocument = try transform(document)
+        return try await persistStoryboard(updatedDocument, snapshot: snapshot)
+    }
+
+    public func applyStoryboardEdit(
+        id: String,
+        transform: @Sendable (StoryboardDocumentV2) throws -> StoryboardEditResult
+    ) async throws -> StoryboardEditReceipt {
+        let snapshot = try await recordStore.snapshot(id: id)
+        guard let json = snapshot.storyboardJSON,
+              let data = json.data(using: .utf8),
+              let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data)
+        else { throw ClipDigestServiceError.unsupportedEmptyText("clip \(id) has no V2 storyboard to edit") }
+        let result = try transform(document)
+        var stack = storyboardUndoStack[id] ?? []
+        stack.append(result.original)
+        storyboardUndoStack[id] = Array(stack.suffix(20))
+        Log.clip.info(
+            "Applying storyboard edit to \(id, privacy: .public); affected=\(result.partialRerun.affectedShotIDs.count, privacy: .public), invalidated=\(result.partialRerun.invalidatedStages.map(\.rawValue).joined(separator: ","), privacy: .public)"
+        )
+        let legacy = try await persistStoryboard(result.document, snapshot: snapshot)
+        return StoryboardEditReceipt(
+            legacy: legacy,
+            document: result.document,
+            remap: result.remap,
+            diff: result.diff,
+            partialRerun: result.partialRerun
+        )
+    }
+
+    public func undoStoryboard(id: String) async throws -> StoryboardEditReceipt {
+        guard var stack = storyboardUndoStack[id], let document = stack.popLast() else {
+            throw ClipDigestServiceError.retryUnavailable("clip \(id) has no storyboard edit to undo")
+        }
+        storyboardUndoStack[id] = stack
+        let snapshot = try await recordStore.snapshot(id: id)
+        let legacy = try await persistStoryboard(document, snapshot: snapshot)
+        let changed = document.shotGraph.shots.map(\.id)
+        return StoryboardEditReceipt(
+            legacy: legacy,
+            document: document,
+            remap: ShotRemap(mapping: [:]),
+            diff: StoryboardDiff(changedShotIDs: changed),
+            partialRerun: PartialRerunPlan(
+                affectedShotIDs: changed,
+                invalidatedStages: [.synthesis, .quality, .indexing],
+                preservedLockedFields: Set(document.shots.flatMap(\.userLockedFields).compactMap(EditablePlanField.init(rawValue:)))
+            )
+        )
+    }
+
+    public func reanalyzeStoryboard(id: String, shotIndex: Int) async throws -> StoryboardEditReceipt {
+        let snapshot = try await recordStore.snapshot(id: id)
+        guard let grounded = videoAnalyzer as? any EvidenceGroundedVideoAnalyzing,
+              let sourceURL = snapshot.url,
+              let json = snapshot.storyboardJSON,
+              let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: Data(json.utf8)),
+              document.shotGraph.shots.indices.contains(shotIndex)
+        else { throw ClipDigestServiceError.retryUnavailable("clip \(id) cannot run partial storyboard analysis") }
+        let shotID = document.shotGraph.shots[shotIndex].id
+        let source = VideoSource(id: id, localFileURL: sourceURL, importedAt: snapshot.createdAt)
+        let refreshed = try await grounded.reanalyzeGrounded(source, document: document, shotIDs: [shotID])
+        var stack = storyboardUndoStack[id] ?? []
+        stack.append(document)
+        storyboardUndoStack[id] = Array(stack.suffix(20))
+        Log.clip.info("Reanalyzed storyboard shot \(shotID.rawValue, privacy: .public) for \(id, privacy: .public) while preserving user locks")
+        let legacy = try await persistStoryboard(refreshed, snapshot: snapshot)
+        return StoryboardEditReceipt(
+            legacy: legacy,
+            document: refreshed,
+            remap: ShotRemap(mapping: [:]),
+            diff: StoryboardDiff(changedShotIDs: [shotID]),
+            partialRerun: PartialRerunPlan(
+                affectedShotIDs: [shotID],
+                invalidatedStages: [.shotUnderstanding, .synthesis, .quality, .indexing],
+                preservedLockedFields: Set(refreshed.shots.first(where: { $0.id == shotID })?.userLockedFields.compactMap(EditablePlanField.init(rawValue:)) ?? [])
+            )
+        )
+    }
+
+    private func persistStoryboard(
+        _ updatedDocument: StoryboardDocumentV2,
+        snapshot: ClipRecordSnapshot
+    ) async throws -> Script {
+        let id = snapshot.id
         var legacy = StoryboardLegacyProjector.project(updatedDocument)
         if let context = ScriptCoding.decode(json: snapshot.scriptJSON)?.userContext {
             legacy = legacy.withUserContext(context)
@@ -445,6 +538,13 @@ public actor ClipDigestService: ClipDigesting {
                 let script: Script
                 if let grounded = videoAnalyzer as? any EvidenceGroundedVideoAnalyzing {
                     let result = try await grounded.analyzeGrounded(source, onStage: recordStage)
+                    guard result.run.status == .completed, result.quality.status != .failed else {
+                        throw ClassifiedDigestFailure(
+                            reason: "Evidence-grounded storyboard did not pass its final quality gate (run=\(result.run.status.rawValue), quality=\(result.quality.status.rawValue)).",
+                            retryable: true,
+                            underlyingDescription: "V2 final commit rejected"
+                        )
+                    }
                     script = result.legacy
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.sortedKeys]

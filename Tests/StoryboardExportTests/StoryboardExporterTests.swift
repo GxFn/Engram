@@ -5,9 +5,14 @@ import Testing
 import VideoUnderstanding
 
 @Test func exporterWritesAndValidatesFiveRealFormats() throws {
-    let output = FileManager.default.temporaryDirectory
-        .appendingPathComponent("EngramStoryboardExportTests-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: output) }
+    let retainedPath = ProcessInfo.processInfo.environment["ENGRAM_EXPORT_EVIDENCE_DIR"]
+    let output = retainedPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("EngramStoryboardExportTests-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        if retainedPath == nil { try? FileManager.default.removeItem(at: output) }
+    }
+    try? FileManager.default.removeItem(at: output)
     let document = try exportDocument()
     let keyframe = ShotKeyframe(
         shotID: document.shots[0].id,

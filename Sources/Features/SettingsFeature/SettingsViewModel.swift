@@ -92,6 +92,12 @@ public final class SettingsViewModel {
         scheduleRolesReload()
     }
 
+    public func updateVisionBackend(_ settings: VisionBackendSettings) {
+        visionBackend = settings
+        visionBackendClient.save(visionBackend, nil)
+        scheduleRolesReload()
+    }
+
     /// True in 云端 mode when any required field is missing. Cloud routing is all-or-nothing (a
     /// partial config must not split text/vision across backends), so until complete the whole
     /// pipeline runs on-device — Settings must say so instead of silently downgrading.

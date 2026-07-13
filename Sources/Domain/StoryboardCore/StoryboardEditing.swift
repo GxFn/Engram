@@ -44,6 +44,16 @@ public struct PartialRerunPlan: Codable, Hashable, Sendable {
     public let affectedShotIDs: [ShotID]
     public let invalidatedStages: [AnalysisStage]
     public let preservedLockedFields: Set<EditablePlanField>
+
+    public init(
+        affectedShotIDs: [ShotID],
+        invalidatedStages: [AnalysisStage],
+        preservedLockedFields: Set<EditablePlanField>
+    ) {
+        self.affectedShotIDs = affectedShotIDs
+        self.invalidatedStages = invalidatedStages
+        self.preservedLockedFields = preservedLockedFields
+    }
 }
 
 public struct StoryboardEditResult: Sendable {
@@ -64,6 +74,51 @@ public enum StoryboardEditingError: Error, Hashable, Sendable {
 }
 
 public enum StoryboardEditor {
+    public static func moveBoundary(
+        _ document: StoryboardDocumentV2,
+        after firstID: ShotID,
+        toSeconds: Double
+    ) throws -> StoryboardEditResult {
+        guard let index = document.shotGraph.shots.firstIndex(where: { $0.id == firstID }),
+              index + 1 < document.shotGraph.shots.count
+        else { throw StoryboardEditingError.shotsNotAdjacent }
+        let first = document.shotGraph.shots[index]
+        let second = document.shotGraph.shots[index + 1]
+        guard toSeconds > first.timeRange.startSeconds, toSeconds < second.timeRange.endSeconds else {
+            throw StoryboardEditingError.invalidSplitPoint
+        }
+        let fps = document.shotGraph.asset.nominalFrameRate
+        let frame = min(
+            second.frameRange.endFrameExclusive - 1,
+            max(first.frameRange.startFrame + 1, Int((toSeconds * fps).rounded()))
+        )
+        let movedFirst = ShotSegment(
+            id: first.id,
+            timeRange: MediaTimeRange(startSeconds: first.timeRange.startSeconds, endSeconds: toSeconds),
+            frameRange: FrameRange(startFrame: first.frameRange.startFrame, endFrameExclusive: frame),
+            transitionIn: first.transitionIn,
+            transitionOut: first.transitionOut,
+            boundaryConfidence: first.boundaryConfidence,
+            detectorEvidenceIDs: first.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"]
+        )
+        let movedSecond = ShotSegment(
+            id: second.id,
+            timeRange: MediaTimeRange(startSeconds: toSeconds, endSeconds: second.timeRange.endSeconds),
+            frameRange: FrameRange(startFrame: frame, endFrameExclusive: second.frameRange.endFrameExclusive),
+            transitionIn: second.transitionIn,
+            transitionOut: second.transitionOut,
+            boundaryConfidence: second.boundaryConfidence,
+            detectorEvidenceIDs: second.detectorEvidenceIDs + ["user-boundary:\(first.id.rawValue)"]
+        )
+        var segments = document.shotGraph.shots
+        segments[index] = movedFirst
+        segments[index + 1] = movedSecond
+        let graph = try ShotGraph(asset: document.shotGraph.asset, shots: segments)
+        let remap = ShotRemap(mapping: [first.id: [first.id], second.id: [second.id]])
+        let updated = rebuilt(document, graph: graph, shots: document.shots, remap: remap)
+        return result(original: document, updated: updated, remap: remap, changed: [first.id, second.id])
+    }
+
     public static func split(
         _ document: StoryboardDocumentV2,
         shotID: ShotID,
@@ -178,6 +233,15 @@ public enum StoryboardEditor {
         try update(document, shotID: shotID, values: [field: value], lock: lock, provenance: .user)
     }
 
+    public static func editPlanFields(
+        _ document: StoryboardDocumentV2,
+        shotID: ShotID,
+        values: [EditablePlanField: String?],
+        lock: Bool
+    ) throws -> StoryboardEditResult {
+        try update(document, shotID: shotID, values: values, lock: lock, provenance: .user)
+    }
+
     public static func applyModelRefresh(
         _ document: StoryboardDocumentV2,
         shotID: ShotID,
@@ -241,7 +305,8 @@ public enum StoryboardEditor {
             original: original, document: updated, remap: remap,
             diff: StoryboardDiff(changedShotIDs: changed),
             partialRerun: PartialRerunPlan(
-                affectedShotIDs: changed, invalidatedStages: [.synthesis, .quality, .indexing],
+                affectedShotIDs: changed,
+                invalidatedStages: [.keyframes, .evidenceAssembly, .shotUnderstanding, .timelineAlignment, .synthesis, .quality, .indexing],
                 preservedLockedFields: Set(updated.shots.flatMap(\.userLockedFields).compactMap(EditablePlanField.init(rawValue:)))
             )
         )

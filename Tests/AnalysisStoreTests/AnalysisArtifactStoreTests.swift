@@ -29,6 +29,22 @@ import VideoUnderstanding
     )
     #expect(resumed?.id == "run-1")
 
+    let job = TestJobCheckpoint(jobID: "job-1", state: "running")
+    try await store.saveAuxiliaryArtifact(job, name: "cloud-job", for: run)
+    let loadedJob = try await store.loadAuxiliaryArtifact(
+        TestJobCheckpoint.self,
+        name: "cloud-job",
+        from: run
+    )
+    #expect(loadedJob == job)
+    try await store.deleteAuxiliaryArtifact(name: "cloud-job", from: run)
+    let deletedJob = try await store.loadAuxiliaryArtifact(
+        TestJobCheckpoint.self,
+        name: "cloud-job",
+        from: run
+    )
+    #expect(deletedJob == nil)
+
     let artifactURL = await store.artifactURL(runID: run.id, stage: .assetProbe)
     try Data("corrupt".utf8).write(to: artifactURL)
     let rejected = try await store.loadResumableRun(
@@ -37,4 +53,9 @@ import VideoUnderstanding
         pipelineVersion: "storyboard-v2"
     )
     #expect(rejected == nil)
+}
+
+private struct TestJobCheckpoint: Codable, Equatable, Sendable {
+    let jobID: String
+    let state: String
 }
