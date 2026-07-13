@@ -32,8 +32,8 @@ struct LASOperatorTransportTests {
             ),
             (
                 .enhancedASR(
-                    audioTOSURL: "tos://engram-stage/source.mp4",
-                    format: "mp4"
+                    audioTOSURL: "tos://engram-stage/source.wav",
+                    format: "wav"
                 ),
                 "las_asr_pro",
                 "audio"
@@ -105,6 +105,64 @@ struct LASOperatorTransportTests {
         #expect(LASOperatorContract.enhancedASR.operatorID == "las_asr_pro")
         #expect(LASServiceRegion.cnBeijing.submitURL.path == "/api/v1/submit")
         #expect(LASServiceRegion.cnBeijing.pollURL.path == "/api/v1/poll")
+    }
+
+    @Test func productionContractsCarryTraceableOfficialOperatorSources() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/Infrastructure/CloudVision/LASOperatorTransport.swift"),
+            encoding: .utf8
+        )
+        for documentID in ["2299022", "2275546", "2371959", "2275584"] {
+            #expect(source.contains(documentID), "Missing official LAS operator document \(documentID)")
+        }
+        #expect(source.contains("documentedASRFormats"))
+        #expect(source.contains("explicitLiveDiagnostic"))
+        #expect(source.contains("liveProbeValidated"))
+    }
+
+    @Test func acceptedScriptJobMapsToPendingAndCompletedBusinessFailureFailsClosed() async throws {
+        let responses = [
+            #"{"metadata":{"task_id":"script-accepted","task_status":"ACCEPTED","business_code":"0","error_msg":""}}"#,
+            #"{"metadata":{"task_id":"fine-failed","task_status":"COMPLETED","business_code":"500","error_msg":"provider business failure"}}"#,
+        ]
+        let index = ResponseIndex()
+        let session = makeLASSession { request in
+            try lasResponse(for: request, body: responses[index.take()])
+        }
+        let client = URLSessionLASOperatorClient(region: .cnBeijing, session: session)
+
+        let accepted = try await client.poll(
+            contract: .scriptGeneration,
+            taskID: "script-accepted",
+            apiKey: "las-secret"
+        )
+        #expect(accepted.state == .pending)
+        await #expect(throws: LASOperatorTransportError.self) {
+            try await client.poll(
+                contract: .videoFineUnderstanding,
+                taskID: "fine-failed",
+                apiKey: "las-secret"
+            )
+        }
+    }
+
+    @Test func fineGlobalSummaryDoesNotFabricatePerShotTimelineEvidence() async throws {
+        let session = makeLASSession { request in
+            try lasResponse(
+                for: request,
+                body: #"{"metadata":{"task_id":"fine-1","task_status":"COMPLETED","business_code":"0","error_msg":""},"data":{"video_duration":12.5,"final_summary":"Whole-video summary only."}}"#
+            )
+        }
+        let client = URLSessionLASOperatorClient(region: .cnBeijing, session: session)
+
+        let receipt = try await client.poll(
+            contract: .videoFineUnderstanding,
+            taskID: "fine-1",
+            apiKey: "las-secret"
+        )
+
+        #expect(receipt.observations.isEmpty)
     }
 
     @Test func pollKeepsOnlyNonSignedTOSArtifactReferencesForStoryboardAndScripts() async throws {

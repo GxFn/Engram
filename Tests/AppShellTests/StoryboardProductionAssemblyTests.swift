@@ -74,7 +74,7 @@ struct SavedCloudProductionAssemblyTests {
             keyframeSelector: ProductionAssemblyKeyframes(ledger: ledger),
             transcriber: ProductionAssemblyTranscriber(ledger: ledger),
             recognizer: ProductionAssemblyOCR(ledger: ledger),
-            understandingProvider: ProductionAssemblyUnderstanding(ledger: ledger),
+            understandingProvider: ProductionAssemblyEvidenceOnlyUnderstanding(ledger: ledger),
             pipelineVersion: "saved-cloud-production-v1",
             representativeFramesPerShot: 2,
             runID: { "run-saved-cloud-production" }
@@ -115,6 +115,19 @@ struct SavedCloudProductionAssemblyTests {
         #expect(storyboard.source.cloudTelemetry?.effectiveMode == "lasDeep")
         #expect(storyboard.source.cloudTelemetry?.cleanupState == "deleted")
         #expect(storyboard.contentAnalysis.summary.contains("Grounded generated script"))
+        #expect(storyboard.shots.map { $0.productionPlan?.subjectAction } == [
+            "LAS cloud action one",
+            "LAS cloud action two",
+        ])
+        #expect(storyboard.shots.map { $0.productionPlan?.dialogueOrVO } == [
+            "LAS cloud dialogue one",
+            "LAS cloud dialogue two",
+        ])
+        #expect(storyboard.shots.enumerated().allSatisfy { index, shot in
+            shot.productionPlan?.sourceShotRefs == [shot.id]
+                && shot.productionPlan?.isDerivedCreativePlan == true
+                && storyboard.shotGraph.shots[index].id == shot.id
+        })
         #expect(storyboard.shots.flatMap(\.observedFacts.facts).contains(where: {
             $0.source == .cloudModel && $0.value.contains("A verified provider scene")
         }))
@@ -474,6 +487,19 @@ private struct ProductionAssemblyUnderstanding: ShotUnderstandingProviding {
             ),
             title: "Production Assembly",
             summary: "Two grounded shots"
+        )
+    }
+}
+
+private struct ProductionAssemblyEvidenceOnlyUnderstanding: ShotUnderstandingProviding {
+    let ledger: ProductionAssemblyLedger
+    func understand(_ input: ShotUnderstandingInput, displayNumber: Int) async throws -> ShotUnderstandingOutput {
+        await ledger.recordUnderstanding(input.shot.id)
+        return ShotUnderstandingOutput(
+            shot: StoryboardShotV2(
+                id: input.shot.id,
+                observedFacts: ObservedShotFacts(facts: [], unknownFields: [.action, .audioSummary])
+            )
         )
     }
 }

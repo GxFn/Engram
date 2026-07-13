@@ -363,6 +363,31 @@ import Testing
     }
 }
 
+@Test func settingsViewExposesIndependentCurrentLocalArkAndLASRoutes() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let source = try String(
+        contentsOf: root.appendingPathComponent("Sources/Features/SettingsFeature/SettingsView.swift"),
+        encoding: .utf8
+    )
+
+    for marker in [
+        "public enum SettingsPane",
+        "case current",
+        "case local",
+        "case ark",
+        "case las",
+        "ForEach(SettingsPane.allCases)",
+        "NavigationLink",
+        "settings.screen.current",
+        "settings.screen.local",
+        "settings.screen.ark",
+        "settings.screen.las",
+    ] {
+        #expect(source.contains(marker), "Settings navigation omitted \(marker)")
+    }
+    #expect(!source.contains("if viewModel.visionBackend.requestedMode == .local"))
+}
+
 private let fakeEngine = SettingsEngineOption(id: "fake", displayName: "Fake", kind: .mlx)
 
 private let recommendedModel = ModelIdentity(
