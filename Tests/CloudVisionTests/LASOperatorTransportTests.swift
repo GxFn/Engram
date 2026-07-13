@@ -117,7 +117,23 @@ private func makeLASSession(
 }
 
 private func requestBodyObject(_ request: URLRequest) throws -> [String: Any] {
-    let body = try #require(request.httpBody)
+    let body: Data
+    if let value = request.httpBody {
+        body = value
+    } else {
+        let stream = try #require(request.httpBodyStream)
+        stream.open()
+        defer { stream.close() }
+        var value = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeContentData) }
+            if count == 0 { break }
+            value.append(buffer, count: count)
+        }
+        body = value
+    }
     return try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
 }
 

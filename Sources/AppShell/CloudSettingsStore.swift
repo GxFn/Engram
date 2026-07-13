@@ -60,9 +60,9 @@ struct CloudSettingsStore: @unchecked Sendable {
                 ?? "",
             hasAPIKey: credential(.arkAPIKey)?.isEmpty == false
         )
-        let region = LASServiceRegion(
+        let region = SettingsFeature.LASServiceRegion(
             rawValue: defaults?.string(forKey: CloudSettingsDefaultsKey.lasRegion) ?? "cn-beijing"
-        ) ?? .cnBeijing
+        ) ?? SettingsFeature.LASServiceRegion.cnBeijing
         let las = LASBackendSettings(
             isEnabled: defaults?.bool(forKey: CloudSettingsDefaultsKey.lasEnabled) ?? false,
             region: region,
