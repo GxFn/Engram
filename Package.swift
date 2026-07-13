@@ -315,6 +315,8 @@ let package = Package(
                 "AppGroupSupport",
                 "ScriptCore",
                 "VideoUnderstanding",
+                "CloudVision",
+                "SettingsFeature",
             ],
             path: "Tests/AppShellTests"
         ),
