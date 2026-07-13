@@ -109,3 +109,16 @@ import Testing
     #expect(firstRun[1].startOffset != nil)
     #expect(firstRun[1].endOffset == text.count)
 }
+
+@Test func storyboardChunksCarryPreciseShotAndTimeAnchorsForAskCitations() {
+    let chunks = ParagraphChunker().chunk(
+        clipID: "video-citation",
+        text: "## 分镜 3 (2.5s–4s)\n台词: 证据台词\n画面: 人物进入",
+        config: ChunkingConfig(targetCharacters: 800, overlapCharacters: 0)
+    )
+
+    #expect(chunks.count == 1)
+    #expect(chunks[0].storyboardAnchors == [
+        StoryboardCitationAnchor(displayNumber: 3, startSeconds: 2.5, endSeconds: 4)
+    ])
+}
