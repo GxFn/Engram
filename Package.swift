@@ -190,6 +190,9 @@ let package = Package(
                 "ClipPipeline",
                 "Persistence",
                 "VideoUnderstanding",
+                "StoryboardCore",
+                "AnalysisStore",
+                "ShotDetection",
                 "ScriptCore",
                 "EngramLogging",
             ],
@@ -308,7 +311,7 @@ let package = Package(
         .testTarget(name: "BenchFeatureTests", dependencies: ["BenchFeature", "EngineKit", "MetricsKit", "RAGCore"], path: "Tests/BenchFeatureTests"),
         .testTarget(
             name: "ClipDigestTests",
-            dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence", "ScriptCore", "VideoUnderstanding"],
+            dependencies: ["ClipDigest", "ClipCore", "ClipPipeline", "Persistence", "ScriptCore", "VideoUnderstanding", "StoryboardCore", "AnalysisStore"],
             path: "Tests/ClipDigestTests"
         ),
         .testTarget(name: "ClipPipelineTests", dependencies: ["AppGroupSupport", "ClipCore", "ClipPipeline"], path: "Tests/ClipPipelineTests"),
