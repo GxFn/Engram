@@ -114,6 +114,11 @@ public enum CloudCredentialSlot: String, Sendable, CaseIterable, Codable {
 }
 
 public struct LASBackendSettings: Sendable, Equatable {
+    public static let videoStoryboardContractID = "las_video_scene_seg"
+    public static let videoFineUnderstandingContractID = "las_video_understanding"
+    public static let scriptGenerationContractID = "las_short_drama_script_gen"
+    public static let enhancedASRContractID = "las_asr_pro"
+
     public var isEnabled: Bool
     public var region: LASServiceRegion
     public var videoStoryboardOperatorID: String
@@ -125,10 +130,10 @@ public struct LASBackendSettings: Sendable, Equatable {
     public init(
         isEnabled: Bool = false,
         region: LASServiceRegion = .cnBeijing,
-        videoStoryboardOperatorID: String = "",
-        videoFineUnderstandingOperatorID: String = "",
-        scriptGenerationOperatorID: String = "",
-        enhancedASROperatorID: String = "",
+        videoStoryboardOperatorID: String = Self.videoStoryboardContractID,
+        videoFineUnderstandingOperatorID: String = Self.videoFineUnderstandingContractID,
+        scriptGenerationOperatorID: String = Self.scriptGenerationContractID,
+        enhancedASROperatorID: String = Self.enhancedASRContractID,
         hasAPIKey: Bool = false
     ) {
         self.isEnabled = isEnabled
@@ -141,7 +146,8 @@ public struct LASBackendSettings: Sendable, Equatable {
     }
 
     public var operatorBaseURL: URL { region.operatorBaseURL }
-    public var operatorProcessURL: URL { operatorBaseURL.appendingPathComponent("api/v1/process") }
+    public var operatorSubmitURL: URL { operatorBaseURL.appendingPathComponent("api/v1/submit") }
+    public var operatorPollURL: URL { operatorBaseURL.appendingPathComponent("api/v1/poll") }
 }
 
 public struct TOSStagingSettings: Sendable, Equatable {
@@ -175,6 +181,7 @@ public struct TOSStagingSettings: Sendable, Equatable {
             && !bucket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && objectPrefix.hasPrefix("engram/")
             && !credentialReferenceID.isEmpty
+            && temporaryCredentialExpiresAt.map { $0 > Date() } == true
     }
 }
 
@@ -276,20 +283,44 @@ public struct VisionBackendSettings: Sendable, Equatable {
     public var missingLASConfigurationRoles: [LASConfigurationRole] {
         guard las.isEnabled else { return LASConfigurationRole.allCases }
         var roles: [LASConfigurationRole] = []
-        func missing(_ value: String, _ role: LASConfigurationRole) {
-            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { roles.append(role) }
-        }
         if !las.hasAPIKey {
             roles += [.videoStoryboard, .videoFineUnderstanding, .scriptGeneration, .enhancedASR]
-        } else {
-            missing(las.videoStoryboardOperatorID, .videoStoryboard)
-            missing(las.videoFineUnderstandingOperatorID, .videoFineUnderstanding)
-            missing(las.scriptGenerationOperatorID, .scriptGeneration)
-            missing(las.enhancedASROperatorID, .enhancedASR)
         }
         if !staging.isConfigured { roles.append(.mediaStaging) }
         return Array(Set(roles)).sorted()
     }
+}
+
+/// Sanitized Settings projection of one role-specific live capability observation.
+/// Provider bodies, media locators and credential values are deliberately absent.
+public struct CloudCapabilityDisplay: Sendable, Equatable, Identifiable {
+    public let role: String
+    public let status: String
+    public let probeLevel: String
+    public let lastProbedAt: Date
+    public let expiresAt: Date
+    public let maximumBytes: Int64?
+    public let maximumDurationSeconds: Double?
+
+    public init(
+        role: String,
+        status: String,
+        probeLevel: String,
+        lastProbedAt: Date,
+        expiresAt: Date,
+        maximumBytes: Int64?,
+        maximumDurationSeconds: Double?
+    ) {
+        self.role = role
+        self.status = status
+        self.probeLevel = probeLevel
+        self.lastProbedAt = lastProbedAt
+        self.expiresAt = expiresAt
+        self.maximumBytes = maximumBytes
+        self.maximumDurationSeconds = maximumDurationSeconds
+    }
+
+    public var id: String { role }
 }
 
 /// Load/save closures supplied by the assembly layer (it owns UserDefaults + Keychain).
@@ -298,10 +329,18 @@ public struct VisionBackendClient: Sendable {
     public let load: @Sendable () -> VisionBackendSettings
     public let save: @Sendable (VisionBackendSettings, String?) -> Void
     public let setCredential: @Sendable (CloudCredentialSlot, String?) -> Void
+    public let loadCapabilities: @Sendable () -> [CloudCapabilityDisplay]
+    public let probeLASCapabilities: @Sendable (URL) async throws -> Void
+    public let probeArkCapabilities: @Sendable () async throws -> Void
+    public let authorizeNextCloudRun: @Sendable () async -> Void
 
     public init(
         load: @escaping @Sendable () -> VisionBackendSettings,
-        save: @escaping @Sendable (VisionBackendSettings, String?) -> Void
+        save: @escaping @Sendable (VisionBackendSettings, String?) -> Void,
+        loadCapabilities: @escaping @Sendable () -> [CloudCapabilityDisplay] = { [] },
+        probeLASCapabilities: @escaping @Sendable (URL) async throws -> Void = { _ in },
+        probeArkCapabilities: @escaping @Sendable () async throws -> Void = {},
+        authorizeNextCloudRun: @escaping @Sendable () async -> Void = {}
     ) {
         self.load = load
         self.save = save
@@ -309,12 +348,20 @@ public struct VisionBackendClient: Sendable {
             guard slot == .arkAPIKey else { return }
             save(load(), value)
         }
+        self.loadCapabilities = loadCapabilities
+        self.probeLASCapabilities = probeLASCapabilities
+        self.probeArkCapabilities = probeArkCapabilities
+        self.authorizeNextCloudRun = authorizeNextCloudRun
     }
 
     public init(
         load: @escaping @Sendable () -> VisionBackendSettings,
         saveNonSecret: @escaping @Sendable (VisionBackendSettings) -> Void,
-        setCredential: @escaping @Sendable (CloudCredentialSlot, String?) -> Void
+        setCredential: @escaping @Sendable (CloudCredentialSlot, String?) -> Void,
+        loadCapabilities: @escaping @Sendable () -> [CloudCapabilityDisplay] = { [] },
+        probeLASCapabilities: @escaping @Sendable (URL) async throws -> Void = { _ in },
+        probeArkCapabilities: @escaping @Sendable () async throws -> Void = {},
+        authorizeNextCloudRun: @escaping @Sendable () async -> Void = {}
     ) {
         self.load = load
         self.save = { settings, legacyArkKey in
@@ -322,6 +369,10 @@ public struct VisionBackendClient: Sendable {
             if let legacyArkKey { setCredential(.arkAPIKey, legacyArkKey) }
         }
         self.setCredential = setCredential
+        self.loadCapabilities = loadCapabilities
+        self.probeLASCapabilities = probeLASCapabilities
+        self.probeArkCapabilities = probeArkCapabilities
+        self.authorizeNextCloudRun = authorizeNextCloudRun
     }
 
     public static let empty = VisionBackendClient(load: { VisionBackendSettings() }, save: { _, _ in })

@@ -9,7 +9,7 @@ import VideoUnderstanding
 @Test func lasOnlyOrchestratorStagesOnceRunsFourOfficialRolesAndKeepsLocalGraphAuthoritative() async throws {
     let now = Date(timeIntervalSince1970: 10_000)
     let stager = RecordingTOSStager(now: now)
-    let client = RecordingLASClient()
+    let client = RecordingLASClient(includesArtifacts: true)
     let checkpoints = OrchestratorCheckpointLedger()
     let configuration = lasAnalysisConfiguration(now: now, requestedMode: .lasDeep)
     let runtime = RetrievalAssembly.CloudAnalysisRuntime(
@@ -24,7 +24,7 @@ import VideoUnderstanding
     defer { try? FileManager.default.removeItem(at: sourceURL) }
 
     let result = try await enricher.enrich(
-        source: .file(sourceURL),
+        source: orchestratorSource(sourceURL),
         asset: graph.asset,
         graph: graph,
         resume: nil,
@@ -43,9 +43,14 @@ import VideoUnderstanding
     #expect(result.context.mediaUploaded)
     #expect(result.context.mediaBytesUploaded == graph.asset.fileSizeBytes)
     #expect(result.evidence.allSatisfy { evidence in
-        evidence.shotIDs.allSatisfy { id in graph.shots.contains(where: { $0.id == id }) }
+        graph.shots.contains { shot in
+            min(shot.timeRange.endSeconds, evidence.timeRange.endSeconds)
+                > max(shot.timeRange.startSeconds, evidence.timeRange.startSeconds)
+        }
     })
     #expect(result.shotsNeedingReview == [ShotID(rawValue: "S001")])
+    #expect(result.globalSummary?.contains("Grounded generated script") == true)
+    #expect(result.evidence.contains(where: { $0.rawText?.contains("A verified provider scene") == true }))
     #expect(await checkpoints.values.count >= 6)
 }
 
@@ -70,7 +75,7 @@ import VideoUnderstanding
 
     await #expect(throws: VideoUnderstandingError.self) {
         try await first.enrich(
-            source: .file(sourceURL),
+            source: orchestratorSource(sourceURL),
             asset: graph.asset,
             graph: graph,
             resume: nil,
@@ -90,7 +95,7 @@ import VideoUnderstanding
     )
 
     _ = try await restarted.enrich(
-        source: .file(sourceURL),
+        source: orchestratorSource(sourceURL),
         asset: graph.asset,
         graph: graph,
         resume: resume,
@@ -101,14 +106,259 @@ import VideoUnderstanding
     #expect(await restartedClient.submittedContracts == [.scriptGeneration, .enhancedASR])
 }
 
+@Test func unknownSubmitAcknowledgementIsCheckpointedAndNeverAutomaticallyRetried() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let stager = RecordingTOSStager(now: now)
+    let firstClient = RecordingLASClient(acknowledgementUnknownAt: .videoStoryboard)
+    let checkpoints = OrchestratorCheckpointLedger()
+    let configuration = lasAnalysisConfiguration(now: now, requestedMode: .lasDeep)
+    let graph = try orchestratorGraph()
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+    let first = ConfiguredCloudAnalysisEnricher(
+        configuration: configuration,
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in firstClient },
+            makeTOSStager: { _ in stager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+
+    await #expect(throws: VideoUnderstandingError.self) {
+        try await first.enrich(
+            source: orchestratorSource(sourceURL),
+            asset: graph.asset,
+            graph: graph,
+            resume: nil,
+            checkpoint: { await checkpoints.append($0) }
+        )
+    }
+    let resume = try #require(await checkpoints.values.last)
+    #expect(resume.state == "submit-ack-unknown-videoStoryboard")
+    let restartedClient = RecordingLASClient()
+    let restarted = ConfiguredCloudAnalysisEnricher(
+        configuration: configuration,
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in restartedClient },
+            makeTOSStager: { _ in stager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+
+    await #expect(throws: VideoUnderstandingError.self) {
+        try await restarted.enrich(
+            source: orchestratorSource(sourceURL),
+            asset: graph.asset,
+            graph: graph,
+            resume: resume,
+            checkpoint: { _ in }
+        )
+    }
+
+    #expect(await stager.newUploadCount == 1)
+    #expect(await restartedClient.submitAttemptedContracts.isEmpty)
+}
+
+@Test func transientProviderSubmitFailureUsesBoundedRetry() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let client = RecordingLASClient(transientFailureCounts: [.videoStoryboard: 2])
+    let graph = try orchestratorGraph()
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+    let enricher = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(now: now, requestedMode: .lasDeep),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in client },
+            makeTOSStager: { _ in RecordingTOSStager(now: now) },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+
+    _ = try await enricher.enrich(
+        source: orchestratorSource(sourceURL),
+        asset: graph.asset,
+        graph: graph,
+        resume: nil,
+        checkpoint: { _ in }
+    )
+
+    let attempts = await client.submitAttemptedContracts
+    #expect(attempts.filter { $0 == .videoStoryboard }.count == 3)
+}
+
+@Test func cancellationDuringMultipartStagingCleansCheckpointedObject() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let stager = RecordingTOSStager(now: now, cancelDuringStage: true)
+    let checkpoints = OrchestratorCheckpointLedger()
+    let graph = try orchestratorGraph()
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+    let enricher = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(now: now, requestedMode: .lasDeep),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in RecordingLASClient() },
+            makeTOSStager: { _ in stager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+
+    await #expect(throws: CancellationError.self) {
+        try await enricher.enrich(
+            source: orchestratorSource(sourceURL),
+            asset: graph.asset,
+            graph: graph,
+            resume: nil,
+            checkpoint: { await checkpoints.append($0) }
+        )
+    }
+
+    #expect(await stager.cleanupCount == 1)
+    #expect(await checkpoints.values.last?.state == "cancelled-during-staging-clean")
+}
+
+@Test func arkStandardNeverStagesWholeVideo() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let stager = RecordingTOSStager(now: now)
+    let client = RecordingLASClient()
+    let enricher = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(now: now, requestedMode: .arkStandard),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in client },
+            makeTOSStager: { _ in stager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+    let graph = try orchestratorGraph()
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    let result = try await enricher.enrich(
+        source: orchestratorSource(sourceURL),
+        asset: graph.asset,
+        graph: graph,
+        resume: nil,
+        checkpoint: { _ in }
+    )
+
+    #expect(result.context.cloudMode == .cloudStandard)
+    #expect(!result.context.mediaUploaded)
+    #expect(await stager.newUploadCount == 0)
+    #expect(await client.submittedContracts.isEmpty)
+}
+
+@Test func hybridExposesOnlyLowConfidenceShotsForArkRefinement() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let stager = RecordingTOSStager(now: now)
+    let client = RecordingLASClient()
+    let enricher = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(now: now, requestedMode: .hybridMaximum),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in client },
+            makeTOSStager: { _ in stager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+    let graph = try orchestratorGraph()
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+    let result = try await enricher.enrich(
+        source: orchestratorSource(sourceURL),
+        asset: graph.asset,
+        graph: graph,
+        resume: nil,
+        checkpoint: { _ in }
+    )
+
+    #expect(result.context.refinementShotIDs == [ShotID(rawValue: "S001")])
+    #expect(result.shotsNeedingReview == [ShotID(rawValue: "S001")])
+}
+
+@Test func normalRunBlocksUnprobedRolesWhileExplicitDiagnosticRecordsOnlyCompletedLiveContracts() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let sourceURL = try orchestratorMediaFixture()
+    defer { try? FileManager.default.removeItem(at: sourceURL) }
+    let graph = try orchestratorGraph()
+    let blockedStager = RecordingTOSStager(now: now)
+    let blocked = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(
+            now: now,
+            requestedMode: .lasDeep,
+            capabilitySnapshots: []
+        ),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in RecordingLASClient() },
+            makeTOSStager: { _ in blockedStager },
+            sleep: { _ in },
+            now: { now }
+        )
+    )
+
+    await #expect(throws: VideoUnderstandingError.self) {
+        try await blocked.enrich(
+            source: orchestratorSource(sourceURL),
+            asset: graph.asset,
+            graph: graph,
+            resume: nil,
+            checkpoint: { _ in }
+        )
+    }
+    #expect(await blockedStager.newUploadCount == 0)
+
+    let recorder = CapabilityRecorder()
+    let diagnosticStager = RecordingTOSStager(now: now)
+    let diagnostic = ConfiguredCloudAnalysisEnricher(
+        configuration: lasAnalysisConfiguration(
+            now: now,
+            requestedMode: .lasDeep,
+            capabilitySnapshots: [],
+            capabilityRecorder: recorder
+        ),
+        runtime: CloudAnalysisRuntime(
+            makeLASClient: { _ in RecordingLASClient() },
+            makeTOSStager: { _ in diagnosticStager },
+            sleep: { _ in },
+            now: { now }
+        ),
+        allowsUnprobedDiagnostic: true
+    )
+
+    _ = try await diagnostic.enrich(
+        source: orchestratorSource(sourceURL),
+        asset: graph.asset,
+        graph: graph,
+        resume: nil,
+        checkpoint: { _ in }
+    )
+
+    let recorded = recorder.snapshot()
+    #expect(Set(recorded.map(\.role)) == CloudProviderRole.lasDeepRoles)
+    #expect(recorded.allSatisfy { $0.probeLevel == .liveMedia })
+    #expect(recorded.allSatisfy { $0.sanitizedEvidenceCode == "live-media-contract-completed" })
+}
+
 private func lasAnalysisConfiguration(
     now: Date,
-    requestedMode: CloudVision.CloudAnalysisRequestedMode
+    requestedMode: CloudVision.CloudAnalysisRequestedMode,
+    capabilitySnapshots overrideSnapshots: [CloudRoleCapabilitySnapshot]? = nil,
+    capabilityRecorder: CapabilityRecorder? = nil
 ) -> CloudAIResolver.AnalysisConfiguration {
-    let fingerprints = CloudProviderRole.lasDeepRoles.reduce(into: [CloudProviderRole: String]()) {
+    let requiredRoles: Set<CloudProviderRole> = switch requestedMode {
+    case .local: []
+    case .arkStandard: CloudProviderRole.arkStandardRoles
+    case .lasDeep: CloudProviderRole.lasDeepRoles
+    case .hybridMaximum: CloudProviderRole.lasDeepRoles.union(CloudProviderRole.arkStandardRoles)
+    }
+    let fingerprints = requiredRoles.reduce(into: [CloudProviderRole: String]()) {
         $0[$1] = "fingerprint-\($1.rawValue)"
     }
-    let snapshots = CloudProviderRole.lasDeepRoles.map { role in
+    let snapshots = requiredRoles.map { role in
         CloudRoleCapabilitySnapshot(
             role: role,
             providerKind: role.providerKind,
@@ -134,8 +384,8 @@ private func lasAnalysisConfiguration(
     return CloudAIResolver.AnalysisConfiguration(
         requestedMode: requestedMode,
         expectedFingerprints: fingerprints,
-        capabilitySnapshots: snapshots,
-        arkConfigured: false,
+        capabilitySnapshots: overrideSnapshots ?? snapshots,
+        arkConfigured: requiredRoles.isSuperset(of: CloudProviderRole.arkStandardRoles),
         region: .cnBeijing,
         lasAPIKey: "las-secret",
         stagingConfiguration: TOSMediaStagingConfiguration(
@@ -150,6 +400,7 @@ private func lasAnalysisConfiguration(
             securityToken: "sts-token",
             expiresAt: now.addingTimeInterval(3_600)
         ),
+        maximumUploadBytes: 100,
         requestConsent: { prompt in
             CloudRunConsentReceipt(
                 runID: prompt.runID,
@@ -161,16 +412,38 @@ private func lasAnalysisConfiguration(
                 costAcceptance: .unknownMayCharge
             )
         },
-        invalidateCapability: { _, _ in }
+        invalidateCapability: { _, _ in },
+        recordCapability: { capabilityRecorder?.record($0) }
     )
 }
 
-private actor RecordingTOSStager: TOSMediaStaging {
+private final class CapabilityRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [CloudRoleCapabilitySnapshot] = []
+
+    func record(_ value: CloudRoleCapabilitySnapshot) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func snapshot() -> [CloudRoleCapabilitySnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
+actor RecordingTOSStager: TOSMediaStaging {
     private let now: Date
+    private let cancelDuringStage: Bool
     private(set) var newUploadCount = 0
     private(set) var cleanupCount = 0
 
-    init(now: Date) { self.now = now }
+    init(now: Date, cancelDuringStage: Bool = false) {
+        self.now = now
+        self.cancelDuringStage = cancelDuringStage
+    }
 
     func stage(
         fileURL: URL,
@@ -179,7 +452,7 @@ private actor RecordingTOSStager: TOSMediaStaging {
         consent: CloudRunConsentReceipt,
         credentials: TOSTemporaryCredentials,
         checkpoint: TOSUploadCheckpoint?,
-        persistCheckpoint: @escaping @Sendable (TOSUploadCheckpoint) async throws -> Void
+        persistCheckpoint: @Sendable (TOSUploadCheckpoint) async throws -> Void
     ) async throws -> TOSStagingResult {
         if checkpoint == nil { newUploadCount += 1 }
         let value = checkpoint ?? TOSUploadCheckpoint(
@@ -195,6 +468,7 @@ private actor RecordingTOSStager: TOSMediaStaging {
             expiresAt: now.addingTimeInterval(86_400)
         )
         try await persistCheckpoint(value)
+        if cancelDuringStage { throw CancellationError() }
         return TOSStagingResult(
             object: TOSStagedObject(
                 bucket: "fixture-bucket",
@@ -225,20 +499,62 @@ private actor RecordingTOSStager: TOSMediaStaging {
             expiresAt: checkpoint.expiresAt
         )
     }
+
+    func readArtifact(
+        at tosURL: String,
+        maximumBytes: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> Data {
+        if tosURL.hasSuffix("segments.json") {
+            return Data(#"{"segments":[{"start_time":0,"end_time":1,"scene_description":"A verified provider scene."}]}"#.utf8)
+        }
+        if tosURL.hasSuffix("episode-1.md") {
+            return Data("Grounded generated script".utf8)
+        }
+        return Data(#"{"character":"A verified character"}"#.utf8)
+    }
+
+    func listArtifacts(
+        at tosPrefix: String,
+        maximumCount: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> [String] {
+        ["tos://fixture-bucket/engram/runs/output/scripts/episode-1.md"]
+    }
 }
 
-private actor RecordingLASClient: LASOperatorClient {
+actor RecordingLASClient: LASOperatorClient {
     private(set) var submittedContracts: [LASOperatorContract] = []
+    private(set) var submitAttemptedContracts: [LASOperatorContract] = []
     let failBeforeContract: LASOperatorContract?
+    let includesArtifacts: Bool
+    let acknowledgementUnknownAt: LASOperatorContract?
+    var transientFailureCounts: [LASOperatorContract: Int]
 
-    init(failBeforeContract: LASOperatorContract? = nil) {
+    init(
+        failBeforeContract: LASOperatorContract? = nil,
+        includesArtifacts: Bool = false,
+        acknowledgementUnknownAt: LASOperatorContract? = nil,
+        transientFailureCounts: [LASOperatorContract: Int] = [:]
+    ) {
         self.failBeforeContract = failBeforeContract
+        self.includesArtifacts = includesArtifacts
+        self.acknowledgementUnknownAt = acknowledgementUnknownAt
+        self.transientFailureCounts = transientFailureCounts
     }
 
     func submit(
         _ invocation: LASOperatorInvocation,
         apiKey: String
     ) async throws -> LASOperatorTaskReceipt {
+        submitAttemptedContracts.append(invocation.contract)
+        if invocation.contract == acknowledgementUnknownAt {
+            throw LASOperatorTransportError.submissionAcknowledgementUnknown
+        }
+        if let remaining = transientFailureCounts[invocation.contract], remaining > 0 {
+            transientFailureCounts[invocation.contract] = remaining - 1
+            throw LASOperatorTransportError.providerUnavailable(503)
+        }
         if invocation.contract == failBeforeContract {
             throw LASOperatorTransportError.providerUnavailable(503)
         }
@@ -266,6 +582,32 @@ private actor RecordingLASClient: LASOperatorClient {
         )]
         default: []
         }
+        let artifacts: [LASOperatorArtifact] = if includesArtifacts {
+            switch contract {
+            case .videoStoryboard: [
+                LASOperatorArtifact(
+                    kind: .storyboardSegments,
+                    tosURL: "tos://fixture-bucket/engram/runs/output/segments.json"
+                )!,
+                LASOperatorArtifact(
+                    kind: .storyboardCharacters,
+                    tosURL: "tos://fixture-bucket/engram/runs/output/characters.json"
+                )!,
+            ]
+            case .scriptGeneration: [
+                LASOperatorArtifact(
+                    kind: .generatedCharacters,
+                    tosURL: "tos://fixture-bucket/engram/runs/output/final-characters.json"
+                )!,
+                LASOperatorArtifact(
+                    kind: .generatedScripts,
+                    tosURL: "tos://fixture-bucket/engram/runs/output/scripts",
+                    isPrefix: true
+                )!,
+            ]
+            default: []
+            }
+        } else { [] }
         return LASOperatorTaskReceipt(
             operatorID: contract.operatorID,
             taskID: "task-\(contract.rawValue)",
@@ -273,6 +615,7 @@ private actor RecordingLASClient: LASOperatorClient {
             businessCode: "0",
             requestID: nil,
             observations: observations,
+            artifacts: artifacts,
             usage: CloudProviderUsage(requestCount: 1),
             sanitizedError: nil
         )
@@ -289,6 +632,15 @@ private func orchestratorMediaFixture() throws -> URL {
         .appendingPathComponent("orchestrator-\(UUID().uuidString).mov")
     try Data([1, 2, 3]).write(to: url)
     return url
+}
+
+private func orchestratorSource(_ url: URL) -> VideoSource {
+    VideoSource(
+        id: "fixture",
+        localFileURL: url,
+        importedAt: Date(timeIntervalSince1970: 1),
+        durationSeconds: 2
+    )
 }
 
 private func orchestratorGraph() throws -> ShotGraph {

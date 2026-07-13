@@ -12,6 +12,7 @@ import ScriptComposer
 import ScriptCore
 import ShotDetection
 import SpeechTranscription
+import StoryboardCore
 import SwiftData
 import VectorStoreSQLite
 import VideoUnderstanding
@@ -21,48 +22,53 @@ struct RetrievalServices: Sendable {
     let retriever: any Retriever
 }
 
+/// Leaf-only runtime seam used by production black-box tests. It cannot replace `VideoAnalyzing`:
+/// RetrievalAssembly still constructs the real orchestrator, artifact store, persistence and
+/// indexer.
+public struct VideoPipelineRuntime: Sendable {
+    let probe: any VideoAssetProbing
+    let detector: any ShotBoundaryDetecting
+    let keyframeSelector: any ShotKeyframeSelecting
+    let transcriber: any Transcriber
+    let corrector: (any TranscriptCorrecting)?
+    let recognizer: any FrameTextRecognizing
+    let understandingProvider: any ShotUnderstandingProviding
+    let refinementUnderstandingProvider: (any ShotUnderstandingProviding)?
+    let pipelineVersion: String
+    let representativeFramesPerShot: Int
+    let runID: @Sendable () -> String
+
+    public init(
+        probe: any VideoAssetProbing,
+        detector: any ShotBoundaryDetecting,
+        keyframeSelector: any ShotKeyframeSelecting,
+        transcriber: any Transcriber,
+        corrector: (any TranscriptCorrecting)? = nil,
+        recognizer: any FrameTextRecognizing,
+        understandingProvider: any ShotUnderstandingProviding,
+        refinementUnderstandingProvider: (any ShotUnderstandingProviding)? = nil,
+        pipelineVersion: String,
+        representativeFramesPerShot: Int = 2,
+        runID: @escaping @Sendable () -> String = { UUID().uuidString }
+    ) {
+        self.probe = probe
+        self.detector = detector
+        self.keyframeSelector = keyframeSelector
+        self.transcriber = transcriber
+        self.corrector = corrector
+        self.recognizer = recognizer
+        self.understandingProvider = understandingProvider
+        self.refinementUnderstandingProvider = refinementUnderstandingProvider
+        self.pipelineVersion = pipelineVersion
+        self.representativeFramesPerShot = min(3, max(1, representativeFramesPerShot))
+        self.runID = runID
+    }
+}
+
 enum RetrievalAssembly {
     static let defaultVideoTranscriptionLocale = Locale(identifier: "zh_CN")
 
-    /// Leaf-only runtime seam used by production black-box tests. It deliberately cannot replace
-    /// `VideoAnalyzing`: RetrievalAssembly still constructs the real orchestrator, artifact store,
-    /// ClipDigest service, persistence and indexer.
-    struct VideoPipelineRuntime: Sendable {
-        let probe: any VideoAssetProbing
-        let detector: any ShotBoundaryDetecting
-        let keyframeSelector: any ShotKeyframeSelecting
-        let transcriber: any Transcriber
-        let corrector: (any TranscriptCorrecting)?
-        let recognizer: any FrameTextRecognizing
-        let understandingProvider: any ShotUnderstandingProviding
-        let pipelineVersion: String
-        let representativeFramesPerShot: Int
-        let runID: @Sendable () -> String
-
-        init(
-            probe: any VideoAssetProbing,
-            detector: any ShotBoundaryDetecting,
-            keyframeSelector: any ShotKeyframeSelecting,
-            transcriber: any Transcriber,
-            corrector: (any TranscriptCorrecting)? = nil,
-            recognizer: any FrameTextRecognizing,
-            understandingProvider: any ShotUnderstandingProviding,
-            pipelineVersion: String,
-            representativeFramesPerShot: Int = 2,
-            runID: @escaping @Sendable () -> String = { UUID().uuidString }
-        ) {
-            self.probe = probe
-            self.detector = detector
-            self.keyframeSelector = keyframeSelector
-            self.transcriber = transcriber
-            self.corrector = corrector
-            self.recognizer = recognizer
-            self.understandingProvider = understandingProvider
-            self.pipelineVersion = pipelineVersion
-            self.representativeFramesPerShot = min(3, max(1, representativeFramesPerShot))
-            self.runID = runID
-        }
-    }
+    typealias VideoPipelineRuntime = AppShell.VideoPipelineRuntime
 
     @MainActor
     static func makeServices(
@@ -74,6 +80,8 @@ enum RetrievalAssembly {
         videoAnalyzer: (any VideoAnalyzing)? = nil,
         visionGenerator: (any VisionScriptGenerating)? = nil,
         cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
+        cloudAnalysisConfiguration: CloudAIResolver.AnalysisConfiguration? = nil,
+        cloudAnalysisRuntime: CloudAnalysisRuntime? = nil,
         appGroupLocations: AppGroupLocations? = nil,
         embeddingEngine: (any EmbeddingEngine)? = nil,
         videoPipelineRuntime: VideoPipelineRuntime? = nil
@@ -112,6 +120,8 @@ enum RetrievalAssembly {
             generationConfig: generationConfig,
             visionGenerator: visionGenerator,
             cloudVideoConfiguration: cloudVideoConfiguration,
+            cloudAnalysisConfiguration: cloudAnalysisConfiguration,
+            cloudAnalysisRuntime: cloudAnalysisRuntime,
             artifactRoot: locations.rootDirectory.appendingPathComponent("analysis-artifacts", isDirectory: true),
             runtime: videoPipelineRuntime
         )
@@ -134,9 +144,21 @@ enum RetrievalAssembly {
         generationConfig: GenerationConfig,
         visionGenerator: (any VisionScriptGenerating)? = nil,
         cloudVideoConfiguration: CloudAIResolver.VideoConfiguration? = nil,
+        cloudAnalysisConfiguration: CloudAIResolver.AnalysisConfiguration? = nil,
+        cloudAnalysisRuntime: CloudAnalysisRuntime? = nil,
         artifactRoot: URL,
         runtime: VideoPipelineRuntime? = nil
     ) throws -> any VideoAnalyzing {
+        let cloudEnricher: (any CloudStoryboardEnriching)? = if let cloudAnalysisConfiguration {
+            ConfiguredCloudAnalysisEnricher(
+                configuration: cloudAnalysisConfiguration,
+                runtime: cloudAnalysisRuntime ?? .live
+            )
+        } else if let cloudVideoConfiguration {
+            ConfiguredCloudStoryboardEnricher(cloudVideoConfiguration)
+        } else {
+            nil
+        }
         if let runtime {
             return EvidenceGroundedVideoAnalyzer(
                 probe: runtime.probe,
@@ -146,7 +168,8 @@ enum RetrievalAssembly {
                 corrector: runtime.corrector,
                 recognizer: runtime.recognizer,
                 understandingProvider: runtime.understandingProvider,
-                cloudEnricher: cloudVideoConfiguration.map(ConfiguredCloudStoryboardEnricher.init),
+                refinementUnderstandingProvider: runtime.refinementUnderstandingProvider,
+                cloudEnricher: cloudEnricher,
                 artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
                 pipelineVersion: runtime.pipelineVersion,
                 representativeFramesPerShot: runtime.representativeFramesPerShot,
@@ -168,21 +191,51 @@ enum RetrievalAssembly {
             maxKeyframeCount: 16,
             generationConfig: generationConfig
         )
-        // A cloud generator (selected by the user) replaces the on-device MLX backend at this
-        // one seam; everything downstream — composer, prompt, JSON decoding — is identical.
-        let visionComposer: Qwen3VLScriptComposer
-        if let visionGenerator {
-            visionComposer = Qwen3VLScriptComposer(
-                generator: visionGenerator,
-                configuration: visionConfiguration,
-                textFallback: textComposer
+        let localVisionComposer = Qwen3VLScriptComposer(
+            modelDirectoryRoot: modelStore.modelDirectoryRoot,
+            configuration: visionConfiguration,
+            textFallback: textComposer
+        )
+        let arkUnderstandingProvider: (any ShotUnderstandingProviding)? = visionGenerator.map { generator in
+            VisionComposerShotUnderstandingProvider(
+                composer: Qwen3VLScriptComposer(
+                    generator: generator,
+                    configuration: visionConfiguration,
+                    textFallback: textComposer
+                ),
+                source: .cloudModel
             )
-        } else {
-            visionComposer = Qwen3VLScriptComposer(
-                modelDirectoryRoot: modelStore.modelDirectoryRoot,
-                configuration: visionConfiguration,
-                textFallback: textComposer
+        }
+        let localUnderstandingProvider: any ShotUnderstandingProviding =
+            VisionComposerShotUnderstandingProvider(
+                composer: localVisionComposer,
+                source: .onDeviceModel
             )
+        let requested = cloudAnalysisConfiguration?.requestedMode
+        let baselineUnderstandingProvider: any ShotUnderstandingProviding
+        let refinementUnderstandingProvider: (any ShotUnderstandingProviding)?
+        switch requested {
+        case .arkStandard:
+            baselineUnderstandingProvider = arkUnderstandingProvider ?? localUnderstandingProvider
+            refinementUnderstandingProvider = nil
+        case .lasDeep:
+            baselineUnderstandingProvider = EvidenceOnlyShotUnderstandingProvider()
+            refinementUnderstandingProvider = nil
+        case .hybridMaximum:
+            // LAS and deterministic local evidence run first. Only the shot IDs selected by the
+            // cloud alignment gate are later sent through this separate Ark provider.
+            baselineUnderstandingProvider = EvidenceOnlyShotUnderstandingProvider()
+            refinementUnderstandingProvider = arkUnderstandingProvider
+        case .local:
+            baselineUnderstandingProvider = localUnderstandingProvider
+            refinementUnderstandingProvider = nil
+        case nil:
+            if let arkUnderstandingProvider {
+                baselineUnderstandingProvider = arkUnderstandingProvider
+            } else {
+                baselineUnderstandingProvider = localUnderstandingProvider
+            }
+            refinementUnderstandingProvider = nil
         }
 
         return EvidenceGroundedVideoAnalyzer(
@@ -192,14 +245,60 @@ enum RetrievalAssembly {
             transcriber: SpeechAnalyzerTranscriber(locale: defaultVideoTranscriptionLocale),
             corrector: LLMTranscriptCorrector(engine: activeEngine, model: activeModel),
             recognizer: VisionFrameTextRecognizer(),
-            understandingProvider: VisionComposerShotUnderstandingProvider(
-                composer: visionComposer,
-                source: visionGenerator == nil ? .onDeviceModel : .cloudModel
-            ),
-            cloudEnricher: cloudVideoConfiguration.map(ConfiguredCloudStoryboardEnricher.init),
+            understandingProvider: baselineUnderstandingProvider,
+            refinementUnderstandingProvider: refinementUnderstandingProvider,
+            cloudEnricher: cloudEnricher,
             artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
             pipelineVersion: "storyboard-v2.1",
             representativeFramesPerShot: 2
+        )
+    }
+}
+
+/// Deterministic baseline for LAS-first modes. It preserves transcript/OCR facts without invoking
+/// any model, so LAS-only never leaks frames to Ark and Hybrid can reserve Ark for the selected
+/// low-confidence shot IDs returned after LAS alignment.
+private struct EvidenceOnlyShotUnderstandingProvider: ShotUnderstandingProviding {
+    func understand(
+        _ input: ShotUnderstandingInput,
+        displayNumber: Int
+    ) async throws -> ShotUnderstandingOutput {
+        let transcriptIDs = input.evidence.filter {
+            $0.kind == .transcript || $0.kind == .audio
+        }.map(\.id)
+        let OCRIDs = input.evidence.filter { $0.kind == .ocr }.map(\.id)
+        var facts: [GroundedFact] = []
+        let transcript = input.transcript.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
+        if !transcript.isEmpty, !transcriptIDs.isEmpty {
+            facts.append(GroundedFact(
+                field: .audioSummary,
+                value: transcript,
+                evidenceIDs: transcriptIDs,
+                source: .deterministic,
+                confidence: 1
+            ))
+        }
+        let visibleText = input.onScreenText.flatMap(\.lines).filter { !$0.isEmpty }
+        for text in visibleText where !OCRIDs.isEmpty {
+            facts.append(GroundedFact(
+                field: .visibleText,
+                value: text,
+                evidenceIDs: OCRIDs,
+                source: .deterministic,
+                confidence: 1
+            ))
+        }
+        return ShotUnderstandingOutput(
+            shot: StoryboardShotV2(
+                id: input.shot.id,
+                observedFacts: ObservedShotFacts(
+                    facts: facts,
+                    unknownFields: facts.isEmpty ? [.action, .audioSummary] : [.action],
+                    modelConfidence: nil,
+                    reviewFlags: facts.isEmpty ? ["awaiting-las-evidence"] : []
+                )
+            ),
+            summary: transcript.isEmpty ? nil : transcript
         )
     }
 }

@@ -671,8 +671,7 @@ public final class AskViewModel {
             }
         }
 
-        // Cloud engine errors (CloudVLMError) arrive as LocalizedError — surface the real reason
-        // (HTTP status + server body) instead of a generic failure, so a bad model/key is visible.
+        // Cloud engine errors expose the HTTP status but deliberately omit provider response bodies.
         if let localized = error as? LocalizedError, let description = localized.errorDescription {
             return description
         }

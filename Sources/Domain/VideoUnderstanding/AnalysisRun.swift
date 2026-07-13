@@ -60,6 +60,8 @@ public struct AnalysisCloudTelemetry: Codable, Hashable, Sendable {
     public let estimatedUSD: Decimal?
     public let sanitizedError: String?
     public let refinementShotIDs: [String]
+    public let providerRoles: [String]?
+    public let cleanupState: String?
 
     public init(
         requestedMode: String,
@@ -72,7 +74,9 @@ public struct AnalysisCloudTelemetry: Codable, Hashable, Sendable {
         mediaMilliseconds: Int64? = nil,
         estimatedUSD: Decimal? = nil,
         sanitizedError: String? = nil,
-        refinementShotIDs: [String] = []
+        refinementShotIDs: [String] = [],
+        providerRoles: [String]? = nil,
+        cleanupState: String? = nil
     ) {
         self.requestedMode = requestedMode
         self.effectiveMode = effectiveMode
@@ -85,6 +89,8 @@ public struct AnalysisCloudTelemetry: Codable, Hashable, Sendable {
         self.estimatedUSD = estimatedUSD
         self.sanitizedError = sanitizedError
         self.refinementShotIDs = refinementShotIDs
+        self.providerRoles = providerRoles
+        self.cleanupState = cleanupState
     }
 }
 

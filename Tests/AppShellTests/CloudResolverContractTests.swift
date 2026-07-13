@@ -5,7 +5,8 @@ import Testing
 @Suite(.serialized)
 struct CloudResolverContractTests {
     @Test
-    func genericOpenAIEndpointDoesNotInventDeepVideoRoutesOrCapabilities() throws {
+    func genericOpenAIEndpointDoesNotInventDeepVideoRoutesOrCapabilities() async throws {
+        try await AppShellKeychainTestMutex.shared.withLock {
         let suiteName = "EngramCloudResolverContractTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         let existingKey = KeychainStore.string(for: VisionBackendKeychainAccount.cloudAPIKey)
@@ -37,5 +38,6 @@ struct CloudResolverContractTests {
         #expect(configuration.profile.jobURL == configuration.profile.capabilityURL)
         #expect(!configuration.profile.jobURL.path.contains("/video/jobs"))
         #expect(configuration.profile.declaredCapabilities == [.frameUnderstanding])
+        }
     }
 }

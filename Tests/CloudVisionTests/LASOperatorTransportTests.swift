@@ -95,6 +95,7 @@ struct LASOperatorTransportTests {
         let encoded = String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self)
         #expect(!encoded.contains("token_usages"))
         #expect(!encoded.contains("tos://"))
+        #expect(try JSONDecoder().decode(LASOperatorTaskReceipt.self, from: Data(encoded.utf8)).artifacts.isEmpty)
     }
 
     @Test func productionLASContractCannotRepresentCustomHostPathOrOperatorID() {
@@ -104,6 +105,64 @@ struct LASOperatorTransportTests {
         #expect(LASOperatorContract.enhancedASR.operatorID == "las_asr_pro")
         #expect(LASServiceRegion.cnBeijing.submitURL.path == "/api/v1/submit")
         #expect(LASServiceRegion.cnBeijing.pollURL.path == "/api/v1/poll")
+    }
+
+    @Test func pollKeepsOnlyNonSignedTOSArtifactReferencesForStoryboardAndScripts() async throws {
+        let responses = [
+            #"{"metadata":{"task_id":"story-1","task_status":"COMPLETED","business_code":"0","error_msg":""},"data":{"segments_url":"tos://fixture-bucket/engram/runs/output/segments.json","characters_registry_url":"tos://fixture-bucket/engram/runs/output/characters.json"}}"#,
+            #"{"metadata":{"task_id":"script-1","task_status":"COMPLETED","business_code":"0","error_msg":""},"data":{"final_table_path":"tos://fixture-bucket/engram/runs/output/characters.json","scripts_path":"tos://fixture-bucket/engram/runs/output/scripts","package_url":"https://signed.example.invalid/archive.zip?token=secret"}}"#,
+        ]
+        let index = ResponseIndex()
+        let session = makeLASSession { request in
+            try lasResponse(for: request, body: responses[index.take()])
+        }
+        let client = URLSessionLASOperatorClient(region: .cnBeijing, session: session)
+
+        let storyboard = try await client.poll(
+            contract: .videoStoryboard,
+            taskID: "story-1",
+            apiKey: "las-secret"
+        )
+        let script = try await client.poll(
+            contract: .scriptGeneration,
+            taskID: "script-1",
+            apiKey: "las-secret"
+        )
+
+        #expect(storyboard.artifacts.map(\.kind) == [.storyboardSegments, .storyboardCharacters])
+        #expect(script.artifacts.map(\.kind) == [.generatedCharacters, .generatedScripts])
+        let encoded = String(decoding: try JSONEncoder().encode(script), as: UTF8.self)
+        #expect(!encoded.contains("signed.example.invalid"))
+        #expect(!encoded.contains("token=secret"))
+    }
+
+    @Test func successfulSubmitWithoutATaskReceiptBecomesUnknownAcknowledgement() async throws {
+        let session = makeLASSession { request in
+            try lasResponse(for: request, body: #"{"metadata":{"business_code":"0"}}"#)
+        }
+        let client = URLSessionLASOperatorClient(region: .cnBeijing, session: session)
+
+        await #expect(throws: LASOperatorTransportError.submissionAcknowledgementUnknown) {
+            try await client.submit(
+                .videoStoryboard(
+                    videoTOSURL: "tos://engram-stage/source.mp4",
+                    outputTOSPath: "tos://engram-stage/output/run-1/"
+                ),
+                apiKey: "las-secret"
+            )
+        }
+    }
+}
+
+private final class ResponseIndex: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func take() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = value
+        value += 1
+        return current
     }
 }
 

@@ -13,6 +13,10 @@ public final class SettingsViewModel {
     public private(set) var operationModelID: String?
     public private(set) var downloadProgress: ModelDownloadProgress?
     public private(set) var visionBackend: VisionBackendSettings
+    public private(set) var cloudCapabilities: [CloudCapabilityDisplay]
+    public private(set) var isProbingLAS: Bool
+    public private(set) var isProbingArk: Bool
+    public private(set) var isNextCloudRunAuthorized: Bool
     /// Per-role effective backend (语言/视觉/检索), resolved by the shell from mode + config + downloads.
     public private(set) var activeRoles: ActiveAIRoles?
     /// Local artifact sizes (videos / model weights / retrieval index).
@@ -60,6 +64,10 @@ public final class SettingsViewModel {
         self.loadActiveRoles = loadActiveRoles
         self.loadStorage = loadStorage
         self.visionBackend = visionBackendClient.load()
+        self.cloudCapabilities = visionBackendClient.loadCapabilities()
+        self.isProbingLAS = false
+        self.isProbingArk = false
+        self.isNextCloudRunAuthorized = false
         self.applyActiveModel = applyActiveModel
         self.applyActiveEngine = applyActiveEngine
         self.applyGenerationConfig = applyGenerationConfig
@@ -95,14 +103,49 @@ public final class SettingsViewModel {
     public func updateVisionBackend(_ settings: VisionBackendSettings) {
         visionBackend = settings
         visionBackendClient.save(visionBackend, nil)
+        cloudCapabilities = visionBackendClient.loadCapabilities()
+        isNextCloudRunAuthorized = false
         scheduleRolesReload()
+    }
+
+    public func probeLASCapabilities(using sampleURL: URL) async {
+        guard !isProbingLAS else { return }
+        isProbingLAS = true
+        errorMessage = nil
+        defer { isProbingLAS = false }
+        do {
+            try await visionBackendClient.probeLASCapabilities(sampleURL)
+            visionBackend = visionBackendClient.load()
+            cloudCapabilities = visionBackendClient.loadCapabilities()
+        } catch {
+            errorMessage = Self.userFacingMessage(for: error)
+        }
+    }
+
+    public func probeArkCapabilities() async {
+        guard !isProbingArk else { return }
+        isProbingArk = true
+        errorMessage = nil
+        defer { isProbingArk = false }
+        do {
+            try await visionBackendClient.probeArkCapabilities()
+            visionBackend = visionBackendClient.load()
+            cloudCapabilities = visionBackendClient.loadCapabilities()
+        } catch {
+            errorMessage = Self.userFacingMessage(for: error)
+        }
+    }
+
+    public func authorizeNextCloudAnalysisRun() async {
+        await visionBackendClient.authorizeNextCloudRun()
+        isNextCloudRunAuthorized = true
     }
 
     /// True in 云端 mode when any required field is missing. Cloud routing is all-or-nothing (a
     /// partial config must not split text/vision across backends), so until complete the whole
     /// pipeline runs on-device — Settings must say so instead of silently downgrading.
     public var cloudConfigIncomplete: Bool {
-        visionBackend.kind == .cloud && (
+        (visionBackend.requestedMode == .arkStandard || visionBackend.requestedMode == .hybridMaximum) && (
             visionBackend.cloudBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
                 || visionBackend.cloudModel.trimmingCharacters(in: .whitespaces).isEmpty
                 || visionBackend.cloudTextModel.trimmingCharacters(in: .whitespaces).isEmpty
@@ -116,6 +159,8 @@ public final class SettingsViewModel {
         visionBackend.hasCloudKey = !trimmed.isEmpty
         visionBackendClient.setCredential(.arkAPIKey, trimmed)
         visionBackendClient.save(visionBackend, nil)
+        cloudCapabilities = visionBackendClient.loadCapabilities()
+        isNextCloudRunAuthorized = false
         scheduleRolesReload()
     }
 
@@ -124,6 +169,8 @@ public final class SettingsViewModel {
         visionBackend.las.hasAPIKey = !trimmed.isEmpty
         visionBackendClient.setCredential(.lasAPIKey, trimmed)
         visionBackendClient.save(visionBackend, nil)
+        cloudCapabilities = visionBackendClient.loadCapabilities()
+        isNextCloudRunAuthorized = false
         scheduleRolesReload()
     }
 
@@ -146,6 +193,8 @@ public final class SettingsViewModel {
         }
         visionBackend.staging.temporaryCredentialExpiresAt = expiresAt
         visionBackendClient.save(visionBackend, nil)
+        cloudCapabilities = visionBackendClient.loadCapabilities()
+        isNextCloudRunAuthorized = false
         scheduleRolesReload()
     }
 
@@ -181,6 +230,9 @@ public final class SettingsViewModel {
         isRefreshing = true
         errorMessage = nil
         defer { isRefreshing = false }
+
+        visionBackend = visionBackendClient.load()
+        cloudCapabilities = visionBackendClient.loadCapabilities()
 
         do {
             models = try await client.refreshModels().sorted {

@@ -32,17 +32,16 @@ public enum CloudVLMError: Error, Equatable, Sendable {
 }
 
 extension CloudVLMError: LocalizedError {
-    // Surfaced verbatim in the UI so a misconfigured model/endpoint/key is diagnosable on device
-    // (the server body carried by `.statusCode` is the actual reason, e.g. an unknown model id).
+    // Provider bodies are never surfaced or persisted; the HTTP status is enough to distinguish
+    // authentication, configuration and transient service failures safely.
     public var errorDescription: String? {
         switch self {
         case .missingAPIKey:
             return "云端未配置 API Key。"
         case .invalidResponse:
             return "云端返回了无法识别的响应。"
-        case let .statusCode(code, body):
-            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty ? "云端服务错误 (HTTP \(code))。" : "云端服务错误 (HTTP \(code)): \(detail)"
+        case let .statusCode(code, _):
+            return "云端服务错误 (HTTP \(code))；响应正文已为隐私省略。"
         case .emptyContent:
             return "云端返回了空内容。"
         case let .decodingFailed(detail):
@@ -109,15 +108,14 @@ public struct OpenAICompatibleVLMGenerator: VisionScriptGenerating {
             throw CloudVLMError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            let snippet = String(String(decoding: data, as: UTF8.self).prefix(500))
             Log.scriptComposer.error("Cloud VLM HTTP \(http.statusCode, privacy: .public)")
             if http.statusCode == 401 || http.statusCode == 403 {
                 // Auth rejection is a configuration problem the user must fix — see missingAPIKey.
                 throw VideoUnderstandingError.visionConfigurationInvalid(
-                    "云端 AI 鉴权失败（HTTP \(http.statusCode)）：\(snippet)"
+                    "云端 AI 鉴权失败（HTTP \(http.statusCode)）；响应正文已为隐私省略。"
                 )
             }
-            throw CloudVLMError.statusCode(http.statusCode, snippet)
+            throw CloudVLMError.statusCode(http.statusCode, "provider-response-omitted")
         }
 
         let content = try Self.decodeContent(data)

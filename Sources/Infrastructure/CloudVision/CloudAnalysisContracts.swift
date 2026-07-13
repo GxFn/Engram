@@ -205,6 +205,33 @@ public enum CloudCostAcceptance: Codable, Hashable, Sendable {
     case knownEstimate(Decimal)
 }
 
+/// Presented only after local asset probe and a role/fingerprint plan exist. Accepting it produces
+/// a single run/source/plan receipt; it is not a reusable Settings preference.
+public struct CloudRunConsentPrompt: Codable, Hashable, Sendable {
+    public let runID: String
+    public let sourceFingerprint: String
+    public let planHash: String
+    public let byteCount: Int64
+    public let durationSeconds: Double
+    public let costAcceptance: CloudCostAcceptance
+
+    public init(
+        runID: String,
+        sourceFingerprint: String,
+        planHash: String,
+        byteCount: Int64,
+        durationSeconds: Double,
+        costAcceptance: CloudCostAcceptance
+    ) {
+        self.runID = runID
+        self.sourceFingerprint = sourceFingerprint
+        self.planHash = planHash
+        self.byteCount = max(0, byteCount)
+        self.durationSeconds = max(0, durationSeconds)
+        self.costAcceptance = costAcceptance
+    }
+}
+
 /// One video/run/plan authorization. It is never a reusable application setting.
 public struct CloudRunConsentReceipt: Codable, Hashable, Sendable {
     public let runID: String

@@ -145,6 +145,31 @@ public enum LASTaskState: String, Codable, Hashable, Sendable {
     case timeout
 }
 
+public enum LASOperatorArtifactKind: String, Codable, Hashable, Sendable {
+    case storyboardSegments
+    case storyboardCharacters
+    case generatedScripts
+    case generatedCharacters
+}
+
+/// A non-secret TOS object or prefix written into the user's configured output directory.
+/// Presigned HTTPS download links are deliberately excluded from this persisted representation.
+public struct LASOperatorArtifact: Codable, Hashable, Sendable {
+    public let kind: LASOperatorArtifactKind
+    public let tosURL: String
+    public let isPrefix: Bool
+
+    public init?(kind: LASOperatorArtifactKind, tosURL: String, isPrefix: Bool = false) {
+        guard let components = URLComponents(string: tosURL),
+              components.scheme == "tos", components.host?.isEmpty == false,
+              components.query == nil
+        else { return nil }
+        self.kind = kind
+        self.tosURL = tosURL
+        self.isPrefix = isPrefix
+    }
+}
+
 /// Sanitized typed provider result. Raw response bodies, input object URLs and output signed URLs
 /// are intentionally not representable in this persisted envelope.
 public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
@@ -154,6 +179,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
     public let businessCode: String
     public let requestID: String?
     public let observations: [CloudTimelineObservation]
+    public let artifacts: [LASOperatorArtifact]
     public let usage: CloudProviderUsage
     public let sanitizedError: String?
 
@@ -164,6 +190,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
         businessCode: String,
         requestID: String?,
         observations: [CloudTimelineObservation],
+        artifacts: [LASOperatorArtifact] = [],
         usage: CloudProviderUsage,
         sanitizedError: String?
     ) {
@@ -173,8 +200,41 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
         self.businessCode = businessCode
         self.requestID = requestID
         self.observations = observations
+        self.artifacts = artifacts
         self.usage = usage
         self.sanitizedError = sanitizedError.map(CloudErrorSanitizer.sanitize)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case operatorID, taskID, state, businessCode, requestID, observations, artifacts, usage, sanitizedError
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            operatorID: try container.decode(String.self, forKey: .operatorID),
+            taskID: try container.decode(String.self, forKey: .taskID),
+            state: try container.decode(LASTaskState.self, forKey: .state),
+            businessCode: try container.decode(String.self, forKey: .businessCode),
+            requestID: try container.decodeIfPresent(String.self, forKey: .requestID),
+            observations: try container.decode([CloudTimelineObservation].self, forKey: .observations),
+            artifacts: try container.decodeIfPresent([LASOperatorArtifact].self, forKey: .artifacts) ?? [],
+            usage: try container.decode(CloudProviderUsage.self, forKey: .usage),
+            sanitizedError: try container.decodeIfPresent(String.self, forKey: .sanitizedError)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(operatorID, forKey: .operatorID)
+        try container.encode(taskID, forKey: .taskID)
+        try container.encode(state, forKey: .state)
+        try container.encode(businessCode, forKey: .businessCode)
+        try container.encodeIfPresent(requestID, forKey: .requestID)
+        try container.encode(observations, forKey: .observations)
+        if !artifacts.isEmpty { try container.encode(artifacts, forKey: .artifacts) }
+        try container.encode(usage, forKey: .usage)
+        try container.encodeIfPresent(sanitizedError, forKey: .sanitizedError)
     }
 }
 
@@ -217,7 +277,11 @@ public struct URLSessionLASOperatorClient: LASOperatorClient {
             body: invocation.requestBody()
         )
         do {
-            return try await execute(request, contract: invocation.contract)
+            return try await execute(
+                request,
+                contract: invocation.contract,
+                requiresSubmissionAcknowledgement: true
+            )
         } catch let error as LASOperatorTransportError {
             throw error
         } catch {
@@ -256,7 +320,8 @@ public struct URLSessionLASOperatorClient: LASOperatorClient {
 
     private func execute(
         _ request: URLRequest,
-        contract: LASOperatorContract
+        contract: LASOperatorContract,
+        requiresSubmissionAcknowledgement: Bool = false
     ) async throws -> LASOperatorTaskReceipt {
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -271,8 +336,14 @@ public struct URLSessionLASOperatorClient: LASOperatorClient {
             let payload = try JSONDecoder().decode(LASEnvelope.self, from: data)
             return try payload.receipt(contract: contract)
         } catch let error as LASOperatorTransportError {
+            if requiresSubmissionAcknowledgement {
+                throw LASOperatorTransportError.submissionAcknowledgementUnknown
+            }
             throw error
         } catch {
+            if requiresSubmissionAcknowledgement {
+                throw LASOperatorTransportError.submissionAcknowledgementUnknown
+            }
             throw LASOperatorTransportError.invalidResponse("HTTP \(status): undecodable-provider-response")
         }
     }
@@ -333,6 +404,10 @@ private struct LASEnvelope: Decodable {
         let tokenUsages: [TokenUsage]?
         let audioInfo: AudioInfo?
         let result: ASRResult?
+        let segmentsURL: String?
+        let charactersRegistryURL: String?
+        let finalTablePath: String?
+        let scriptsPath: String?
 
         enum CodingKeys: String, CodingKey {
             case videoDuration = "video_duration"
@@ -340,6 +415,10 @@ private struct LASEnvelope: Decodable {
             case tokenUsages = "token_usages"
             case audioInfo = "audio_info"
             case result
+            case segmentsURL = "segments_url"
+            case charactersRegistryURL = "characters_registry_url"
+            case finalTablePath = "final_table_path"
+            case scriptsPath = "scripts_path"
         }
     }
 
@@ -385,6 +464,23 @@ private struct LASEnvelope: Decodable {
                 kind: .visual
             )]
         }
+        var artifacts: [LASOperatorArtifact] = []
+        if let value = data?.segmentsURL,
+           let artifact = LASOperatorArtifact(kind: .storyboardSegments, tosURL: value) {
+            artifacts.append(artifact)
+        }
+        if let value = data?.charactersRegistryURL,
+           let artifact = LASOperatorArtifact(kind: .storyboardCharacters, tosURL: value) {
+            artifacts.append(artifact)
+        }
+        if let value = data?.finalTablePath,
+           let artifact = LASOperatorArtifact(kind: .generatedCharacters, tosURL: value) {
+            artifacts.append(artifact)
+        }
+        if let value = data?.scriptsPath,
+           let artifact = LASOperatorArtifact(kind: .generatedScripts, tosURL: value, isPrefix: true) {
+            artifacts.append(artifact)
+        }
         return LASOperatorTaskReceipt(
             operatorID: contract.operatorID,
             taskID: metadata.taskID,
@@ -392,6 +488,7 @@ private struct LASEnvelope: Decodable {
             businessCode: metadata.businessCode,
             requestID: metadata.requestID,
             observations: observations,
+            artifacts: artifacts,
             usage: CloudProviderUsage(
                 requestCount: 1,
                 inputTokens: inputTokens,

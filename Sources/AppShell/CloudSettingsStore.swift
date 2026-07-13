@@ -67,10 +67,12 @@ struct CloudSettingsStore: @unchecked Sendable {
         let las = LASBackendSettings(
             isEnabled: defaults?.bool(forKey: CloudSettingsDefaultsKey.lasEnabled) ?? false,
             region: region,
-            videoStoryboardOperatorID: defaults?.string(forKey: CloudSettingsDefaultsKey.lasVideoStoryboardOperatorID) ?? "",
-            videoFineUnderstandingOperatorID: defaults?.string(forKey: CloudSettingsDefaultsKey.lasVideoFineUnderstandingOperatorID) ?? "",
-            scriptGenerationOperatorID: defaults?.string(forKey: CloudSettingsDefaultsKey.lasScriptGenerationOperatorID) ?? "",
-            enhancedASROperatorID: defaults?.string(forKey: CloudSettingsDefaultsKey.lasEnhancedASROperatorID) ?? "",
+            // Production LAS contracts are fixed by the app revision. Historical/custom values
+            // are intentionally ignored so Settings cannot manufacture an arbitrary operator.
+            videoStoryboardOperatorID: LASOperatorContract.videoStoryboard.operatorID,
+            videoFineUnderstandingOperatorID: LASOperatorContract.videoFineUnderstanding.operatorID,
+            scriptGenerationOperatorID: LASOperatorContract.scriptGeneration.operatorID,
+            enhancedASROperatorID: LASOperatorContract.enhancedASR.operatorID,
             hasAPIKey: credential(.lasAPIKey)?.isEmpty == false
         )
         let hasSTS = CloudCredentialSlot.allCases
@@ -100,10 +102,10 @@ struct CloudSettingsStore: @unchecked Sendable {
         defaults?.set(settings.ark.frameModelID, forKey: CloudSettingsDefaultsKey.arkFrameModelID)
         defaults?.set(settings.las.isEnabled, forKey: CloudSettingsDefaultsKey.lasEnabled)
         defaults?.set(settings.las.region.rawValue, forKey: CloudSettingsDefaultsKey.lasRegion)
-        defaults?.set(settings.las.videoStoryboardOperatorID, forKey: CloudSettingsDefaultsKey.lasVideoStoryboardOperatorID)
-        defaults?.set(settings.las.videoFineUnderstandingOperatorID, forKey: CloudSettingsDefaultsKey.lasVideoFineUnderstandingOperatorID)
-        defaults?.set(settings.las.scriptGenerationOperatorID, forKey: CloudSettingsDefaultsKey.lasScriptGenerationOperatorID)
-        defaults?.set(settings.las.enhancedASROperatorID, forKey: CloudSettingsDefaultsKey.lasEnhancedASROperatorID)
+        defaults?.set(LASOperatorContract.videoStoryboard.operatorID, forKey: CloudSettingsDefaultsKey.lasVideoStoryboardOperatorID)
+        defaults?.set(LASOperatorContract.videoFineUnderstanding.operatorID, forKey: CloudSettingsDefaultsKey.lasVideoFineUnderstandingOperatorID)
+        defaults?.set(LASOperatorContract.scriptGeneration.operatorID, forKey: CloudSettingsDefaultsKey.lasScriptGenerationOperatorID)
+        defaults?.set(LASOperatorContract.enhancedASR.operatorID, forKey: CloudSettingsDefaultsKey.lasEnhancedASROperatorID)
         defaults?.set(settings.staging.bucket, forKey: CloudSettingsDefaultsKey.tosBucket)
         defaults?.set(settings.staging.objectPrefix, forKey: CloudSettingsDefaultsKey.tosObjectPrefix)
         defaults?.set(settings.staging.credentialReferenceID, forKey: CloudSettingsDefaultsKey.tosCredentialReferenceID)
@@ -162,10 +164,10 @@ struct CloudSettingsStore: @unchecked Sendable {
         return [
             .arkText: Self.fingerprint(arkBase + ["text"]),
             .arkFrame: Self.fingerprint(arkBase + ["frame"]),
-            .lasVideoStoryboard: Self.fingerprint(lasBase + [settings.las.videoStoryboardOperatorID]),
-            .lasVideoFineUnderstanding: Self.fingerprint(lasBase + [settings.las.videoFineUnderstandingOperatorID]),
-            .lasScriptGeneration: Self.fingerprint(lasBase + [settings.las.scriptGenerationOperatorID]),
-            .lasEnhancedASR: Self.fingerprint(lasBase + [settings.las.enhancedASROperatorID]),
+            .lasVideoStoryboard: Self.fingerprint(lasBase + [LASOperatorContract.videoStoryboard.operatorID]),
+            .lasVideoFineUnderstanding: Self.fingerprint(lasBase + [LASOperatorContract.videoFineUnderstanding.operatorID]),
+            .lasScriptGeneration: Self.fingerprint(lasBase + [LASOperatorContract.scriptGeneration.operatorID]),
+            .lasEnhancedASR: Self.fingerprint(lasBase + [LASOperatorContract.enhancedASR.operatorID]),
             .mediaStaging: Self.fingerprint(staging),
         ]
     }

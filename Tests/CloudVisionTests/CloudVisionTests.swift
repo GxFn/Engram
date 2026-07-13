@@ -65,8 +65,14 @@ import VideoUnderstanding
         let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
         return (Data("unauthorized".utf8), response)
     }
-    await #expect(throws: VideoUnderstandingError.self) {
+    do {
         _ = try await generator.generate(prompt: "p", frames: [], config: .default)
+        Issue.record("expected authentication failure")
+    } catch VideoUnderstandingError.visionConfigurationInvalid(let message) {
+        #expect(message.contains("HTTP 401"))
+        #expect(!message.contains("unauthorized"))
+    } catch {
+        Issue.record("unexpected error: \(error)")
     }
 }
 

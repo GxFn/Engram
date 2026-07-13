@@ -121,11 +121,30 @@ public struct TOSStagedObject: Codable, Hashable, Sendable {
     public let tosURL: String
     public let byteCount: Int64
     public let expiresAt: Date
+
+    public init(
+        bucket: String,
+        objectKey: String,
+        tosURL: String,
+        byteCount: Int64,
+        expiresAt: Date
+    ) {
+        self.bucket = bucket
+        self.objectKey = objectKey
+        self.tosURL = tosURL
+        self.byteCount = byteCount
+        self.expiresAt = expiresAt
+    }
 }
 
 public struct TOSStagingResult: Codable, Hashable, Sendable {
     public let object: TOSStagedObject
     public let checkpoint: TOSUploadCheckpoint
+
+    public init(object: TOSStagedObject, checkpoint: TOSUploadCheckpoint) {
+        self.object = object
+        self.checkpoint = checkpoint
+    }
 }
 
 public enum TOSMediaStagingError: Error, Hashable, Sendable {
@@ -140,7 +159,54 @@ public enum TOSMediaStagingError: Error, Hashable, Sendable {
     case invalidResponse(String)
 }
 
-public struct URLSessionTOSMediaStager: Sendable {
+public protocol TOSMediaStaging: Sendable {
+    func stage(
+        fileURL: URL,
+        sourceFingerprint: String,
+        byteCount: Int64,
+        consent: CloudRunConsentReceipt,
+        credentials: TOSTemporaryCredentials,
+        checkpoint: TOSUploadCheckpoint?,
+        persistCheckpoint: @Sendable (TOSUploadCheckpoint) async throws -> Void
+    ) async throws -> TOSStagingResult
+
+    func cleanup(
+        _ checkpoint: TOSUploadCheckpoint,
+        credentials: TOSTemporaryCredentials
+    ) async -> TOSUploadCheckpoint
+
+    func readArtifact(
+        at tosURL: String,
+        maximumBytes: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> Data
+
+    func listArtifacts(
+        at tosPrefix: String,
+        maximumCount: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> [String]
+}
+
+public extension TOSMediaStaging {
+    func readArtifact(
+        at tosURL: String,
+        maximumBytes: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> Data {
+        throw TOSMediaStagingError.invalidResponse("result-artifact-read-not-implemented")
+    }
+
+    func listArtifacts(
+        at tosPrefix: String,
+        maximumCount: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> [String] {
+        throw TOSMediaStagingError.invalidResponse("result-artifact-list-not-implemented")
+    }
+}
+
+public struct URLSessionTOSMediaStager: TOSMediaStaging {
     private let configuration: TOSMediaStagingConfiguration
     private let session: URLSession
     private let now: @Sendable () -> Date
@@ -162,7 +228,7 @@ public struct URLSessionTOSMediaStager: Sendable {
         consent: CloudRunConsentReceipt,
         credentials: TOSTemporaryCredentials,
         checkpoint existing: TOSUploadCheckpoint?,
-        persistCheckpoint: @escaping @Sendable (TOSUploadCheckpoint) async throws -> Void
+        persistCheckpoint: @Sendable (TOSUploadCheckpoint) async throws -> Void
     ) async throws -> TOSStagingResult {
         try validate(
             fileURL: fileURL,
@@ -239,6 +305,7 @@ public struct URLSessionTOSMediaStager: Sendable {
         _ checkpoint: TOSUploadCheckpoint,
         credentials: TOSTemporaryCredentials
     ) async -> TOSUploadCheckpoint {
+        if checkpoint.cleanupState == .deleted { return checkpoint }
         do {
             var query: [URLQueryItem] = []
             if !checkpoint.isCompleted {
@@ -259,6 +326,79 @@ public struct URLSessionTOSMediaStager: Sendable {
         } catch {
             return checkpoint.updating(cleanupState: .retryRequired)
         }
+    }
+
+    public func readArtifact(
+        at tosURL: String,
+        maximumBytes: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> Data {
+        let key = try artifactKey(from: tosURL)
+        guard maximumBytes > 0 else {
+            throw TOSMediaStagingError.invalidConfiguration("artifact-read-limit-invalid")
+        }
+        var request = try signedRequest(
+            method: "GET",
+            objectKey: key,
+            queryItems: [],
+            payloadHash: Self.emptySHA256,
+            contentLength: nil,
+            body: nil,
+            credentials: credentials
+        )
+        request.setValue("bytes=0-\(maximumBytes - 1)", forHTTPHeaderField: "Range")
+        let (bytes, response) = try await session.bytes(for: request)
+        let http = try validated(response, allowedStatuses: 200..<300)
+        if let length = Int(http.value(forHTTPHeaderField: "Content-Length") ?? ""),
+           length > maximumBytes {
+            throw TOSMediaStagingError.invalidResponse("result-artifact-too-large")
+        }
+        var data = Data()
+        data.reserveCapacity(min(maximumBytes, 64 * 1_024))
+        for try await byte in bytes {
+            guard data.count < maximumBytes else {
+                throw TOSMediaStagingError.invalidResponse("result-artifact-too-large")
+            }
+            data.append(byte)
+        }
+        return data
+    }
+
+    public func listArtifacts(
+        at tosPrefix: String,
+        maximumCount: Int,
+        credentials: TOSTemporaryCredentials
+    ) async throws -> [String] {
+        let prefix = try artifactKey(from: tosPrefix)
+        let limit = min(100, max(1, maximumCount))
+        let request = try signedRequest(
+            method: "GET",
+            objectKey: "",
+            queryItems: [
+                URLQueryItem(name: "list-type", value: "2"),
+                URLQueryItem(name: "max-keys", value: String(limit)),
+                URLQueryItem(name: "prefix", value: prefix),
+            ],
+            payloadHash: Self.emptySHA256,
+            contentLength: nil,
+            body: nil,
+            credentials: credentials
+        )
+        let (data, _) = try await execute(request, allowedStatuses: 200..<300)
+        guard data.count <= 512 * 1_024,
+              let xml = String(data: data, encoding: .utf8)
+        else { throw TOSMediaStagingError.invalidResponse("result-artifact-list-invalid") }
+        return xml.components(separatedBy: "<Key>").dropFirst().compactMap { tail in
+            guard let end = tail.range(of: "</Key>") else { return nil }
+            let key = String(tail[..<end.lowerBound])
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+            guard key.hasPrefix(configuration.objectPrefix) else { return nil }
+            return "tos://\(configuration.bucket)/\(key)"
+        }
+        .prefix(limit)
+        .map { $0 }
     }
 
     private func validate(
@@ -287,6 +427,19 @@ public struct URLSessionTOSMediaStager: Sendable {
               let actual = (attributes[.size] as? NSNumber)?.int64Value,
               actual == byteCount
         else { throw TOSMediaStagingError.fileUnavailable }
+    }
+
+    private func artifactKey(from tosURL: String) throws -> String {
+        guard let components = URLComponents(string: tosURL),
+              components.scheme == "tos",
+              components.host == configuration.bucket,
+              components.query == nil
+        else { throw TOSMediaStagingError.invalidConfiguration("result-artifact-url-invalid") }
+        let key = components.path.hasPrefix("/") ? String(components.path.dropFirst()) : components.path
+        guard key.hasPrefix(configuration.objectPrefix), !key.isEmpty else {
+            throw TOSMediaStagingError.invalidConfiguration("result-artifact-prefix-out-of-scope")
+        }
+        return key
     }
 
     private func deterministicObjectKey(fileURL: URL, fingerprint: String) throws -> String {
@@ -512,6 +665,13 @@ public struct URLSessionTOSMediaStager: Sendable {
         allowedStatuses: Range<Int>
     ) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
+        return (data, try validated(response, allowedStatuses: allowedStatuses))
+    }
+
+    private func validated(
+        _ response: URLResponse,
+        allowedStatuses: Range<Int>
+    ) throws -> HTTPURLResponse {
         guard let http = response as? HTTPURLResponse else {
             throw TOSMediaStagingError.invalidResponse("non-http-response")
         }
@@ -519,7 +679,7 @@ public struct URLSessionTOSMediaStager: Sendable {
         case 401, 403: throw TOSMediaStagingError.authenticationRejected
         case 429: throw TOSMediaStagingError.rateLimited
         case 500..<600: throw TOSMediaStagingError.providerUnavailable(http.statusCode)
-        case let value where allowedStatuses.contains(value): return (data, http)
+        case let value where allowedStatuses.contains(value): return http
         default: throw TOSMediaStagingError.invalidResponse("HTTP \(http.statusCode): tos-request-failed")
         }
     }

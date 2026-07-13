@@ -142,6 +142,56 @@ struct TOSMediaStagingTests {
         #expect(calls.methods == ["DELETE"])
         #expect(cleaned.cleanupState == .retryRequired)
     }
+
+    @Test func resultArtifactsArePrefixScopedListedAndReadWithABoundedSignedRequest() async throws {
+        let session = makeTOSSession { request in
+            let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let body: Data
+            if query.contains(where: { $0.name == "list-type" && $0.value == "2" }) {
+                body = Data("<ListBucketResult><Contents><Key>engram/runs/output/scripts/episode-1.md</Key></Contents></ListBucketResult>".utf8)
+            } else {
+        #expect(request.value(forHTTPHeaderField: "Range") == "bytes=0-1023")
+                body = Data("A grounded generated script.".utf8)
+            }
+            let URL = try #require(request.url)
+            let response = try #require(HTTPURLResponse(
+                url: URL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Length": String(body.count)]
+            ))
+            return (response, body)
+        }
+        let stager = URLSessionTOSMediaStager(
+            configuration: TOSMediaStagingConfiguration(
+                region: .cnBeijing,
+                bucket: "fixture-bucket",
+                objectPrefix: "engram/runs/"
+            ),
+            session: session,
+            now: { Date(timeIntervalSince1970: 10_000) }
+        )
+
+        let listed = try await stager.listArtifacts(
+            at: "tos://fixture-bucket/engram/runs/output/scripts",
+            maximumCount: 16,
+            credentials: temporaryCredentials()
+        )
+        let data = try await stager.readArtifact(
+            at: try #require(listed.first),
+            maximumBytes: 1_024,
+            credentials: temporaryCredentials()
+        )
+
+        #expect(String(decoding: data, as: UTF8.self) == "A grounded generated script.")
+        await #expect(throws: TOSMediaStagingError.self) {
+            try await stager.readArtifact(
+                at: "tos://fixture-bucket/outside/private.json",
+                maximumBytes: 1_024,
+                credentials: temporaryCredentials()
+            )
+        }
+    }
 }
 
 private func consent(maximumBytes: Int64) -> CloudRunConsentReceipt {

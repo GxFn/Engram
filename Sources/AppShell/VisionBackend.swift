@@ -35,6 +35,52 @@ enum VisionBackendKeychainAccount {
 /// The app-wide AI mode is a single switch (本地 ↔ 云端). In 云端 mode, both the text LLM and
 /// the vision backend run on the same cloud endpoint/key; in 本地 mode both run on-device.
 enum CloudAIResolver {
+    struct AnalysisConfiguration: Sendable {
+        let requestedMode: CloudVision.CloudAnalysisRequestedMode
+        let expectedFingerprints: [CloudProviderRole: String]
+        let capabilitySnapshots: [CloudRoleCapabilitySnapshot]
+        let arkConfigured: Bool
+        let region: CloudVision.LASServiceRegion
+        let lasAPIKey: String?
+        let stagingConfiguration: TOSMediaStagingConfiguration?
+        let stagingCredentials: TOSTemporaryCredentials?
+        let maximumUploadBytes: Int64
+        let credentialReferenceIDs: [CloudProviderRole: String]
+        let requestConsent: @Sendable (CloudRunConsentPrompt) async -> CloudRunConsentReceipt?
+        let invalidateCapability: @Sendable (CloudProviderRole, Int) -> Void
+        let recordCapability: @Sendable (CloudRoleCapabilitySnapshot) -> Void
+
+        init(
+            requestedMode: CloudVision.CloudAnalysisRequestedMode,
+            expectedFingerprints: [CloudProviderRole: String],
+            capabilitySnapshots: [CloudRoleCapabilitySnapshot],
+            arkConfigured: Bool,
+            region: CloudVision.LASServiceRegion,
+            lasAPIKey: String?,
+            stagingConfiguration: TOSMediaStagingConfiguration?,
+            stagingCredentials: TOSTemporaryCredentials?,
+            maximumUploadBytes: Int64,
+            credentialReferenceIDs: [CloudProviderRole: String] = [:],
+            requestConsent: @escaping @Sendable (CloudRunConsentPrompt) async -> CloudRunConsentReceipt?,
+            invalidateCapability: @escaping @Sendable (CloudProviderRole, Int) -> Void,
+            recordCapability: @escaping @Sendable (CloudRoleCapabilitySnapshot) -> Void = { _ in }
+        ) {
+            self.requestedMode = requestedMode
+            self.expectedFingerprints = expectedFingerprints
+            self.capabilitySnapshots = capabilitySnapshots
+            self.arkConfigured = arkConfigured
+            self.region = region
+            self.lasAPIKey = lasAPIKey
+            self.stagingConfiguration = stagingConfiguration
+            self.stagingCredentials = stagingCredentials
+            self.maximumUploadBytes = max(0, maximumUploadBytes)
+            self.credentialReferenceIDs = credentialReferenceIDs
+            self.requestConsent = requestConsent
+            self.invalidateCapability = invalidateCapability
+            self.recordCapability = recordCapability
+        }
+    }
+
     struct VideoConfiguration: Sendable {
         let profile: CloudProviderProfile
         let requestedMode: EffectiveCloudMode
@@ -138,6 +184,76 @@ enum CloudAIResolver {
         )
     }
 
+    static func makeAnalysisConfiguration(
+        defaults: UserDefaults?,
+        requestConsent: @escaping @Sendable (CloudRunConsentPrompt) async -> CloudRunConsentReceipt? = { _ in nil }
+    ) -> AnalysisConfiguration? {
+        let store = CloudSettingsStore(defaults: defaults)
+        let settings = store.load()
+        let requested: CloudVision.CloudAnalysisRequestedMode = switch settings.requestedMode {
+        case .local: .local
+        case .arkStandard: .arkStandard
+        case .lasDeep: .lasDeep
+        case .hybridMaximum: .hybridMaximum
+        }
+        guard requested != .local else { return nil }
+        let region = CloudVision.LASServiceRegion(rawValue: settings.las.region.rawValue) ?? .cnBeijing
+        let stagingConfiguration: TOSMediaStagingConfiguration? = if
+            !settings.staging.bucket.isEmpty,
+            settings.staging.objectPrefix.hasPrefix("engram/")
+        {
+            TOSMediaStagingConfiguration(
+                region: region,
+                bucket: settings.staging.bucket,
+                objectPrefix: settings.staging.objectPrefix
+            )
+        } else {
+            nil
+        }
+        let stagingCredentials: TOSTemporaryCredentials? = if
+            let accessKeyID = store.credential(.tosAccessKeyID),
+            let secretAccessKey = store.credential(.tosSecretAccessKey),
+            let securityToken = store.credential(.tosSecurityToken),
+            let expiresAt = settings.staging.temporaryCredentialExpiresAt
+        {
+            TOSTemporaryCredentials(
+                accessKeyID: accessKeyID,
+                secretAccessKey: secretAccessKey,
+                securityToken: securityToken,
+                expiresAt: expiresAt
+            )
+        } else {
+            nil
+        }
+        return AnalysisConfiguration(
+            requestedMode: requested,
+            expectedFingerprints: store.configurationFingerprints(),
+            capabilitySnapshots: store.loadCapabilitySnapshots(),
+            arkConfigured: settings.ark.isConfigured,
+            region: region,
+            lasAPIKey: store.credential(.lasAPIKey),
+            stagingConfiguration: stagingConfiguration,
+            stagingCredentials: stagingCredentials,
+            maximumUploadBytes: Int64(settings.staging.maximumUploadMegabytes) * 1_024 * 1_024,
+            credentialReferenceIDs: [
+                .arkText: VisionBackendKeychainAccount.arkAPIKey,
+                .arkFrame: VisionBackendKeychainAccount.arkAPIKey,
+                .lasVideoStoryboard: VisionBackendKeychainAccount.lasAPIKey,
+                .lasVideoFineUnderstanding: VisionBackendKeychainAccount.lasAPIKey,
+                .lasScriptGeneration: VisionBackendKeychainAccount.lasAPIKey,
+                .lasEnhancedASR: VisionBackendKeychainAccount.lasAPIKey,
+                .mediaStaging: settings.staging.credentialReferenceID,
+            ],
+            requestConsent: requestConsent,
+            invalidateCapability: { role, status in
+                store.invalidateCapabilitySnapshot(role: role, httpStatus: status)
+            },
+            recordCapability: { snapshot in
+                store.saveCapabilitySnapshot(snapshot)
+            }
+        )
+    }
+
     /// Synthetic model identity for the cloud engine (large context so prompt trimming is rare).
     static let cloudModelIdentity = ModelIdentity(
         id: "cloud",
@@ -157,5 +273,29 @@ private actor OneShotUploadConsentGate {
         guard enabled else { return false }
         enabled = false
         return true
+    }
+}
+
+actor CloudRunConsentCoordinator {
+    private var armedRoutingSignature: String?
+
+    func arm(routingSignature: String) { armedRoutingSignature = routingSignature }
+    func disarm() { armedRoutingSignature = nil }
+
+    func consume(
+        _ prompt: CloudRunConsentPrompt,
+        routingSignature: String
+    ) -> CloudRunConsentReceipt? {
+        guard armedRoutingSignature == routingSignature else { return nil }
+        armedRoutingSignature = nil
+        return CloudRunConsentReceipt(
+            runID: prompt.runID,
+            sourceFingerprint: prompt.sourceFingerprint,
+            planHash: prompt.planHash,
+            acceptedAt: Date(),
+            maximumBytes: prompt.byteCount,
+            maximumDurationSeconds: prompt.durationSeconds,
+            costAcceptance: prompt.costAcceptance
+        )
     }
 }

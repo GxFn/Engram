@@ -159,8 +159,13 @@ public struct AVFoundationVideoAssetProbe: VideoAssetProbing {
         let size = try await track.load(.naturalSize)
         let audio = try await asset.loadTracks(withMediaType: .audio)
         let bytes = ((try FileManager.default.attributesOfItem(atPath: source.localFileURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
-        let data = try Data(contentsOf: source.localFileURL, options: .mappedIfSafe)
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let handle = try FileHandle(forReadingFrom: source.localFileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return VideoAssetDescriptor(
             sourceID: source.id, durationSeconds: duration, nominalFrameRate: fps,
             frameCount: max(1, Int((duration * fps).rounded())), width: Int(abs(size.width)), height: Int(abs(size.height)),

@@ -2,8 +2,11 @@ import AppGroupSupport
 import AskFeature
 import BenchFeature
 import ClipDigest
+import CloudVision
+import CoreGraphics
 import EngramLogging
 import EngineKit
+import ImageIO
 import InsightFeature
 import MemoryFeature
 import MLXEngine
@@ -19,6 +22,8 @@ import StoryboardExport
 import SettingsFeature
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
+import VideoUnderstanding
 
 @MainActor
 @Observable
@@ -57,6 +62,9 @@ public final class AppDependencies {
     @ObservationIgnored private let appGroupLocations: AppGroupLocations?
     @ObservationIgnored private let retrievalEmbeddingEngine: (any EmbeddingEngine)?
     @ObservationIgnored private let videoAnalyzer: (any VideoAnalyzing)?
+    @ObservationIgnored private let videoPipelineRuntime: VideoPipelineRuntime?
+    @ObservationIgnored private let cloudAnalysisRuntime: CloudAnalysisRuntime?
+    @ObservationIgnored private let cloudConsentCoordinator: CloudRunConsentCoordinator
     // Last AI config applied to the live graph; a change (incl. a model-id edit within 云端 mode)
     // triggers a rebuild so 问答/拆解 pick up new endpoints without a relaunch.
     @ObservationIgnored private var appliedAISignature: String
@@ -75,7 +83,9 @@ public final class AppDependencies {
         retrievalEmbeddingEngine: (any EmbeddingEngine)? = nil,
         clipDigestService: ClipDigestService? = nil,
         retriever: (any Retriever)? = nil,
-        clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler()
+        clipDigestBackgroundScheduler: any ClipDigestBackgroundScheduling = ClipDigestBackgroundScheduler(),
+        cloudAnalysisRuntime: CloudAnalysisRuntime? = nil,
+        videoPipelineRuntime: VideoPipelineRuntime? = nil
     ) {
         let resolvedEngines = engines.isEmpty ? [MLXEngine()] : engines
         // Cloud mode makes the cloud engine the active text engine (and vision runs on cloud too);
@@ -96,6 +106,17 @@ public final class AppDependencies {
                 ?? .default
         )
         let resolvedVisionGenerator = CloudAIResolver.makeVisionGenerator(defaults: defaults)
+        let resolvedConsentCoordinator = CloudRunConsentCoordinator()
+        let resolvedRoutingSignature = CloudAIResolver.configSignature(defaults: defaults)
+        let resolvedAnalysisConfiguration = CloudAIResolver.makeAnalysisConfiguration(
+            defaults: defaults,
+            requestConsent: { prompt in
+                await resolvedConsentCoordinator.consume(
+                    prompt,
+                    routingSignature: resolvedRoutingSignature
+                )
+            }
+        )
         let retrievalServices = modelContainer.flatMap {
             try? RetrievalAssembly.makeServices(
                 modelContainer: $0,
@@ -105,9 +126,14 @@ public final class AppDependencies {
                 generationConfig: resolvedGenerationConfig,
                 videoAnalyzer: videoAnalyzer,
                 visionGenerator: resolvedVisionGenerator,
-                cloudVideoConfiguration: CloudAIResolver.makeVideoConfiguration(defaults: defaults),
+                // Generic JSON video jobs remain an injectable test/debug seam only. Saved
+                // production settings always use the provider-specific analysis configuration.
+                cloudVideoConfiguration: nil,
+                cloudAnalysisConfiguration: resolvedAnalysisConfiguration,
+                cloudAnalysisRuntime: cloudAnalysisRuntime,
                 appGroupLocations: appGroupLocations,
-                embeddingEngine: retrievalEmbeddingEngine
+                embeddingEngine: retrievalEmbeddingEngine,
+                videoPipelineRuntime: videoPipelineRuntime
             )
         }
 
@@ -125,7 +151,10 @@ public final class AppDependencies {
         self.appGroupLocations = appGroupLocations
         self.retrievalEmbeddingEngine = retrievalEmbeddingEngine
         self.videoAnalyzer = videoAnalyzer
-        self.appliedAISignature = CloudAIResolver.configSignature(defaults: defaults)
+        self.videoPipelineRuntime = videoPipelineRuntime
+        self.cloudAnalysisRuntime = cloudAnalysisRuntime
+        self.cloudConsentCoordinator = resolvedConsentCoordinator
+        self.appliedAISignature = resolvedRoutingSignature
     }
 
     /// Resolves the active text engine + model from the current settings: 云端 mode returns the
@@ -170,7 +199,11 @@ public final class AppDependencies {
         guard signature != appliedAISignature else {
             return
         }
+        let previousSignature = appliedAISignature
+        let previousEngine = activeEngine
+        let previousModel = activeModel
         appliedAISignature = signature
+        Task { await cloudConsentCoordinator.disarm() }
 
         let resolved = Self.resolveRouting(
             defaults: defaults,
@@ -184,14 +217,159 @@ public final class AppDependencies {
 
         // Rebuild retrieval services so digest/拆解 use the newly resolved vision generator, then
         // drop the shared MemoryViewModel cache so 剪藏/拆解 rebind to the fresh ClipDigestService.
-        rebuildRetrievalServices()
+        guard rebuildRetrievalServices() else {
+            // Keep the previously working graph and leave this signature unapplied so the same
+            // saved configuration can retry instead of silently pinning the stale services.
+            appliedAISignature = previousSignature
+            activeEngine = previousEngine
+            activeModel = previousModel
+            return
+        }
+    }
+
+    /// Arms exactly one LAS run. The receipt is created only after the analyzer has probed the
+    /// chosen asset and computed the exact role/fingerprint plan.
+    public func authorizeNextCloudAnalysisRun() async {
+        await cloudConsentCoordinator.arm(routingSignature: appliedAISignature)
+    }
+
+    /// Explicit Ark diagnostic using only a fixed text and an app-generated 4×4 JPEG. It records
+    /// each role only after that role's real endpoint completed, without reading user media.
+    private func probeArkCapabilities() async throws {
+        let store = CloudSettingsStore(defaults: defaults)
+        let settings = store.load()
+        guard settings.ark.isConfigured,
+              let baseURL = URL(string: settings.ark.baseURL),
+              let apiKey = store.credential(.arkAPIKey), !apiKey.isEmpty
+        else { throw VideoUnderstandingError.visionUnavailable("Ark diagnostic configuration is incomplete") }
+
+        let engine = OpenAICompatibleLLMEngine(configuration: CloudLLMConfiguration(
+            baseURL: baseURL,
+            model: settings.ark.textModelID,
+            apiKey: apiKey,
+            timeout: 30
+        ))
+        do {
+            var receivedText = false
+            let stream = await engine.generate(GenerationRequest(
+                messages: [ChatMessage(role: .user, content: "Reply with OK.")],
+                config: GenerationConfig(temperature: 0, topP: 1, maxTokens: 8)
+            ))
+            for try await event in stream {
+                if case .token(let value) = event,
+                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    receivedText = true
+                }
+            }
+            guard receivedText else {
+                throw VideoUnderstandingError.visionUnavailable("Ark text diagnostic returned no content")
+            }
+            Self.recordArkCapability(.arkText, settings: settings, store: store)
+        } catch {
+            Self.invalidateArkCapabilityIfAuthenticationFailed(error, role: .arkText, store: store)
+            throw VideoUnderstandingError.visionUnavailable(
+                CloudErrorSanitizer.sanitize("Ark text diagnostic failed: \(Self.cloudErrorCode(error))")
+            )
+        }
+
+        do {
+            let generator = OpenAICompatibleVLMGenerator(configuration: CloudVLMConfiguration(
+                baseURL: baseURL,
+                model: settings.ark.frameModelID,
+                apiKey: apiKey,
+                timeout: 30
+            ))
+            let content = try await generator.generate(
+                prompt: "Reply with OK for this synthetic diagnostic image.",
+                frames: [SampledFrame(timestampSeconds: 0, jpegData: try Self.syntheticDiagnosticJPEG())],
+                config: GenerationConfig(temperature: 0, topP: 1, maxTokens: 8)
+            )
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw VideoUnderstandingError.visionUnavailable("Ark frame diagnostic returned no content")
+            }
+            Self.recordArkCapability(.arkFrame, settings: settings, store: store)
+        } catch {
+            Self.invalidateArkCapabilityIfAuthenticationFailed(error, role: .arkFrame, store: store)
+            throw VideoUnderstandingError.visionUnavailable(
+                CloudErrorSanitizer.sanitize("Ark frame diagnostic failed: \(Self.cloudErrorCode(error))")
+            )
+        }
+    }
+
+    /// Explicit Settings diagnostic. Selecting a non-private sample and confirming the warning is
+    /// the authority for this one probe; normal analysis remains blocked until these live-media
+    /// snapshots exist and are fresh.
+    private func probeLASCapabilities(fileURL: URL) async throws {
+        let accessGranted = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessGranted { fileURL.stopAccessingSecurityScopedResource() } }
+        let source = VideoSource(
+            id: "las-diagnostic-\(UUID().uuidString)",
+            localFileURL: fileURL,
+            importedAt: Date()
+        )
+        let asset = try await AVFoundationVideoAssetProbe().probe(source)
+        let frameCount = asset.frameCount ?? max(1, Int((asset.durationSeconds * asset.nominalFrameRate).rounded()))
+        let graph = try ShotGraph(asset: asset, shots: [ShotSegment(
+            id: ShotID(rawValue: "PROBE"),
+            timeRange: MediaTimeRange(startSeconds: 0, endSeconds: asset.durationSeconds),
+            frameRange: FrameRange(startFrame: 0, endFrameExclusive: frameCount),
+            transitionIn: .start,
+            transitionOut: .end,
+            boundaryConfidence: 1,
+            detectorEvidenceIDs: ["settings-live-media-probe"]
+        )])
+        guard let base = CloudAIResolver.makeAnalysisConfiguration(
+            defaults: defaults,
+            requestConsent: { prompt in
+                CloudRunConsentReceipt(
+                    runID: prompt.runID,
+                    sourceFingerprint: prompt.sourceFingerprint,
+                    planHash: prompt.planHash,
+                    acceptedAt: Date(),
+                    maximumBytes: prompt.byteCount,
+                    maximumDurationSeconds: prompt.durationSeconds,
+                    costAcceptance: prompt.costAcceptance
+                )
+            }
+        ) else {
+            throw VideoUnderstandingError.visionUnavailable("LAS diagnostic configuration is incomplete")
+        }
+        let diagnostic = CloudAIResolver.AnalysisConfiguration(
+            requestedMode: .lasDeep,
+            expectedFingerprints: base.expectedFingerprints,
+            capabilitySnapshots: base.capabilitySnapshots,
+            arkConfigured: false,
+            region: base.region,
+            lasAPIKey: base.lasAPIKey,
+            stagingConfiguration: base.stagingConfiguration,
+            stagingCredentials: base.stagingCredentials,
+            maximumUploadBytes: base.maximumUploadBytes,
+            credentialReferenceIDs: base.credentialReferenceIDs,
+            requestConsent: base.requestConsent,
+            invalidateCapability: base.invalidateCapability,
+            recordCapability: base.recordCapability
+        )
+        let enricher = ConfiguredCloudAnalysisEnricher(
+            configuration: diagnostic,
+            runtime: cloudAnalysisRuntime ?? .live,
+            allowsUnprobedDiagnostic: true
+        )
+        _ = try await enricher.enrich(
+            source: source,
+            asset: asset,
+            graph: graph,
+            resume: nil,
+            checkpoint: { _ in }
+        )
     }
 
     /// Rebuilds the digest/retrieval stack from the CURRENT engine/model/generation config. Shared
     /// by mode/credential changes (reloadAIRouting) and generation-parameter changes.
-    private func rebuildRetrievalServices() {
-        guard let modelContainer,
-              let services = try? RetrievalAssembly.makeServices(
+    @discardableResult
+    private func rebuildRetrievalServices() -> Bool {
+        let routingSignature = appliedAISignature
+        guard let modelContainer else { return true }
+        guard let services = try? RetrievalAssembly.makeServices(
                   modelContainer: modelContainer,
                   modelStore: modelStore,
                   activeEngine: activeEngine,
@@ -199,16 +377,29 @@ public final class AppDependencies {
                   generationConfig: generationConfig,
                   videoAnalyzer: videoAnalyzer,
                   visionGenerator: CloudAIResolver.makeVisionGenerator(defaults: defaults),
-                  cloudVideoConfiguration: CloudAIResolver.makeVideoConfiguration(defaults: defaults),
+                  // Generic JSON video jobs remain an injectable test/debug seam only.
+                  cloudVideoConfiguration: nil,
+                  cloudAnalysisConfiguration: CloudAIResolver.makeAnalysisConfiguration(
+                      defaults: defaults,
+                      requestConsent: { [cloudConsentCoordinator] prompt in
+                          await cloudConsentCoordinator.consume(
+                              prompt,
+                              routingSignature: routingSignature
+                          )
+                      }
+                  ),
+                  cloudAnalysisRuntime: cloudAnalysisRuntime,
                   appGroupLocations: appGroupLocations,
-                  embeddingEngine: retrievalEmbeddingEngine
+                  embeddingEngine: retrievalEmbeddingEngine,
+                  videoPipelineRuntime: videoPipelineRuntime
               )
         else {
-            return
+            return false
         }
         retriever = services.retriever
         clipDigestService = services.clipDigestService
         cachedMemoryViewModel = nil
+        return true
     }
 
     public func selectEngine(id: String) {
@@ -299,6 +490,30 @@ public final class AppDependencies {
             setCredential: { [weak self] slot, value in
                 _ = cloudSettings.setCredential(slot, value: value)
                 Task { @MainActor in self?.reloadAIRouting() }
+            },
+            loadCapabilities: {
+                cloudSettings.loadCapabilitySnapshots().map { snapshot in
+                    CloudCapabilityDisplay(
+                        role: snapshot.role.rawValue,
+                        status: snapshot.status.rawValue,
+                        probeLevel: snapshot.probeLevel.rawValue,
+                        lastProbedAt: snapshot.lastProbedAt,
+                        expiresAt: snapshot.expiresAt,
+                        maximumBytes: snapshot.limits.maximumBytes,
+                        maximumDurationSeconds: snapshot.limits.maximumDurationSeconds
+                    )
+                }
+            },
+            probeLASCapabilities: { [weak self] url in
+                guard let self else { return }
+                try await self.probeLASCapabilities(fileURL: url)
+            },
+            probeArkCapabilities: { [weak self] in
+                guard let self else { return }
+                try await self.probeArkCapabilities()
+            },
+            authorizeNextCloudRun: { [weak self] in
+                await self?.authorizeNextCloudAnalysisRun()
             }
         )
 
@@ -308,17 +523,13 @@ public final class AppDependencies {
         nonisolated(unsafe) let rolesDefaults = defaults
         let rolesCapability = deviceCapability
         let loadActiveRoles: @Sendable () async -> ActiveAIRoles? = {
-            let cloudReady = CloudAIResolver.cloudReady(defaults: rolesDefaults)
-            let isCloudMode = CloudAIResolver.isCloudMode(defaults: rolesDefaults)
+            let settingsStore = CloudSettingsStore(defaults: rolesDefaults)
+            let settings = settingsStore.load()
             let text: String
             let vision: String
-            if cloudReady {
-                let textModel = rolesDefaults?.string(forKey: VisionBackendDefaultsKey.cloudTextModel) ?? ""
-                let visionModel = rolesDefaults?.string(forKey: VisionBackendDefaultsKey.cloudModel) ?? ""
-                text = "云端 · \(textModel)"
-                vision = "云端 · \(visionModel)"
-            } else {
-                let prefix = isCloudMode ? "本地（云端未配全）· " : "本地 · "
+            switch settings.requestedMode {
+            case .local:
+                let prefix = "本地 · "
                 let localText = Self.storedModel(defaults: rolesDefaults) ?? rolesCapability.recommendedModel
                 let textDownloaded = (try? await store.isDownloaded(localText)) ?? false
                 text = prefix + Self.shortModelName(localText.id) + (textDownloaded ? "" : "（未下载）")
@@ -329,6 +540,36 @@ public final class AppDependencies {
                 } else {
                     let vlDownloaded = (try? await store.isDownloaded(vl)) ?? false
                     vision = prefix + Self.shortModelName(vl.id) + (vlDownloaded ? "" : "（未下载）")
+                }
+            case .arkStandard:
+                if settings.ark.isConfigured {
+                    text = "Ark Standard · \(settings.ark.textModelID)"
+                    vision = "Ark 代表帧 · \(settings.ark.frameModelID)"
+                } else {
+                    text = "不可用 · 缺少 arkText"
+                    vision = "不可用 · 缺少 arkFrame"
+                }
+            case .lasDeep, .hybridMaximum:
+                let requested: CloudVision.CloudAnalysisRequestedMode = settings.requestedMode == .lasDeep
+                    ? .lasDeep : .hybridMaximum
+                let decision = CloudAnalysisPlanner.resolve(
+                    requested: requested,
+                    snapshots: settingsStore.loadCapabilitySnapshots(),
+                    expectedFingerprints: settingsStore.configurationFingerprints(),
+                    consent: nil,
+                    now: Date()
+                )
+                let blocked = (decision.missingRoles + decision.staleRoles).map(\.rawValue).joined(separator: ",")
+                if blocked.isEmpty {
+                    text = settings.requestedMode == .hybridMaximum
+                        ? "LAS 剧本 + Ark 文本 · 等待单次同意"
+                        : "LAS 剧本 · 等待单次同意"
+                    vision = settings.requestedMode == .hybridMaximum
+                        ? "LAS Deep + Ark 低置信精修 · 等待单次同意"
+                        : "LAS Deep · 等待单次同意"
+                } else {
+                    text = "不可用 · \(blocked)"
+                    vision = "不可用 · \(blocked)"
                 }
             }
             return ActiveAIRoles(
@@ -817,6 +1058,88 @@ public final class AppDependencies {
 
     private nonisolated static func memoryTitle(from snapshot: ClipRecordSnapshot) -> String {
         preferredTitle(from: snapshot)
+    }
+
+    private static func recordArkCapability(
+        _ role: CloudProviderRole,
+        settings: VisionBackendSettings,
+        store: CloudSettingsStore
+    ) {
+        guard let fingerprint = store.configurationFingerprints()[role] else { return }
+        let now = Date()
+        let modelID = role == .arkText ? settings.ark.textModelID : settings.ark.frameModelID
+        store.saveCapabilitySnapshot(CloudRoleCapabilitySnapshot(
+            role: role,
+            providerKind: .volcengineArk,
+            profileID: "ark-\(URL(string: settings.ark.baseURL)?.host ?? "configured")-\(modelID)",
+            configurationFingerprint: fingerprint,
+            credentialScheme: .apiKey,
+            credentialReferenceID: VisionBackendKeychainAccount.arkAPIKey,
+            probeLevel: .liveMedia,
+            status: .available,
+            observedCapabilities: [role.rawValue],
+            acceptedMediaKinds: role == .arkFrame ? [.imageURL] : [],
+            limits: CloudObservedLimits(),
+            supportsAsync: false,
+            supportsIdempotency: false,
+            supportsCancellation: true,
+            reportsUsage: false,
+            lastProbedAt: now,
+            expiresAt: now.addingTimeInterval(86_400),
+            officialContractRevision: "las-first-2026-07-13-v1",
+            sanitizedEvidenceCode: "live-synthetic-ark-request-completed"
+        ))
+    }
+
+    private static func invalidateArkCapabilityIfAuthenticationFailed(
+        _ error: Error,
+        role: CloudProviderRole,
+        store: CloudSettingsStore
+    ) {
+        let value = String(describing: error)
+        if value.contains("401") { store.invalidateCapabilitySnapshot(role: role, httpStatus: 401) }
+        if value.contains("403") { store.invalidateCapabilitySnapshot(role: role, httpStatus: 403) }
+    }
+
+    private static func cloudErrorCode(_ error: Error) -> String {
+        switch error {
+        case CloudVLMError.missingAPIKey: "missing-api-key"
+        case CloudVLMError.invalidResponse: "invalid-response"
+        case CloudVLMError.statusCode(let status, _): "http-\(status)"
+        case CloudVLMError.emptyContent: "empty-content"
+        case CloudVLMError.decodingFailed: "decoding-failed"
+        case is CancellationError: "cancelled"
+        default: CloudErrorSanitizer.sanitize(String(describing: error))
+        }
+    }
+
+    private static func syntheticDiagnosticJPEG() throws -> Data {
+        guard let context = CGContext(
+            data: nil,
+            width: 4,
+            height: 4,
+            bitsPerComponent: 8,
+            bytesPerRow: 16,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw VideoUnderstandingError.visionUnavailable("synthetic diagnostic image unavailable") }
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        guard let image = context.makeImage() else {
+            throw VideoUnderstandingError.visionUnavailable("synthetic diagnostic image unavailable")
+        }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else { throw VideoUnderstandingError.visionUnavailable("synthetic diagnostic image unavailable") }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw VideoUnderstandingError.visionUnavailable("synthetic diagnostic image unavailable")
+        }
+        return data as Data
     }
 
     nonisolated static func shortModelName(_ id: String) -> String {

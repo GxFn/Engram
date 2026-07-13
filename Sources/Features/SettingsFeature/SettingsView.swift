@@ -5,7 +5,14 @@ public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
     @State private var isShowingModelImporter = false
+    @State private var isShowingLASProbeImporter = false
+    @State private var pendingLASProbeURL: URL?
+    @State private var isConfirmingLASProbe = false
     @State private var cloudKeyInput = ""
+    @State private var lasKeyInput = ""
+    @State private var tosAccessKeyInput = ""
+    @State private var tosSecretKeyInput = ""
+    @State private var tosSecurityTokenInput = ""
 
     public init(viewModel: SettingsViewModel) {
         _viewModel = State(initialValue: viewModel)
@@ -15,11 +22,11 @@ public struct SettingsView: View {
         Form {
             modeSection
             activeRolesSection
+            deviceSection
+            arkSection
+            lasSection
 
-            if viewModel.visionBackend.kind == .cloud {
-                cloudSection
-            } else {
-                deviceSection
+            if viewModel.visionBackend.requestedMode == .local {
                 modelGroup(.language)
                 modelGroup(.vision)
                 modelGroup(.retrieval)
@@ -52,21 +59,41 @@ public struct SettingsView: View {
                 await viewModel.installLocalModel(target, from: url)
             }
         }
+        .fileImporter(
+            isPresented: $isShowingLASProbeImporter,
+            allowedContentTypes: [.movie]
+        ) { result in
+            guard case .success(let url) = result else { return }
+            pendingLASProbeURL = url
+            isConfirmingLASProbe = true
+        }
+        .confirmationDialog(
+            "运行真实 LAS/TOS 探测？",
+            isPresented: $isConfirmingLASProbe,
+            titleVisibility: .visible
+        ) {
+            Button("上传并运行四个算子（可能收费）", role: .destructive) {
+                guard let url = pendingLASProbeURL else { return }
+                pendingLASProbeURL = nil
+                Task { await viewModel.probeLASCapabilities(using: url) }
+            }
+            Button("取消", role: .cancel) { pendingLASProbeURL = nil }
+        } message: {
+            Text("仅选择非私密小视频。文件会流式暂存到你的 TOS，并提交视频分镜、精细理解、剧本生成和增强 ASR；费用未知且可能收费，结束后会立即尝试删除暂存对象。")
+        }
         .navigationTitle("设置")
     }
 
     private var modeSection: some View {
         Section {
-            Picker("AI 模式", selection: visionKindBinding) {
-                ForEach(VisionBackendKind.allCases, id: \.self) { kind in
-                    Text(kind.displayName).tag(kind)
+            Picker("请求模式", selection: requestedModeBinding) {
+                ForEach(CloudAnalysisRequestedMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
 
-            Text(viewModel.visionBackend.kind == .cloud
-                ? "云端：文本与画面都走你配置的云端 AI，无需下载模型；帧与文本会上传到你的服务。"
-                : "本地：全部在本机运行，完全离线、免费；需下载模型，部分机型可能跑不动。")
+            Text("Local 零上传；Ark Standard 只发送文本和代表帧；LAS Deep 会在真实探测与单次同意后上传一份原视频；LAS + Ark 仅把低置信镜头交给 Ark 精修。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } header: {
@@ -74,8 +101,8 @@ public struct SettingsView: View {
         }
     }
 
-    private var cloudSection: some View {
-        Section("云端 AI 服务") {
+    private var arkSection: some View {
+        Section("Ark · 文本与逐镜画面") {
             TextField("Base URL", text: cloudBaseURLBinding)
                 .textContentType(.URL)
                 .autocorrectionDisabled()
@@ -104,25 +131,119 @@ public struct SettingsView: View {
                 .disabled(cloudKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if viewModel.cloudConfigIncomplete {
-                Label("云端配置不完整（需 Base URL、文本/视觉模型 ID 和 API Key）；补全前将全部使用本地模型。", systemImage: "exclamationmark.triangle.fill")
+                Label("Ark 配置不完整：Ark Standard/Hybrid 不可执行；请补全或显式选择 Local/LAS Deep。", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            Picker("视频分析", selection: cloudVideoModeBinding) {
-                ForEach(CloudVideoAnalysisMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
+            Button {
+                Task { await viewModel.probeArkCapabilities() }
+            } label: {
+                if viewModel.isProbingArk {
+                    ProgressView()
+                } else {
+                    Label("探测 Ark 文本与代表帧", systemImage: "waveform.path.ecg")
                 }
             }
-            if viewModel.visionBackend.cloudVideoMode == .deep {
-                Toggle("仅允许下一条视频上传完整文件", isOn: fullVideoUploadBinding)
-                Stepper(value: uploadLimitBinding, in: 10...2_000, step: 10) {
-                    LabeledContent("单次上传上限", value: "\(viewModel.visionBackend.maximumUploadMegabytes) MB")
+            .disabled(viewModel.isProbingArk || viewModel.cloudConfigIncomplete)
+            Text("探测只发送固定短文本和 Engram 生成的 4×4 合成图，不读取用户媒体；它会发起两次真实请求，费用未知且可能收费。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(viewModel.cloudCapabilities.filter { $0.role.hasPrefix("ark") }) { capability in
+                LabeledContent(capability.role, value: "\(capability.status) · \(capability.probeLevel)")
+            }
+            Text("Ark API Key 与 LAS/TOS 凭据使用独立 Keychain 项。Ark 不代表整片视频、LAS 或云 ASR 能力。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var lasSection: some View {
+        Section("LAS · 独立深度视频") {
+            Toggle("启用 LAS", isOn: lasEnabledBinding)
+            LabeledContent("Service", value: "cn-beijing · \(viewModel.visionBackend.las.operatorBaseURL.host ?? "")")
+            LabeledContent("Video storyboard", value: viewModel.visionBackend.las.videoStoryboardOperatorID)
+            LabeledContent("Video fine understanding", value: viewModel.visionBackend.las.videoFineUnderstandingOperatorID)
+            LabeledContent("Script generation", value: viewModel.visionBackend.las.scriptGenerationOperatorID)
+            LabeledContent("Doubao enhanced ASR", value: viewModel.visionBackend.las.enhancedASROperatorID)
+            HStack {
+                SecureField(
+                    viewModel.visionBackend.las.hasAPIKey ? "LAS API Key（已保存，可覆盖）" : "LAS API Key",
+                    text: $lasKeyInput
+                )
+                Button("保存") {
+                    viewModel.setLASAPIKey(lasKeyInput)
+                    lasKeyInput = ""
                 }
-                Text("深度模式会先做无密 capability probe；只有服务声明 full-video、云 ASR 与异步任务能力，且你明确允许上传并满足大小上限时，才会上传完整视频。本同意为一次性，提交任务后自动关闭；服务商可能收费，Engram 不编造无法核实的价格。")
+                .disabled(lasKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            TextField("TOS bucket", text: tosBucketBinding)
+                .autocorrectionDisabled()
+            TextField("Engram object prefix", text: tosPrefixBinding)
+                .autocorrectionDisabled()
+            TextField("临时 STS 引用 ID", text: tosReferenceBinding)
+                .autocorrectionDisabled()
+            SecureField("临时 AccessKey ID", text: $tosAccessKeyInput)
+            SecureField("临时 SecretAccessKey", text: $tosSecretKeyInput)
+            SecureField("临时 SecurityToken", text: $tosSecurityTokenInput)
+            DatePicker("STS 到期", selection: tosExpiryBinding, displayedComponents: [.date, .hourAndMinute])
+            Button("保存临时 STS 凭据") {
+                viewModel.setTemporaryTOSCredentials(
+                    accessKeyID: tosAccessKeyInput,
+                    secretAccessKey: tosSecretKeyInput,
+                    securityToken: tosSecurityTokenInput,
+                    expiresAt: tosExpiryBinding.wrappedValue
+                )
+                tosAccessKeyInput = ""
+                tosSecretKeyInput = ""
+                tosSecurityTokenInput = ""
+            }
+            .disabled(
+                tosAccessKeyInput.isEmpty || tosSecretKeyInput.isEmpty || tosSecurityTokenInput.isEmpty
+            )
+            Stepper(value: uploadLimitBinding, in: 10...20_000, step: 10) {
+                LabeledContent("单次上传上限", value: "\(viewModel.visionBackend.maximumUploadMegabytes) MB")
+            }
+
+            if !viewModel.visionBackend.missingLASConfigurationRoles.isEmpty {
+                Label(
+                    "缺少配置角色：\(viewModel.visionBackend.missingLASConfigurationRoles.map(\.displayName).joined(separator: ", "))",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
+            Button {
+                isShowingLASProbeImporter = true
+            } label: {
+                if viewModel.isProbingLAS {
+                    ProgressView()
+                } else {
+                    Label("用非私密小视频做真实探测", systemImage: "waveform.path.ecg")
+                }
+            }
+            .disabled(viewModel.isProbingLAS || !viewModel.visionBackend.missingLASConfigurationRoles.isEmpty)
+
+            ForEach(viewModel.cloudCapabilities.filter { !$0.role.hasPrefix("ark") }) { capability in
+                VStack(alignment: .leading, spacing: 3) {
+                    LabeledContent(capability.role, value: "\(capability.status) · \(capability.probeLevel)")
+                    Text("探测：\(capability.lastProbedAt.formatted()) · 到期：\(capability.expiresAt.formatted())")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if viewModel.visionBackend.requiresRunScopedConsent {
+                Button(viewModel.isNextCloudRunAuthorized ? "下一次 LAS 分析已授权" : "授权下一次 LAS 分析（可能收费）") {
+                    Task { await viewModel.authorizeNextCloudAnalysisRun() }
+                }
+                .disabled(viewModel.isNextCloudRunAuthorized || missingFreshLASRoles.isEmpty == false)
+                Text("一次性同意只对随后实际 AssetProbe 生成的 run + fingerprint + planHash 生效；配置变化或 App 重启后失效。费用未知且可能收费。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text("兼容豆包 / DeepSeek / 通义 / GLM 等 OpenAI 接口；模型请填接入点 ID（豆包形如 ep-…）。")
+            Text("原视频会以流式 multipart 方式暂存到你管理的 TOS，供四个 LAS 算子复用；完成、取消或失败后立即尝试删除，失败会保留 cleanup-pending，最长 24 小时重试。结果可保留。公开发布仍因缺少真实 presigned broker 而阻断。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -134,6 +255,14 @@ public struct SettingsView: View {
     private var activeRolesSection: some View {
         if let roles = viewModel.activeRoles {
             Section("当前生效") {
+                LabeledContent("请求模式", value: viewModel.visionBackend.requestedMode.displayName)
+                if !missingFreshLASRoles.isEmpty,
+                   viewModel.visionBackend.requiresRunScopedConsent {
+                    LabeledContent("下一次有效模式", value: "等待真实探测")
+                    Text("缺少或过期角色：\(missingFreshLASRoles.joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 LabeledContent {
                     Text(roles.text).multilineTextAlignment(.trailing)
                 } label: {
@@ -259,11 +388,90 @@ public struct SettingsView: View {
         }
     }
 
-    private var visionKindBinding: Binding<VisionBackendKind> {
+    private var requestedModeBinding: Binding<CloudAnalysisRequestedMode> {
         Binding(
-            get: { viewModel.visionBackend.kind },
-            set: { viewModel.selectVisionBackend($0) }
+            get: { viewModel.visionBackend.requestedMode },
+            set: { mode in
+                var settings = viewModel.visionBackend
+                settings.requestedMode = mode
+                viewModel.updateVisionBackend(settings)
+            }
         )
+    }
+
+    private var lasEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.visionBackend.las.isEnabled },
+            set: { enabled in
+                var settings = viewModel.visionBackend
+                settings.las.isEnabled = enabled
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var tosBucketBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.staging.bucket },
+            set: { value in
+                var settings = viewModel.visionBackend
+                settings.staging.bucket = value
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var tosPrefixBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.staging.objectPrefix },
+            set: { value in
+                var settings = viewModel.visionBackend
+                settings.staging.objectPrefix = value
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var tosReferenceBinding: Binding<String> {
+        Binding(
+            get: { viewModel.visionBackend.staging.credentialReferenceID },
+            set: { value in
+                var settings = viewModel.visionBackend
+                settings.staging.credentialReferenceID = value
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var tosExpiryBinding: Binding<Date> {
+        Binding(
+            get: {
+                viewModel.visionBackend.staging.temporaryCredentialExpiresAt
+                    ?? Date().addingTimeInterval(3_600)
+            },
+            set: { value in
+                var settings = viewModel.visionBackend
+                settings.staging.temporaryCredentialExpiresAt = value
+                viewModel.updateVisionBackend(settings)
+            }
+        )
+    }
+
+    private var missingFreshLASRoles: [String] {
+        let required = [
+            "lasVideoStoryboard",
+            "lasVideoFineUnderstanding",
+            "lasScriptGeneration",
+            "lasEnhancedASR",
+            "mediaStaging",
+        ]
+        let fresh = Set(viewModel.cloudCapabilities.compactMap { capability in
+            capability.status == "available"
+                && capability.probeLevel == "liveMedia"
+                && capability.expiresAt > Date()
+                ? capability.role : nil
+        })
+        return required.filter { !fresh.contains($0) }
     }
 
     private var cloudBaseURLBinding: Binding<String> {
@@ -284,28 +492,6 @@ public struct SettingsView: View {
         Binding(
             get: { viewModel.visionBackend.cloudTextModel },
             set: { viewModel.setCloudTextModel($0) }
-        )
-    }
-
-    private var cloudVideoModeBinding: Binding<CloudVideoAnalysisMode> {
-        Binding(
-            get: { viewModel.visionBackend.cloudVideoMode },
-            set: { mode in
-                var settings = viewModel.visionBackend
-                settings.cloudVideoMode = mode
-                viewModel.updateVisionBackend(settings)
-            }
-        )
-    }
-
-    private var fullVideoUploadBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.visionBackend.allowsFullVideoUpload },
-            set: { allowed in
-                var settings = viewModel.visionBackend
-                settings.allowsFullVideoUpload = allowed
-                viewModel.updateVisionBackend(settings)
-            }
         )
     }
 

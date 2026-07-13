@@ -7,8 +7,9 @@ import Testing
 @Suite(.serialized)
 struct CloudSettingsPersistenceTests {
     @Test
-    func savedSettingsRoundTripIndependentArkLASAndStagingProfiles() throws {
-        try withIsolatedCloudSettings { store, _ in
+    func savedSettingsRoundTripIndependentArkLASAndStagingProfiles() async throws {
+        try await AppShellKeychainTestMutex.shared.withLock {
+          try withIsolatedCloudSettings { store, _ in
             let expiry = Date(timeIntervalSince1970: 9_000)
             let expected = VisionBackendSettings(
                 requestedMode: .hybridMaximum,
@@ -46,20 +47,22 @@ struct CloudSettingsPersistenceTests {
             #expect(loaded.ark.textModelID == "ep-text")
             #expect(loaded.ark.frameModelID == "ep-frame")
             #expect(loaded.ark.hasAPIKey)
-            #expect(loaded.las.videoStoryboardOperatorID == "vs")
-            #expect(loaded.las.videoFineUnderstandingOperatorID == "vf")
-            #expect(loaded.las.scriptGenerationOperatorID == "vg")
-            #expect(loaded.las.enhancedASROperatorID == "sa")
+            #expect(loaded.las.videoStoryboardOperatorID == LASOperatorContract.videoStoryboard.operatorID)
+            #expect(loaded.las.videoFineUnderstandingOperatorID == LASOperatorContract.videoFineUnderstanding.operatorID)
+            #expect(loaded.las.scriptGenerationOperatorID == LASOperatorContract.scriptGeneration.operatorID)
+            #expect(loaded.las.enhancedASROperatorID == LASOperatorContract.enhancedASR.operatorID)
             #expect(loaded.las.hasAPIKey)
             #expect(loaded.staging.bucket == "personal-bucket")
             #expect(loaded.staging.temporaryCredentialExpiresAt == expiry)
             #expect(loaded.staging.hasTemporaryCredentials)
+          }
         }
     }
 
     @Test
-    func credentialRotationChangesOnlyTheOwningFingerprintsAndSecretsNeverEnterDefaults() throws {
-        try withIsolatedCloudSettings { store, defaults in
+    func credentialRotationChangesOnlyTheOwningFingerprintsAndSecretsNeverEnterDefaults() async throws {
+        try await AppShellKeychainTestMutex.shared.withLock {
+          try withIsolatedCloudSettings { store, defaults in
             store.save(VisionBackendSettings(
                 requestedMode: .hybridMaximum,
                 ark: ArkBackendSettings(textModelID: "ep-text", frameModelID: "ep-frame"),
@@ -103,12 +106,14 @@ struct CloudSettingsPersistenceTests {
             }
             #expect(VisionBackendKeychainAccount.arkAPIKey != VisionBackendKeychainAccount.lasAPIKey)
             #expect(VisionBackendKeychainAccount.tosSecretAccessKey != VisionBackendKeychainAccount.tosSecurityToken)
+          }
         }
     }
 
     @Test
-    func capabilitySnapshotsPersistSanitizedEvidenceAndInvalidateOnlyOwningRoles() throws {
-        try withIsolatedCloudSettings { store, defaults in
+    func capabilitySnapshotsPersistSanitizedEvidenceAndInvalidateOnlyOwningRoles() async throws {
+        try await AppShellKeychainTestMutex.shared.withLock {
+          try withIsolatedCloudSettings { store, defaults in
             store.save(VisionBackendSettings(
                 requestedMode: .lasDeep,
                 las: LASBackendSettings(
@@ -149,6 +154,7 @@ struct CloudSettingsPersistenceTests {
 
             let remaining = store.loadCapabilitySnapshots()
             #expect(remaining.map(\.role) == [.mediaStaging])
+          }
         }
     }
 }

@@ -27,6 +27,10 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
     public let sanitizedError: String?
     public let refinementShotIDs: [ShotID]
     public let degradationNote: String?
+    public let analysisRequestedMode: String?
+    public let analysisEffectiveMode: String?
+    public let providerRoles: [String]
+    public let cleanupState: String?
 
     public init(
         requestedCloudMode: EffectiveCloudMode? = nil,
@@ -41,7 +45,11 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
         estimatedUSD: Decimal? = nil,
         sanitizedError: String? = nil,
         refinementShotIDs: [ShotID] = [],
-        degradationNote: String? = nil
+        degradationNote: String? = nil,
+        analysisRequestedMode: String? = nil,
+        analysisEffectiveMode: String? = nil,
+        providerRoles: [String] = [],
+        cleanupState: String? = nil
     ) {
         self.requestedCloudMode = requestedCloudMode ?? cloudMode
         self.cloudMode = cloudMode
@@ -56,6 +64,10 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
         self.sanitizedError = sanitizedError
         self.refinementShotIDs = refinementShotIDs
         self.degradationNote = degradationNote
+        self.analysisRequestedMode = analysisRequestedMode
+        self.analysisEffectiveMode = analysisEffectiveMode
+        self.providerRoles = providerRoles
+        self.cleanupState = cleanupState
     }
 
     public static let local = StoryboardExecutionContext(cloudMode: .local, mediaUploaded: false)
@@ -64,6 +76,7 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
         case requestedCloudMode, cloudMode, mediaUploaded, mediaBytesUploaded, requestBytes
         case requestCount, inputTokens, outputTokens, mediaMilliseconds, estimatedUSD
         case sanitizedError, refinementShotIDs, degradationNote
+        case analysisRequestedMode, analysisEffectiveMode, providerRoles, cleanupState
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,12 +95,16 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
         sanitizedError = try container.decodeIfPresent(String.self, forKey: .sanitizedError)
         refinementShotIDs = try container.decodeIfPresent([ShotID].self, forKey: .refinementShotIDs) ?? []
         degradationNote = try container.decodeIfPresent(String.self, forKey: .degradationNote)
+        analysisRequestedMode = try container.decodeIfPresent(String.self, forKey: .analysisRequestedMode)
+        analysisEffectiveMode = try container.decodeIfPresent(String.self, forKey: .analysisEffectiveMode)
+        providerRoles = try container.decodeIfPresent([String].self, forKey: .providerRoles) ?? []
+        cleanupState = try container.decodeIfPresent(String.self, forKey: .cleanupState)
     }
 
     var telemetry: AnalysisCloudTelemetry {
         AnalysisCloudTelemetry(
-            requestedMode: requestedCloudMode.rawValue,
-            effectiveMode: cloudMode.rawValue,
+            requestedMode: analysisRequestedMode ?? requestedCloudMode.rawValue,
+            effectiveMode: analysisEffectiveMode ?? cloudMode.rawValue,
             mediaBytesUploaded: mediaBytesUploaded,
             requestBytes: requestBytes,
             requestCount: requestCount,
@@ -96,7 +113,9 @@ public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
             mediaMilliseconds: mediaMilliseconds,
             estimatedUSD: estimatedUSD,
             sanitizedError: sanitizedError,
-            refinementShotIDs: refinementShotIDs.map(\.rawValue)
+            refinementShotIDs: refinementShotIDs.map(\.rawValue),
+            providerRoles: providerRoles.isEmpty ? nil : providerRoles,
+            cleanupState: cleanupState
         )
     }
 }
@@ -279,19 +298,24 @@ public struct CloudVideoJobCheckpoint: Codable, Hashable, Sendable {
     public let jobID: String
     public let state: String
     public let sanitizedError: String?
+    /// Provider-specific non-secret restart state. AppShell owns its schema; ClipDigest only stores
+    /// it atomically beside the analysis run.
+    public let opaqueState: Data?
 
     public init(
         providerID: String,
         sourceFingerprint: String,
         jobID: String,
         state: String,
-        sanitizedError: String? = nil
+        sanitizedError: String? = nil,
+        opaqueState: Data? = nil
     ) {
         self.providerID = providerID
         self.sourceFingerprint = sourceFingerprint
         self.jobID = jobID
         self.state = state
         self.sanitizedError = sanitizedError
+        self.opaqueState = opaqueState
     }
 }
 
@@ -326,6 +350,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
     private let corrector: (any TranscriptCorrecting)?
     private let recognizer: any FrameTextRecognizing
     private let understandingProvider: any ShotUnderstandingProviding
+    private let refinementUnderstandingProvider: (any ShotUnderstandingProviding)?
     private let cloudEnricher: (any CloudStoryboardEnriching)?
     private let artifactStore: AnalysisArtifactStore
     private let pipelineVersion: String
@@ -341,6 +366,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         corrector: (any TranscriptCorrecting)? = nil,
         recognizer: any FrameTextRecognizing,
         understandingProvider: any ShotUnderstandingProviding,
+        refinementUnderstandingProvider: (any ShotUnderstandingProviding)? = nil,
         cloudEnricher: (any CloudStoryboardEnriching)? = nil,
         artifactStore: AnalysisArtifactStore,
         pipelineVersion: String = "storyboard-v2.1",
@@ -355,6 +381,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         self.corrector = corrector
         self.recognizer = recognizer
         self.understandingProvider = understandingProvider
+        self.refinementUnderstandingProvider = refinementUnderstandingProvider
         self.cloudEnricher = cloudEnricher
         self.artifactStore = artifactStore
         self.pipelineVersion = pipelineVersion
@@ -487,7 +514,9 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 corrected: corrected,
                 ocr: ocr,
                 selectedShotIDs: refinementIDs,
-                run: run
+                run: run,
+                provider: refinementUnderstandingProvider ?? understandingProvider,
+                cacheNamespace: "cloud-selected-refinement"
             )
             let replacements = Dictionary(uniqueKeysWithValues: refined.map { ($0.shot.id, $0) })
             understandings = understandings.map { replacements[$0.shot.id] ?? $0 }
@@ -769,7 +798,9 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         corrected: [TranscriptSegment],
         ocr: [FrameText],
         selectedShotIDs: Set<ShotID>? = nil,
-        run: AnalysisRun? = nil
+        run: AnalysisRun? = nil,
+        provider: (any ShotUnderstandingProviding)? = nil,
+        cacheNamespace: String = "baseline"
     ) async throws -> [ShotUnderstandingOutput] {
         var outputs: [ShotUnderstandingOutput] = []
         for (index, shot) in graph.shots.enumerated()
@@ -786,7 +817,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 pipelineVersion: pipelineVersion,
                 input: input,
                 displayNumber: index + 1
-            )
+            ) + "|\(cacheNamespace)"
             if let run,
                let cached: ShotUnderstandingOutput = try await artifactStore.loadShotArtifact(
                    ShotUnderstandingOutput.self,
@@ -802,7 +833,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             var finalError: Error?
             for _ in 0..<2 {
                 do {
-                    let output = try await understandingProvider.understand(input, displayNumber: index + 1)
+                    let output = try await (provider ?? understandingProvider)
+                        .understand(input, displayNumber: index + 1)
                     guard output.shot.id == shot.id else {
                         throw VideoUnderstandingError.visionUnavailable("shot understanding returned mismatched ShotID")
                     }
@@ -1019,8 +1051,20 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             let flags = output.shot.observedFacts.reviewFlags
                 + (review.contains(segment.id) ? ["cloud-local-alignment-needs-review"] : [])
                 + ((finalAssembly.shots.first { $0.id == segment.id }?.classification == .evidencePoor) ? ["evidence-poor"] : [])
+            let cloudFacts = cloud.evidence.filter {
+                Self.overlaps($0.timeRange, segment.timeRange) && $0.rawText?.nilIfEmpty != nil
+            }.map { evidence in
+                GroundedFact(
+                    field: evidence.kind == .transcript ? .audioSummary : .action,
+                    value: evidence.rawText ?? "",
+                    evidenceIDs: [evidence.id],
+                    source: .cloudModel,
+                    confidence: evidence.confidence,
+                    reviewFlags: ["provider-evidence-aligned-to-local-shot"]
+                )
+            }
             let observed = ObservedShotFacts(
-                facts: output.shot.observedFacts.facts,
+                facts: output.shot.observedFacts.facts + cloudFacts,
                 unknownFields: output.shot.observedFacts.unknownFields,
                 modelConfidence: output.shot.observedFacts.modelConfidence,
                 reviewFlags: Array(Set(flags)).sorted()

@@ -72,7 +72,7 @@ public actor OpenAICompatibleLLMEngine: LLMEngine {
                     continuation.yield(.finished(.cancelled, Self.metrics(startedAt: startedAt, output: 0)))
                     continuation.finish()
                 } catch {
-                    Log.engine.error("Cloud LLM generation failed: \(String(describing: error), privacy: .public)")
+                    Log.engine.error("Cloud LLM generation failed; response detail omitted")
                     continuation.yield(.finished(.error, Self.metrics(startedAt: startedAt, output: 0)))
                     continuation.finish(throwing: error)
                 }
@@ -113,8 +113,7 @@ public actor OpenAICompatibleLLMEngine: LLMEngine {
             throw CloudVLMError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            let snippet = String(String(decoding: data, as: UTF8.self).prefix(500))
-            throw CloudVLMError.statusCode(http.statusCode, snippet)
+            throw CloudVLMError.statusCode(http.statusCode, "provider-response-omitted")
         }
 
         let content = try Self.decodeContent(data)
