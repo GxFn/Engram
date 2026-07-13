@@ -12,17 +12,22 @@ public struct CloudAnalysisRuntime: Sendable {
     let makeTOSStager: @Sendable (TOSMediaStagingConfiguration) -> any TOSMediaStaging
     let sleep: @Sendable (Duration) async throws -> Void
     let now: @Sendable () -> Date
+    let enforceOfficialResultSchemas: Bool
 
     public init(
         makeLASClient: @escaping @Sendable (CloudVision.LASServiceRegion) -> any LASOperatorClient,
         makeTOSStager: @escaping @Sendable (TOSMediaStagingConfiguration) -> any TOSMediaStaging,
         sleep: @escaping @Sendable (Duration) async throws -> Void,
-        now: @escaping @Sendable () -> Date
+        now: @escaping @Sendable () -> Date,
+        // False is reserved for bounded transport/checkpoint mechanics tests. Production and
+        // production-assembly tests keep the default so a fake client cannot establish schema.
+        enforceOfficialResultSchemas: Bool = true
     ) {
         self.makeLASClient = makeLASClient
         self.makeTOSStager = makeTOSStager
         self.sleep = sleep
         self.now = now
+        self.enforceOfficialResultSchemas = enforceOfficialResultSchemas
     }
 
     public static let live = Self(
@@ -116,6 +121,13 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
         if preflight.effectiveMode == .requiresUserChoice && !isExplicitLASDiagnostic {
             let choices = preflight.allowedAlternatives.map(\.rawValue).joined(separator: ",")
             throw blocked("missing cloud roles: \(roleList(preflight.missingRoles)); choose explicitly: \(choices)")
+        }
+        if runtime.enforceOfficialResultSchemas,
+           LASOperatorContract.scriptGeneration.resultSchemaEvidence == .artifactPrefixOnlyUnverified,
+           !isExplicitLASDiagnostic {
+            throw blocked(
+                "generated-script-result-schema-unverified:official-doc-2371959-publishes-prefix-only; no media uploaded or paid job submitted"
+            )
         }
 
         let consent: CloudRunConsentReceipt
@@ -437,6 +449,11 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
         let cleanupNote = cleaned.cleanupState == .deleted
             ? nil
             : "cloud result retained, but staged media cleanup is pending retry until the 24-hour TTL"
+        let confidenceNote = observations.contains {
+            $0.kind == .transcript && $0.confidence == nil
+        } ? "LAS ASR omitted confidence; transcript confidence is unknown and affected shots require review" : nil
+        let degradationNote = [cleanupNote, confidenceNote].compactMap { $0 }
+            .joined(separator: "; ").nilIfEmpty
         let summaryParts = receipts.compactMap(\.globalSummary)
             + observations.filter { $0.kind == .visual }.map(\.text)
             + consumedArtifacts.summaries
@@ -453,7 +470,7 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
                 mediaMilliseconds: usage.mediaMilliseconds,
                 estimatedUSD: usage.estimatedUSD,
                 refinementShotIDs: refinementIDs,
-                degradationNote: cleanupNote,
+                degradationNote: degradationNote,
                 analysisRequestedMode: configuration.requestedMode.rawValue,
                 analysisEffectiveMode: isExplicitLASDiagnostic
                     ? CloudAnalysisEffectiveMode.lasDeep.rawValue
@@ -465,10 +482,7 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
                 cleanupState: cleaned.cleanupState.rawValue
             ),
             evidence: alignment.items.map(\.evidence),
-            productionPlans: Self.productionPlans(
-                from: consumedArtifacts.scriptUnits,
-                graph: graph
-            ),
+            productionPlans: [],
             shotsNeedingReview: review,
             globalSummary: summary
         )
@@ -524,7 +538,6 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
     ) async throws -> ConsumedLASArtifacts {
         var observations: [CloudTimelineObservation] = []
         var summaries: [String] = []
-        var scriptUnits: [LASScriptProductionUnit] = []
         var seen = Set<LASOperatorArtifact>()
         for artifact in artifacts where seen.insert(artifact).inserted {
             switch artifact.kind {
@@ -545,38 +558,17 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
                     summaries.append(text)
                 }
             case .generatedScripts:
-                let URLs = try await stager.listArtifacts(
-                    at: artifact.tosURL,
-                    maximumCount: 16,
-                    credentials: credentials
+                // Official document 2371959 publishes `scripts_path` as a result prefix but does
+                // not publish the schema of files below it. File extensions and arbitrary JSON
+                // keys are not schema evidence; fail before reading or projecting creative data.
+                throw TOSMediaStagingError.invalidResponse(
+                    "generated-script-result-schema-unverified:official-doc-2371959-publishes-prefix-only"
                 )
-                let readable = URLs.filter { value in
-                    let path = URLComponents(string: value)?.path.lowercased() ?? ""
-                    return [".json", ".md", ".txt"].contains { path.hasSuffix($0) }
-                }
-                guard !readable.isEmpty else {
-                    throw TOSMediaStagingError.invalidResponse("generated-script-artifacts-missing")
-                }
-                for URL in readable.prefix(8) {
-                    let data = try await stager.readArtifact(
-                        at: URL,
-                        maximumBytes: 1 * 1_024 * 1_024,
-                        credentials: credentials
-                    )
-                    if let text = Self.artifactSummary(from: data, maximumCharacters: 12_000) {
-                        summaries.append(text)
-                    }
-                    scriptUnits.append(contentsOf: Self.scriptProductionUnits(
-                        from: data,
-                        asset: asset
-                    ))
-                }
             }
         }
         return ConsumedLASArtifacts(
             observations: observations,
-            summaries: summaries,
-            scriptUnits: scriptUnits
+            summaries: summaries
         )
     }
 
@@ -644,138 +636,12 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
         return String(text.replacingOccurrences(of: "\0", with: "").prefix(maximumCharacters)).nilIfEmpty
     }
 
-    /// Script artifacts are creative provider output, not observed facts. Only structured units
-    /// with an explicit provider time range may become a local-shot plan; unstructured Markdown
-    /// remains a global summary rather than being assigned by array position.
-    private static func scriptProductionUnits(
-        from data: Data,
-        asset: VideoAssetDescriptor
-    ) -> [LASScriptProductionUnit] {
-        guard let root = try? JSONSerialization.jsonObject(with: data),
-              let document = root as? [String: Any]
-        else { return [] }
-        let rawUnits = (document["shots"] ?? document["segments"] ?? document["script_shots"])
-            as? [[String: Any]] ?? []
-        func number(_ value: [String: Any], _ keys: [String]) -> (Double, String)? {
-            for key in keys {
-                if let result = (value[key] as? NSNumber)?.doubleValue, result.isFinite {
-                    return (result, key)
-                }
-                if let raw = value[key] as? String, let result = Double(raw), result.isFinite {
-                    return (result, key)
-                }
-            }
-            return nil
-        }
-        func seconds(_ value: (Double, String)) -> Double {
-            let milliseconds = value.1.contains("ms")
-                || value.0 > max(asset.durationSeconds * 2, 300)
-            return value.0 / (milliseconds ? 1_000 : 1)
-        }
-        let fieldAliases: [(String, [String])] = [
-            ("sequenceID", ["sequence_id"]),
-            ("purpose", ["purpose"]),
-            ("narrativeBeat", ["narrative_beat"]),
-            ("hookRole", ["hook_role"]),
-            ("shotSize", ["shot_size"]),
-            ("angle", ["angle"]),
-            ("movement", ["movement"]),
-            ("lensIntent", ["lens_intent"]),
-            ("subjectAction", ["subject_action", "action"]),
-            ("composition", ["composition"]),
-            ("background", ["background"]),
-            ("lightingColor", ["lighting_color"]),
-            ("propsWardrobe", ["props_wardrobe"]),
-            ("dialogueOrVO", ["dialogue_or_vo", "dialogue", "voice_over"]),
-            ("onScreenCopy", ["on_screen_copy"]),
-            ("musicSFX", ["music_sfx"]),
-            ("transition", ["transition"]),
-            ("continuity", ["continuity"]),
-            ("generationPrompt", ["generation_prompt"]),
-            ("productionNotes", ["production_notes", "notes"]),
-        ]
-        return rawUnits.compactMap { raw -> LASScriptProductionUnit? in
-            let value = canonicalProviderDictionary(raw)
-            guard let rawStart = number(value, ["start_seconds", "start_time_seconds", "start_time_ms", "start_ms"]),
-                  let rawEnd = number(value, ["end_seconds", "end_time_seconds", "end_time_ms", "end_ms"])
-            else { return nil }
-            let start = min(asset.durationSeconds, max(0, seconds(rawStart)))
-            let end = min(asset.durationSeconds, max(start, seconds(rawEnd)))
-            guard end > start else { return nil }
-            var fields: [String: String] = [:]
-            for (field, aliases) in fieldAliases {
-                if let text = aliases.compactMap({ value[$0] as? String }).first?
-                    .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty {
-                    fields[field] = String(text.prefix(4_000))
-                }
-            }
-            let targetDuration = number(
-                value,
-                ["target_duration_seconds", "target_duration_ms", "target_duration"]
-            ).map(seconds).flatMap { $0 > 0 ? $0 : nil }
-            guard !fields.isEmpty || targetDuration != nil else { return nil }
-            return LASScriptProductionUnit(
-                startSeconds: start,
-                endSeconds: end,
-                fields: fields,
-                targetDuration: targetDuration
-            )
-        }
-    }
-
     /// Provider payload keys are normalized without allowing aliases such as `start-time` and
     /// `start_time` to crash the consumer. Lexical source-key order resolves collisions.
     private static func canonicalProviderDictionary(_ value: [String: Any]) -> [String: Any] {
         value.keys.sorted().reduce(into: [:]) { result, sourceKey in
             let key = sourceKey.lowercased().replacingOccurrences(of: "-", with: "_")
             if result[key] == nil { result[key] = value[sourceKey] }
-        }
-    }
-
-    private static func productionPlans(
-        from units: [LASScriptProductionUnit],
-        graph: ShotGraph
-    ) -> [ShotProductionPlan] {
-        func text(_ key: String, _ values: [LASScriptProductionUnit]) -> String? {
-            var seen = Set<String>()
-            return values.compactMap { $0.fields[key]?.nilIfEmpty }
-                .filter { seen.insert($0).inserted }
-                .joined(separator: "\n")
-                .nilIfEmpty
-        }
-        return graph.shots.enumerated().compactMap { index, shot in
-            let matches = units.filter {
-                min(shot.timeRange.endSeconds, $0.endSeconds)
-                    > max(shot.timeRange.startSeconds, $0.startSeconds)
-            }
-            guard !matches.isEmpty else { return nil }
-            return ShotProductionPlan(
-                shotID: shot.id,
-                sequenceID: text("sequenceID", matches),
-                displayNumber: index + 1,
-                purpose: text("purpose", matches),
-                narrativeBeat: text("narrativeBeat", matches),
-                hookRole: text("hookRole", matches),
-                targetDuration: matches.compactMap(\.targetDuration).first,
-                shotSize: text("shotSize", matches),
-                angle: text("angle", matches),
-                movement: text("movement", matches),
-                lensIntent: text("lensIntent", matches),
-                subjectAction: text("subjectAction", matches),
-                composition: text("composition", matches),
-                background: text("background", matches),
-                lightingColor: text("lightingColor", matches),
-                propsWardrobe: text("propsWardrobe", matches),
-                dialogueOrVO: text("dialogueOrVO", matches),
-                onScreenCopy: text("onScreenCopy", matches),
-                musicSFX: text("musicSFX", matches),
-                transition: text("transition", matches),
-                continuity: text("continuity", matches),
-                generationPrompt: text("generationPrompt", matches),
-                productionNotes: text("productionNotes", matches),
-                sourceShotRefs: [shot.id],
-                isDerivedCreativePlan: true
-            )
         }
     }
 
@@ -937,14 +803,6 @@ struct ConfiguredCloudAnalysisEnricher: CloudStoryboardEnriching {
 private struct ConsumedLASArtifacts: Sendable {
     let observations: [CloudTimelineObservation]
     let summaries: [String]
-    let scriptUnits: [LASScriptProductionUnit]
-}
-
-private struct LASScriptProductionUnit: Sendable {
-    let startSeconds: Double
-    let endSeconds: Double
-    let fields: [String: String]
-    let targetDuration: Double?
 }
 
 private struct CloudAnalysisResumeState: Codable, Hashable, Sendable {

@@ -116,19 +116,14 @@ struct SavedCloudProductionAssemblyTests {
         #expect(item.failureRetryable)
         #expect(item.failureReason?.contains("generated-script-result-schema-unverified") == true)
         #expect(item.failureReason?.contains("official-doc-2371959-publishes-prefix-only") == true)
-        #expect(await stager.newUploadCount == 1)
-        #expect(await stager.cleanupCount == 1)
-        #expect(await client.submittedContracts == [
-            .videoStoryboard,
-            .videoFineUnderstanding,
-            .scriptGeneration,
-            .enhancedASR,
-        ])
+        #expect(await stager.newUploadCount == 0)
+        #expect(await stager.cleanupCount == 0)
+        #expect(await client.submittedContracts.isEmpty)
       }
     }
 
     @MainActor
-    @Test func savedHybridRunsLASFirstAndSendsOnlySelectedShotToArkRefinement() async throws {
+    @Test func savedHybridAlsoBlocksBeforeUploadWhenScriptSchemaIsUnverified() async throws {
       try await AppShellKeychainTestMutex.shared.withMainActorLock {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("EngramSavedHybridAssembly-\(UUID().uuidString)", isDirectory: true)
@@ -216,12 +211,14 @@ struct SavedCloudProductionAssemblyTests {
         await memory.importVideo(.file(picked))
         await memory.digestAndRefresh()
 
-        let storyboard = try #require(memory.items.first?.storyboard)
-        #expect(storyboard.source.cloudTelemetry?.requestedMode == "hybridMaximum")
-        #expect(storyboard.source.cloudTelemetry?.effectiveMode == "lasArkRefine")
-        #expect(await ledger.understandingShotIDs == [ShotID(rawValue: "S001"), ShotID(rawValue: "S002")])
-        #expect(await ledger.refinementShotIDs == [ShotID(rawValue: "S001")])
-        #expect(storyboard.source.cloudTelemetry?.refinementShotIDs == ["S001"])
+        let item = try #require(memory.items.first)
+        #expect(item.state == .failed)
+        #expect(item.storyboard == nil)
+        #expect(item.failureReason?.contains("generated-script-result-schema-unverified") == true)
+        #expect(await stager.newUploadCount == 0)
+        #expect(await client.submittedContracts.isEmpty)
+        #expect(await ledger.understandingShotIDs.isEmpty)
+        #expect(await ledger.refinementShotIDs.isEmpty)
       }
     }
 }

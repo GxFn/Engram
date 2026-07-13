@@ -37,6 +37,13 @@ public struct LASOperatorContractSource: Codable, Hashable, Sendable {
     }
 }
 
+public enum LASOperatorResultSchemaEvidence: String, Codable, Hashable, Sendable {
+    /// The operator page publishes a field-level response and executable response example.
+    case officialResponseExample
+    /// The page publishes only an artifact prefix, not the schema of files below that prefix.
+    case artifactPrefixOnlyUnverified
+}
+
 /// Provider IDs and versions copied from the corresponding official operator pages. The ASR
 /// page currently shows `v2` in one parameter table but uses `v1` in both submit and poll curl
 /// examples; this contract follows the executable examples and keeps the revision explicit.
@@ -67,6 +74,13 @@ public enum LASOperatorContract: String, Codable, CaseIterable, Hashable, Sendab
     }
 
     public static let documentedASRFormats: Set<String> = ["raw", "wav", "mp3", "ogg"]
+
+    public var resultSchemaEvidence: LASOperatorResultSchemaEvidence {
+        switch self {
+        case .scriptGeneration: .artifactPrefixOnlyUnverified
+        case .videoStoryboard, .videoFineUnderstanding, .enhancedASR: .officialResponseExample
+        }
+    }
 
     public var role: CloudProviderRole {
         switch self {
@@ -434,13 +448,18 @@ private struct LASEnvelope: Decodable {
     }
 
     struct Utterance: Decodable {
+        struct Word: Decodable { let confidence: Double? }
         let startTime: Int64
         let endTime: Int64
         let text: String
+        let confidence: Double?
+        let words: [Word]?
         enum CodingKeys: String, CodingKey {
             case startTime = "start_time"
             case endTime = "end_time"
             case text
+            case confidence
+            case words
         }
     }
 
@@ -510,12 +529,20 @@ private struct LASEnvelope: Decodable {
             0
         }
         let observations = (data?.result?.utterances ?? []).enumerated().map { index, item in
-            CloudTimelineObservation(
+            // The official las_asr_pro example exposes confidence on words nested in an
+            // utterance. Prefer an explicit utterance value when present; otherwise use the
+            // minimum valid word score so the aggregate cannot overstate its weakest token.
+            let wordConfidences = (item.words ?? []).compactMap(\.confidence)
+                .filter { $0.isFinite && (0...1).contains($0) }
+            let confidence = item.confidence.flatMap {
+                $0.isFinite && (0...1).contains($0) ? $0 : nil
+            } ?? wordConfidences.min()
+            return CloudTimelineObservation(
                 id: "las-asr-\(index)",
                 startSeconds: Double(item.startTime) / 1_000,
                 endSeconds: Double(item.endTime) / 1_000,
                 text: item.text,
-                confidence: 1,
+                confidence: confidence,
                 kind: .transcript
             )
         }

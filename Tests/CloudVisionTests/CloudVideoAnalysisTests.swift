@@ -362,6 +362,24 @@ struct ProviderHTTPContractTests {
     #expect(CloudRefinementPlanner.plan(alignment).shotIDs == [ShotID(rawValue: "S001")])
 }
 
+@Test func timelineAlignerTreatsMissingProviderConfidenceAsUnknownAndNeedsReview() throws {
+    let graph = try cloudGraph()
+    let observation = CloudTimelineObservation(
+        id: "asr-unknown",
+        startSeconds: 0.2,
+        endSeconds: 0.8,
+        text: "Provider omitted confidence.",
+        confidence: nil,
+        kind: .transcript
+    )
+
+    let alignment = CloudTimelineAligner.align([observation], to: graph)
+
+    #expect(alignment.items.first?.observation.confidence == nil)
+    #expect(alignment.items.first?.evidence.confidence == 0)
+    #expect(alignment.shotsNeedingReview == [ShotID(rawValue: "S001")])
+}
+
 @Test func cloudErrorSanitizerRemovesCredentialsAndLocalPaths() {
     let raw = "Bearer sk-secret-123 at /Users/alice/private/video.mp4?token=abc"
     let sanitized = CloudErrorSanitizer.sanitize(raw)

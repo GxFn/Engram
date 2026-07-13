@@ -142,6 +142,8 @@ struct LASOperatorTransportTests {
         #expect(source.contains("documentedASRFormats"))
         #expect(source.contains("explicitLiveDiagnostic"))
         #expect(source.contains("liveProbeValidated"))
+        #expect(LASOperatorContract.scriptGeneration.resultSchemaEvidence == .artifactPrefixOnlyUnverified)
+        #expect(LASOperatorContract.enhancedASR.resultSchemaEvidence == .officialResponseExample)
     }
 
     @Test func acceptedScriptJobMapsToPendingAndCompletedBusinessFailureFailsClosed() async throws {

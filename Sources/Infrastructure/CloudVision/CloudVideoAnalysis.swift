@@ -645,14 +645,19 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
 
         struct AudioInfo: Decodable { let duration: Int64? }
         struct Utterance: Decodable {
+            struct Word: Decodable { let confidence: Double? }
             let startTime: Int64
             let endTime: Int64
             let text: String
+            let confidence: Double?
+            let words: [Word]?
 
             enum CodingKeys: String, CodingKey {
                 case startTime = "start_time"
                 case endTime = "end_time"
                 case text
+                case confidence
+                case words
             }
         }
         struct Result: Decodable { let utterances: [Utterance]? }
@@ -675,12 +680,17 @@ public struct URLSessionCloudVideoJobClient: CloudVideoJobClient {
         default: .failed
         }
         let observations = (payload?.result?.utterances ?? []).enumerated().map { index, utterance in
-            CloudTimelineObservation(
+            let wordConfidences = (utterance.words ?? []).compactMap(\.confidence)
+                .filter { $0.isFinite && (0...1).contains($0) }
+            let confidence = utterance.confidence.flatMap {
+                $0.isFinite && (0...1).contains($0) ? $0 : nil
+            } ?? wordConfidences.min()
+            return CloudTimelineObservation(
                 id: "asr-\(index)",
                 startSeconds: Double(utterance.startTime) / 1_000,
                 endSeconds: Double(utterance.endTime) / 1_000,
                 text: utterance.text,
-                confidence: 1,
+                confidence: confidence,
                 kind: .transcript
             )
         }
@@ -733,10 +743,12 @@ public struct CloudTimelineObservation: Codable, Hashable, Sendable, Identifiabl
     public let startSeconds: Double
     public let endSeconds: Double
     public let text: String
-    public let confidence: Double
+    /// Provider-reported confidence. `nil` means the provider omitted confidence; callers must
+    /// preserve that unknown state instead of manufacturing a perfect score.
+    public let confidence: Double?
     public let kind: CloudTimelineObservationKind
 
-    public init(id: String, startSeconds: Double, endSeconds: Double, text: String, confidence: Double, kind: CloudTimelineObservationKind) {
+    public init(id: String, startSeconds: Double, endSeconds: Double, text: String, confidence: Double?, kind: CloudTimelineObservationKind) {
         self.id = id
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
@@ -770,13 +782,18 @@ public enum CloudTimelineAligner {
             let shotIDs = graph.shots.filter {
                 min($0.timeRange.endSeconds, range.endSeconds) > max($0.timeRange.startSeconds, range.startSeconds)
             }.map(\.id)
-            if observation.confidence < reviewThreshold { review.formUnion(shotIDs) }
+            let evidenceConfidence = observation.confidence ?? 0
+            if observation.confidence == nil || evidenceConfidence < reviewThreshold {
+                review.formUnion(shotIDs)
+            }
             let kind: EvidenceKind = observation.kind == .transcript ? .transcript : (observation.kind == .audio ? .audio : .cloudTimeline)
             let evidence = EvidenceRef(
                 id: EvidenceID(rawValue: "cloud:\(observation.id)"),
                 kind: kind, timeRange: range, frameRange: nil,
                 payloadRef: "cloud/timeline/\(observation.id).json",
-                source: .cloudModel, confidence: observation.confidence,
+                // EvidenceRef still has a non-optional score. Zero is the conservative adapter;
+                // the observation retains nil so persisted alignment distinguishes unknown from 0.
+                source: .cloudModel, confidence: evidenceConfidence,
                 rawText: observation.text
             )
             return AlignedCloudTimelineItem(observation: observation, shotIDs: shotIDs, evidence: evidence)

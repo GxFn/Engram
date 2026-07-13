@@ -37,15 +37,10 @@ import VideoUnderstanding
         #expect(message.contains("official-doc-2371959-publishes-prefix-only"))
     }
 
-    #expect(await stager.newUploadCount == 1)
-    #expect(await stager.cleanupCount == 1)
-    #expect(await client.submittedContracts == [
-        .videoStoryboard,
-        .videoFineUnderstanding,
-        .scriptGeneration,
-        .enhancedASR,
-    ])
-    #expect(await checkpoints.values.count >= 6)
+    #expect(await stager.newUploadCount == 0)
+    #expect(await stager.cleanupCount == 0)
+    #expect(await client.submittedContracts.isEmpty)
+    #expect(await checkpoints.values.isEmpty)
 }
 
 @Test func restartReusesStagedObjectAndAcknowledgedPaidJobs() async throws {
@@ -60,7 +55,8 @@ import VideoUnderstanding
             makeLASClient: { _ in interruptedClient },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
     let graph = try orchestratorGraph()
@@ -84,7 +80,8 @@ import VideoUnderstanding
             makeLASClient: { _ in restartedClient },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
 
@@ -115,7 +112,8 @@ import VideoUnderstanding
             makeLASClient: { _ in firstClient },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
 
@@ -137,7 +135,8 @@ import VideoUnderstanding
             makeLASClient: { _ in restartedClient },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
 
@@ -167,7 +166,8 @@ import VideoUnderstanding
             makeLASClient: { _ in client },
             makeTOSStager: { _ in RecordingTOSStager(now: now) },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
 
@@ -196,7 +196,8 @@ import VideoUnderstanding
             makeLASClient: { _ in RecordingLASClient() },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
 
@@ -224,7 +225,8 @@ import VideoUnderstanding
             makeLASClient: { _ in client },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
     let graph = try orchestratorGraph()
@@ -255,7 +257,8 @@ import VideoUnderstanding
             makeLASClient: { _ in client },
             makeTOSStager: { _ in stager },
             sleep: { _ in },
-            now: { now }
+            now: { now },
+            enforceOfficialResultSchemas: false
         )
     )
     let graph = try orchestratorGraph()
@@ -502,9 +505,6 @@ actor RecordingTOSStager: TOSMediaStaging {
         if tosURL.hasSuffix("segments.json") {
             return Data(#"{"segments":[{"start_time":0,"end_time":1,"scene_description":"A verified provider scene."}]}"#.utf8)
         }
-        if tosURL.hasSuffix("episode-1.md") {
-            return Data(#"{"shots":[{"start-seconds":0,"start_seconds":99,"end_seconds":1,"purpose":"Grounded generated script one","subject_action":"LAS cloud action one","dialogue_or_vo":"LAS cloud dialogue one","on_screen_copy":"LAS cloud copy one","production_notes":"LAS cloud note one"},{"start_seconds":1,"end_seconds":2,"target_duration_ms":800,"purpose":"Grounded generated script two","subject_action":"LAS cloud action two","dialogue_or_vo":"LAS cloud dialogue two","on_screen_copy":"LAS cloud copy two","production_notes":"LAS cloud note two"}]}"#.utf8)
-        }
         return Data(#"{"character":"A verified character"}"#.utf8)
     }
 
@@ -513,7 +513,8 @@ actor RecordingTOSStager: TOSMediaStaging {
         maximumCount: Int,
         credentials: TOSTemporaryCredentials
     ) async throws -> [String] {
-        ["tos://fixture-bucket/engram/runs/output/scripts/episode-1.md"]
+        Issue.record("Unverified generated-script prefixes must not be listed or inferred")
+        return []
     }
 }
 
@@ -572,7 +573,7 @@ actor RecordingLASClient: LASOperatorClient {
         )]
         case .enhancedASR: [CloudTimelineObservation(
             id: "asr-1", startSeconds: 1.1, endSeconds: 1.8,
-            text: "A spoken line.", confidence: 1, kind: .transcript
+            text: "A spoken line.", confidence: 0.8, kind: .transcript
         )]
         default: []
         }
