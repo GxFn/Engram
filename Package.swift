@@ -40,6 +40,7 @@ let package = Package(
         .library(name: "AppGroupSupport", targets: ["AppGroupSupport"]),
         .library(name: "EngramLogging", targets: ["EngramLogging"]),
         .executable(name: "MacVideoSmoke", targets: ["MacVideoSmoke"]),
+        .executable(name: "StoryboardFixtureCLI", targets: ["StoryboardFixtureCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
@@ -257,6 +258,11 @@ let package = Package(
                 "ModelStore",
             ],
             path: "Tools/MacVideoSmoke"
+        ),
+        .executableTarget(
+            name: "StoryboardFixtureCLI",
+            dependencies: ["VideoUnderstanding"],
+            path: "Tools/StoryboardFixtureCLI"
         ),
 
         // MARK: - Tests
