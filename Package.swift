@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "VideoUnderstanding", targets: ["VideoUnderstanding"]),
         .library(name: "StoryboardCore", targets: ["StoryboardCore"]),
         .library(name: "AnalysisStore", targets: ["AnalysisStore"]),
+        .library(name: "ShotDetection", targets: ["ShotDetection"]),
         .library(name: "ScriptCore", targets: ["ScriptCore"]),
         .library(name: "SpeechTranscription", targets: ["SpeechTranscription"]),
         .library(name: "FrameVision", targets: ["FrameVision"]),
@@ -65,6 +66,11 @@ let package = Package(
             name: "AnalysisStore",
             dependencies: ["VideoUnderstanding", "StoryboardCore"],
             path: "Sources/Infrastructure/AnalysisStore"
+        ),
+        .target(
+            name: "ShotDetection",
+            dependencies: ["VideoUnderstanding"],
+            path: "Sources/Infrastructure/ShotDetection"
         ),
         .target(
             name: "ScriptCore",
@@ -325,6 +331,11 @@ let package = Package(
             name: "AnalysisStoreTests",
             dependencies: ["AnalysisStore", "VideoUnderstanding"],
             path: "Tests/AnalysisStoreTests"
+        ),
+        .testTarget(
+            name: "ShotDetectionTests",
+            dependencies: ["ShotDetection", "VideoUnderstanding"],
+            path: "Tests/ShotDetectionTests"
         ),
         .testTarget(name: "ScriptCoreTests", dependencies: ["ScriptCore", "VideoUnderstanding"], path: "Tests/ScriptCoreTests"),
         .testTarget(name: "SpeechTranscriptionTests", dependencies: ["SpeechTranscription", "VideoUnderstanding"], path: "Tests/SpeechTranscriptionTests"),
