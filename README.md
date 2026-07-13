@@ -6,7 +6,9 @@
 
 名字来自神经科学术语 *engram*(记忆痕迹):记忆在大脑中留下的物理印记。内容、索引、证据分镜和导出默认保存在设备上;可选云模式只调用用户自行配置的服务。
 
-视频拆解以 AVFoundation 生成的连续 `ShotGraph` 为时间轴真相,保存证据引用、V2 分镜文档、质量状态和确定性旧版投影。Memory、Ask、Insight 与分享继续消费兼容投影;用户还可导出 Markdown、JSON、CSV、PDF 和参考帧包。`cloudStandard` 只传抽样帧/文本;完整视频与云端 ASR 需要 capability probe、明确上传同意和费用上限,否则会诚实降级。
+视频拆解以 AVFoundation 生成的连续 `ShotGraph` 为时间轴真相,保存证据引用、V2 分镜文档、质量状态和确定性旧版投影。Memory、Ask、Insight 与分享继续消费兼容投影;用户还可导出 Markdown、JSON、CSV、PDF 和参考帧包。`Ark Standard` 只传抽样帧/文本;`LAS Deep` 使用用户管理的临时 TOS/STS 流式上传一份原视频,供视频分镜、精细理解、剧本生成和增强 ASR 复用。LAS 路径只有在逐角色真实媒体探测和一次性 run/source/plan 同意后才执行;缺少角色时显示精确原因并要求用户显式选择 Ark Standard、Local 或取消,不会静默上传或降级。
+
+当前 LAS/TOS 路径仅用于个人 BYOK 测试。公开发布所需的 presigned TOS broker 尚无真实后端仓库、部署 owner 和签发/删除能力,因此公开启用 LAS 仍是 release blocker;仓库不会用空协议或 mock broker 冒充完成。
 
 ## 产品哲学:小而美、接缝级
 

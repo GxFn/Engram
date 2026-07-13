@@ -10,8 +10,9 @@
 - [x] 开源致谢 `ACKNOWLEDGEMENTS.md`
 - [ ] (可选)`AccentColor` 改成品牌紫,与新图标统一
 - [ ] 真机验证:切云端跑通拆解(**你还没做的临门一脚**)+ 分享扩展流程
-- [ ] 真机验证能力探测失败时显示 `cloudStandard`/本地降级证据,且未上传完整视频
-- [ ] 若提交版本开放 `cloudDeep`,验证单独上传同意、费用/字节上限、异步任务取消/失败和错误脱敏
+- [ ] 真机验证能力探测失败时显示 exact missing roles,只提供显式 Ark Standard/Local/Cancel,且未上传完整视频
+- [ ] 个人 BYOK 测试验证 LAS/TOS 单独上传同意、未知费用、字节上限、四算子、重启、取消、清理/TTL 和错误脱敏
+- [ ] **公开发布 blocker:**建立真实 presigned TOS broker 后端仓库、部署 owner、签发/读取/删除能力并通过隐私验证;完成前发布构建禁用 LAS/TOS(不得用空协议/mock broker 代替)
 - [ ] 版本号确认(当前 MARKETING_VERSION=1.0 / BUILD=1)
 
 ## B. 账号与签名(你在 Mac / 开发者后台做)
