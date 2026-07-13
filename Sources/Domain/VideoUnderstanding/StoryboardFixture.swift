@@ -184,3 +184,182 @@ public struct StoryboardFixtureLabel: Codable, Hashable, Sendable {
         start.isFinite && end.isFinite && start >= 0 && end > start && end <= duration
     }
 }
+
+public struct BoundaryPrediction: Codable, Hashable, Sendable {
+    public let frame: Int
+    public let transition: ShotTransition
+    public let confidence: Double
+
+    public init(frame: Int, transition: ShotTransition, confidence: Double) {
+        self.frame = frame
+        self.transition = transition
+        self.confidence = confidence
+    }
+}
+
+public struct BoundaryMetrics: Codable, Hashable, Sendable {
+    public let truePositive: Int
+    public let falsePositive: Int
+    public let falseNegative: Int
+
+    public init(truePositive: Int, falsePositive: Int, falseNegative: Int) {
+        self.truePositive = truePositive
+        self.falsePositive = falsePositive
+        self.falseNegative = falseNegative
+    }
+
+    public var precision: Double {
+        let denominator = truePositive + falsePositive
+        return denominator == 0 ? (falseNegative == 0 ? 1 : 0) : Double(truePositive) / Double(denominator)
+    }
+
+    public var recall: Double {
+        let denominator = truePositive + falseNegative
+        return denominator == 0 ? 1 : Double(truePositive) / Double(denominator)
+    }
+
+    public var f1: Double {
+        let total = precision + recall
+        return total == 0 ? 0 : (2 * precision * recall) / total
+    }
+}
+
+public struct BoundaryMatch: Codable, Hashable, Sendable {
+    public let labelFrame: Int
+    public let predictionFrame: Int
+    public let transition: ShotTransition
+    public let distanceFrames: Int
+
+    public init(labelFrame: Int, predictionFrame: Int, transition: ShotTransition, distanceFrames: Int) {
+        self.labelFrame = labelFrame
+        self.predictionFrame = predictionFrame
+        self.transition = transition
+        self.distanceFrames = distanceFrames
+    }
+}
+
+public struct BoundaryEvaluationReport: Codable, Hashable, Sendable {
+    public let toleranceFrames: Int
+    public let hard: BoundaryMetrics
+    public let gradual: BoundaryMetrics
+    public let overall: BoundaryMetrics
+    public let matches: [BoundaryMatch]
+
+    public init(
+        toleranceFrames: Int,
+        hard: BoundaryMetrics,
+        gradual: BoundaryMetrics,
+        overall: BoundaryMetrics,
+        matches: [BoundaryMatch]
+    ) {
+        self.toleranceFrames = toleranceFrames
+        self.hard = hard
+        self.gradual = gradual
+        self.overall = overall
+        self.matches = matches
+    }
+}
+
+public enum BoundaryEvaluator {
+    public static func evaluate(
+        labels: [BoundaryLabel],
+        predictions: [BoundaryPrediction],
+        toleranceFrames: Int
+    ) -> BoundaryEvaluationReport {
+        let tolerance = max(0, toleranceFrames)
+        var labelBoundaries: [BoundaryPoint] = []
+        for label in labels where family(for: label.transitionOut) != nil {
+            labelBoundaries.append(BoundaryPoint(frame: label.endFrameExclusive, transition: label.transitionOut))
+        }
+        labelBoundaries.sort { lhs, rhs in
+            lhs.frame == rhs.frame ? lhs.transition.rawValue < rhs.transition.rawValue : lhs.frame < rhs.frame
+        }
+
+        var predictedBoundaries: [BoundaryPrediction] = []
+        for prediction in predictions
+        where family(for: prediction.transition) != nil && prediction.frame >= 0 && prediction.confidence.isFinite {
+            predictedBoundaries.append(prediction)
+        }
+        predictedBoundaries.sort { lhs, rhs in
+                if lhs.frame != rhs.frame { return lhs.frame < rhs.frame }
+                if lhs.transition != rhs.transition { return lhs.transition.rawValue < rhs.transition.rawValue }
+                return lhs.confidence > rhs.confidence
+        }
+
+        var matchedPredictions = Set<Int>()
+        var matches: [BoundaryMatch] = []
+        for label in labelBoundaries {
+            guard let labelFamily = family(for: label.transition) else { continue }
+            let candidate = predictedBoundaries.indices
+                .filter { index in
+                    !matchedPredictions.contains(index)
+                        && family(for: predictedBoundaries[index].transition) == labelFamily
+                        && abs(predictedBoundaries[index].frame - label.frame) <= tolerance
+                }
+                .min { lhs, rhs in
+                    let left = predictedBoundaries[lhs]
+                    let right = predictedBoundaries[rhs]
+                    let leftDistance = abs(left.frame - label.frame)
+                    let rightDistance = abs(right.frame - label.frame)
+                    if leftDistance != rightDistance { return leftDistance < rightDistance }
+                    if left.confidence != right.confidence { return left.confidence > right.confidence }
+                    return left.frame < right.frame
+                }
+            guard let candidate else { continue }
+            matchedPredictions.insert(candidate)
+            let prediction = predictedBoundaries[candidate]
+            matches.append(BoundaryMatch(
+                labelFrame: label.frame,
+                predictionFrame: prediction.frame,
+                transition: label.transition,
+                distanceFrames: abs(prediction.frame - label.frame)
+            ))
+        }
+
+        func metrics(for requestedFamily: BoundaryFamily?) -> BoundaryMetrics {
+            let labelCount = labelBoundaries.filter { item in
+                requestedFamily == nil || family(for: item.transition) == requestedFamily
+            }.count
+            let predictionCount = predictedBoundaries.filter { item in
+                requestedFamily == nil || family(for: item.transition) == requestedFamily
+            }.count
+            let matchCount = matches.filter { item in
+                requestedFamily == nil || family(for: item.transition) == requestedFamily
+            }.count
+            return BoundaryMetrics(
+                truePositive: matchCount,
+                falsePositive: predictionCount - matchCount,
+                falseNegative: labelCount - matchCount
+            )
+        }
+
+        return BoundaryEvaluationReport(
+            toleranceFrames: tolerance,
+            hard: metrics(for: .hard),
+            gradual: metrics(for: .gradual),
+            overall: metrics(for: nil),
+            matches: matches
+        )
+    }
+
+    private enum BoundaryFamily: Hashable {
+        case hard
+        case gradual
+    }
+
+    private struct BoundaryPoint {
+        let frame: Int
+        let transition: ShotTransition
+    }
+
+    private static func family(for transition: ShotTransition) -> BoundaryFamily? {
+        switch transition {
+        case .cut:
+            return .hard
+        case .fade, .dissolve:
+            return .gradual
+        case .start, .end, .unknown:
+            return nil
+        }
+    }
+}
