@@ -5,6 +5,7 @@ import EngramLogging
 import Foundation
 import Persistence
 import ScriptCore
+import StoryboardCore
 import SwiftData
 import VideoUnderstanding
 
@@ -340,6 +341,44 @@ public actor ClipDigestService: ClipDigesting {
         )
         Log.clip.info("Re-indexed edited breakdown \(id, privacy: .public)")
         return updated
+    }
+
+    /// Applies split/merge/field edits to the authoritative V2 document, then regenerates the
+    /// legacy projection and retrieval body so every existing consumer observes the same edit.
+    public func updateStoryboard(
+        id: String,
+        transform: @Sendable (StoryboardDocumentV2) throws -> StoryboardDocumentV2
+    ) async throws -> Script {
+        let snapshot = try await recordStore.snapshot(id: id)
+        guard let json = snapshot.storyboardJSON,
+              let data = json.data(using: .utf8),
+              let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data)
+        else { throw ClipDigestServiceError.unsupportedEmptyText("clip \(id) has no V2 storyboard to edit") }
+        let updatedDocument = try transform(document)
+        var legacy = StoryboardLegacyProjector.project(updatedDocument)
+        if let context = ScriptCoding.decode(json: snapshot.scriptJSON)?.userContext {
+            legacy = legacy.withUserContext(context)
+        }
+        guard let legacyJSON = ScriptCoding.encode(legacy) else {
+            throw ClipDigestServiceError.unsupportedEmptyText("re-encoding storyboard projection for \(id) failed")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let storyboardJSON = String(decoding: try encoder.encode(updatedDocument), as: UTF8.self)
+        let bodyText = ScriptRendering.indexableText(legacy)
+        try? await indexer.deleteClip(clipID: id)
+        let result = try await indexer.index(ClipDigestIndexingPayload(
+            clipID: id, title: legacy.title, bodyText: bodyText, sourceURL: snapshot.url
+        ))
+        _ = try await recordStore.markIndexed(
+            id: id, title: legacy.title, bodyText: bodyText, indexPreview: result.preview,
+            scriptJSON: legacyJSON, storyboardJSON: storyboardJSON,
+            activeRunID: snapshot.activeRunID, qualityStatusRaw: snapshot.qualityStatusRaw,
+            analysisSchemaVersion: snapshot.analysisSchemaVersion, now: now()
+        )
+        Log.clip.info("Re-indexed authoritative storyboard edit \(id, privacy: .public)")
+        return legacy
     }
 
     private func digest(_ item: ClipQueueItem) async throws {

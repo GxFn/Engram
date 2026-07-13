@@ -465,6 +465,24 @@ public final class AppDependencies {
                     let validation = StoryboardExportValidator.validate(bundle, document: document)
                     guard validation.isValid else { throw MemoryClientError.exportUnavailable }
                     return bundle.artifacts.map(\.url)
+                },
+                editStoryboardShot: { id, index, command in
+                    try await clipDigestService.updateStoryboard(id: id) { document in
+                        guard document.shotGraph.shots.indices.contains(index) else {
+                            throw MemoryClientError.editingUnavailable
+                        }
+                        let shotID = document.shotGraph.shots[index].id
+                        switch command {
+                        case let .split(atSeconds):
+                            return try StoryboardEditor.split(document, shotID: shotID, atSeconds: atSeconds).document
+                        case .mergeWithNext:
+                            guard document.shotGraph.shots.indices.contains(index + 1) else {
+                                throw MemoryClientError.editingUnavailable
+                            }
+                            let nextID = document.shotGraph.shots[index + 1].id
+                            return try StoryboardEditor.merge(document, first: shotID, second: nextID).document
+                        }
+                    }
                 }
             ))
         } else {

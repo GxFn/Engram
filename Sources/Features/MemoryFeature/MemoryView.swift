@@ -126,6 +126,7 @@ public struct MemoryClient: Sendable {
     public let reanalyzeScript: @Sendable (String) async throws -> Script
     /// Exports Markdown/JSON/CSV/PDF/reference frames from the authoritative V2 document.
     public let exportStoryboard: @Sendable (String) async throws -> [URL]
+    public let editStoryboardShot: @Sendable (String, Int, StoryboardShotEditCommand) async throws -> Script
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
@@ -143,6 +144,9 @@ public struct MemoryClient: Sendable {
         },
         exportStoryboard: @escaping @Sendable (String) async throws -> [URL] = { _ in
             throw MemoryClientError.exportUnavailable
+        },
+        editStoryboardShot: @escaping @Sendable (String, Int, StoryboardShotEditCommand) async throws -> Script = { _, _, _ in
+            throw MemoryClientError.editingUnavailable
         }
     ) {
         self.loadItems = loadItems
@@ -155,6 +159,7 @@ public struct MemoryClient: Sendable {
         self.updateScript = updateScript
         self.reanalyzeScript = reanalyzeScript
         self.exportStoryboard = exportStoryboard
+        self.editStoryboardShot = editStoryboardShot
     }
 
     public static let empty = MemoryClient(
@@ -166,6 +171,11 @@ public struct MemoryClient: Sendable {
         deleteClip: { _ in },
         editClip: { _, _ in }
     )
+}
+
+public enum StoryboardShotEditCommand: Hashable, Sendable {
+    case split(atSeconds: Double)
+    case mergeWithNext
 }
 
 public enum MemoryClientError: Error, LocalizedError {
@@ -368,6 +378,22 @@ public final class MemoryViewModel {
         }
     }
 
+    public func editStoryboardShot(
+        _ item: MemoryClip,
+        shotIndex: Int,
+        command: StoryboardShotEditCommand
+    ) async -> Script? {
+        do {
+            let script = try await client.editStoryboardShot(item.id, shotIndex, command)
+            items = (try? await client.loadItems()) ?? items
+            errorMessage = nil
+            return script
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -417,7 +443,10 @@ public struct MemoryView: View {
                             onAskAboutClip: onAskAboutClip,
                             onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
                             onReanalyze: { await viewModel.reanalyzeScript(item) },
-                            onExportStoryboard: { await viewModel.exportStoryboard(item) }
+                            onExportStoryboard: { await viewModel.exportStoryboard(item) },
+                            onEditStoryboardShot: { index, command in
+                                await viewModel.editStoryboardShot(item, shotIndex: index, command: command)
+                            }
                         )
                     } label: {
                         MemoryRow(item: item)
@@ -511,7 +540,10 @@ public struct MemoryView: View {
                     onAskAboutClip: onAskAboutClip,
                     onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
                     onReanalyze: { await viewModel.reanalyzeScript(item) },
-                    onExportStoryboard: { await viewModel.exportStoryboard(item) }
+                    onExportStoryboard: { await viewModel.exportStoryboard(item) },
+                    onEditStoryboardShot: { index, command in
+                        await viewModel.editStoryboardShot(item, shotIndex: index, command: command)
+                    }
                 )
             } else {
                 ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
@@ -794,6 +826,7 @@ private struct MemoryDetailView: View {
     /// AI re-analysis from corrected facts + 背景; returns the updated script.
     var onReanalyze: () async -> Script? = { nil }
     var onExportStoryboard: () async -> [URL]? = { nil }
+    var onEditStoryboardShot: (Int, StoryboardShotEditCommand) async -> Script? = { _, _ in nil }
 
     @State private var isEditing = false
     @State private var editDraft = ""
@@ -926,6 +959,27 @@ private struct MemoryDetailView: View {
                                         editingShot = shot
                                     } label: {
                                         Label("订正台词…", systemImage: "pencil")
+                                    }
+                                    Button {
+                                        Task {
+                                            let midpoint = (shot.startSeconds + shot.endSeconds) / 2
+                                            if let updated = await onEditStoryboardShot(shot.index, .split(atSeconds: midpoint)) {
+                                                revisedScript = updated
+                                            }
+                                        }
+                                    } label: {
+                                        Label("在中点拆分镜头", systemImage: "scissors")
+                                    }
+                                    if shot.index < breakdown.shots.count - 1 {
+                                        Button {
+                                            Task {
+                                                if let updated = await onEditStoryboardShot(shot.index, .mergeWithNext) {
+                                                    revisedScript = updated
+                                                }
+                                            }
+                                        } label: {
+                                            Label("与下一镜头合并", systemImage: "rectangle.2.swap")
+                                        }
                                     }
                                     #if os(iOS)
                                     if let narration = shot.narration, !narration.isEmpty {
