@@ -78,3 +78,136 @@ import VideoUnderstanding
     #expect(graph.shots.contains { $0.transitionOut == .fade })
     #expect(graph.coverageRatio == 1)
 }
+
+@Test func adaptiveDetectorSuppressesSingleFrameHighMotionBurst() throws {
+    let asset = detectorAsset(sourceID: "synthetic-high-motion", frameCount: 90)
+    let signals = (0..<90).map { frame -> ShotFrameSignal in
+        if frame == 30 {
+            return detectorSignal(
+                frame: frame,
+                histogram: [0.45, 0.55],
+                luma: 0.5,
+                edgeEnergy: 1
+            )
+        }
+        return detectorSignal(frame: frame)
+    }
+
+    let graph = try AdaptiveShotBoundaryDetector().detect(signals: signals, asset: asset)
+
+    #expect(graph.shots.count == 1)
+    #expect(graph.shots[0].frameRange == FrameRange(startFrame: 0, endFrameExclusive: 90))
+}
+
+@Test func adaptiveDetectorSuppressesBrightFlash() throws {
+    let asset = detectorAsset(sourceID: "synthetic-bright-flash", frameCount: 90)
+    let signals = (0..<90).map { frame -> ShotFrameSignal in
+        if frame == 30 {
+            return detectorSignal(
+                frame: frame,
+                histogram: [0, 1],
+                luma: 1,
+                edgeEnergy: 0.05,
+                blackRatio: 0
+            )
+        }
+        return detectorSignal(frame: frame)
+    }
+
+    let graph = try AdaptiveShotBoundaryDetector().detect(signals: signals, asset: asset)
+
+    #expect(graph.shots.count == 1)
+    #expect(graph.shots[0].transitionOut == .end)
+}
+
+@Test func adaptiveDetectorSuppressesBlackFrameBurst() throws {
+    let asset = detectorAsset(sourceID: "synthetic-black-burst", frameCount: 90)
+    let signals = (0..<90).map { frame -> ShotFrameSignal in
+        if (30...31).contains(frame) {
+            return detectorSignal(
+                frame: frame,
+                histogram: [1, 0],
+                luma: 0,
+                edgeEnergy: 0,
+                blackRatio: 0.99
+            )
+        }
+        return detectorSignal(frame: frame)
+    }
+
+    let graph = try AdaptiveShotBoundaryDetector().detect(signals: signals, asset: asset)
+
+    #expect(graph.shots.count == 1)
+    #expect(graph.coverageRatio == 1)
+}
+
+@Test func adaptiveDetectorPreservesRealCutAfterHighMotionAndFlashNoise() throws {
+    let asset = detectorAsset(sourceID: "synthetic-noisy-real-cut", frameCount: 90)
+    let signals = (0..<90).map { frame -> ShotFrameSignal in
+        if frame == 20 {
+            return detectorSignal(
+                frame: frame,
+                histogram: [0.45, 0.55],
+                luma: 0.5,
+                edgeEnergy: 1
+            )
+        }
+        if frame == 30 {
+            return detectorSignal(
+                frame: frame,
+                histogram: [0, 1],
+                luma: 1,
+                edgeEnergy: 0.05
+            )
+        }
+        if frame >= 45 {
+            return detectorSignal(
+                frame: frame,
+                histogram: [0, 1],
+                luma: 0.8,
+                edgeEnergy: 0.2
+            )
+        }
+        return detectorSignal(frame: frame)
+    }
+
+    let graph = try AdaptiveShotBoundaryDetector().detect(signals: signals, asset: asset)
+
+    #expect(graph.shots.count == 2)
+    #expect(graph.shots[0].frameRange == FrameRange(startFrame: 0, endFrameExclusive: 45))
+    #expect(graph.shots[0].transitionOut == .cut)
+    #expect(graph.shots[1].frameRange == FrameRange(startFrame: 45, endFrameExclusive: 90))
+}
+
+private func detectorAsset(sourceID: String, frameCount: Int) -> VideoAssetDescriptor {
+    VideoAssetDescriptor(
+        sourceID: sourceID,
+        durationSeconds: Double(frameCount) / 30,
+        nominalFrameRate: 30,
+        frameCount: frameCount,
+        width: 320,
+        height: 180,
+        timescale: 600,
+        codec: "synthetic",
+        hasAudio: false,
+        fileSizeBytes: 1,
+        fingerprint: SourceFingerprint(value: sourceID)
+    )
+}
+
+private func detectorSignal(
+    frame: Int,
+    histogram: [Double] = [0.85, 0.15],
+    luma: Double = 0.25,
+    edgeEnergy: Double = 0.2,
+    blackRatio: Double = 0
+) -> ShotFrameSignal {
+    ShotFrameSignal(
+        frame: frame,
+        timestampSeconds: Double(frame) / 30,
+        histogram: histogram,
+        luma: luma,
+        edgeEnergy: edgeEnergy,
+        blackRatio: blackRatio
+    )
+}
