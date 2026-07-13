@@ -3,15 +3,19 @@ import AppGroupSupport
 import ClipCore
 import ClipDigest
 import CloudVision
+import CoreGraphics
 import EngineKit
 import Foundation
+import ImageIO
 import MemoryFeature
 import ModelStore
 import Persistence
 import RAGCore
 import SettingsFeature
 import StoryboardCore
+import StoryboardExport
 import Testing
+import UniformTypeIdentifiers
 import VideoUnderstanding
 
 @Suite(.serialized)
@@ -114,6 +118,11 @@ struct SavedCloudProductionAssemblyTests {
         #expect(storyboard.source.cloudTelemetry?.requestedMode == "lasDeep")
         #expect(storyboard.source.cloudTelemetry?.effectiveMode == "lasDeep")
         #expect(storyboard.source.cloudTelemetry?.cleanupState == "deleted")
+        #expect(item.qualityStatusRaw == "needsReview")
+        #expect(storyboard.shotGraph.shots.map(\.timeRange) == [
+            MediaTimeRange(startSeconds: 0, endSeconds: 1),
+            MediaTimeRange(startSeconds: 1, endSeconds: 2),
+        ])
         #expect(storyboard.contentAnalysis.summary.contains("Grounded generated script"))
         #expect(storyboard.shots.map { $0.productionPlan?.subjectAction } == [
             "LAS cloud action one",
@@ -123,6 +132,7 @@ struct SavedCloudProductionAssemblyTests {
             "LAS cloud dialogue one",
             "LAS cloud dialogue two",
         ])
+        #expect(storyboard.shots[1].productionPlan?.targetDuration == 0.8)
         #expect(storyboard.shots.enumerated().allSatisfy { index, shot in
             shot.productionPlan?.sourceShotRefs == [shot.id]
                 && shot.productionPlan?.isDerivedCreativePlan == true
@@ -131,6 +141,12 @@ struct SavedCloudProductionAssemblyTests {
         #expect(storyboard.shots.flatMap(\.observedFacts.facts).contains(where: {
             $0.source == .cloudModel && $0.value.contains("A verified provider scene")
         }))
+        let cloudFacts = storyboard.shots.flatMap(\.observedFacts.facts).filter { $0.source == .cloudModel }
+        #expect(cloudFacts.contains { $0.field == .action && $0.value.contains("A verified provider scene") })
+        #expect(cloudFacts.contains { $0.field == .audioSummary && $0.value == "A spoken line." })
+        #expect(cloudFacts.allSatisfy { fact in
+            !fact.evidenceIDs.isEmpty && fact.evidenceIDs.allSatisfy { $0.rawValue.hasPrefix("cloud:") }
+        })
         #expect(await stager.newUploadCount == 1)
         #expect(await client.submittedContracts == [
             .videoStoryboard,
@@ -138,6 +154,46 @@ struct SavedCloudProductionAssemblyTests {
             .scriptGeneration,
             .enhancedASR,
         ])
+
+        let edited = try #require(await memory.editStoryboardShot(
+            item,
+            shotIndex: 0,
+            command: .editDialogue("user locked LAS dialogue")
+        ))
+        #expect(edited.document.shots[0].productionPlan?.dialogueOrVO == "user locked LAS dialogue")
+        #expect(edited.document.shots[0].userLockedFields.contains(EditablePlanField.dialogueOrVO.rawValue))
+
+        let editedItem = try #require(memory.items.first)
+        let rerun = try #require(await memory.editStoryboardShot(
+            editedItem,
+            shotIndex: 0,
+            command: .reanalyze
+        ))
+        #expect(rerun.document.shots[0].productionPlan?.dialogueOrVO == "user locked LAS dialogue")
+        #expect(rerun.document.shots[0].productionPlan?.subjectAction == "LAS cloud action one")
+        #expect(rerun.document.shots[0].observedFacts.facts.contains { $0.source == .cloudModel })
+
+        let exportRoot = root.appendingPathComponent("las-cloud-export", isDirectory: true)
+        let bundle = try StoryboardExporter().export(
+            rerun.document,
+            keyframes: try productionAssemblyExportKeyframes(for: rerun.document),
+            to: exportRoot
+        )
+        let validation = StoryboardExportValidator.validate(bundle, document: rerun.document)
+        #expect(validation.isValid)
+        #expect(Set(bundle.artifacts.map(\.format)) == Set(StoryboardExportFormat.allCases))
+        let markdown = try String(contentsOf: productionArtifactURL(.markdown, in: bundle), encoding: .utf8)
+        let CSV = try String(contentsOf: productionArtifactURL(.csv, in: bundle), encoding: .utf8)
+        let JSON = try String(contentsOf: productionArtifactURL(.json, in: bundle), encoding: .utf8)
+        #expect(markdown.contains("LAS cloud action one"))
+        #expect(markdown.contains("user locked LAS dialogue"))
+        #expect(CSV.contains("LAS cloud copy two"))
+        #expect(JSON.contains("LAS cloud note two"))
+        #expect(try Data(contentsOf: productionArtifactURL(.pdf, in: bundle)).count > 1_000)
+        let referencePackage = try productionArtifactURL(.referenceFramePackage, in: bundle)
+        #expect(FileManager.default.fileExists(
+            atPath: referencePackage.appendingPathComponent("manifest.json").path
+        ))
       }
     }
 
@@ -495,10 +551,18 @@ private struct ProductionAssemblyEvidenceOnlyUnderstanding: ShotUnderstandingPro
     let ledger: ProductionAssemblyLedger
     func understand(_ input: ShotUnderstandingInput, displayNumber: Int) async throws -> ShotUnderstandingOutput {
         await ledger.recordUnderstanding(input.shot.id)
+        let evidenceIDs = input.evidence.filter { $0.kind == .transcript }.map(\.id)
+        let fact = GroundedFact(
+            field: .audioSummary,
+            value: input.transcript.map(\.text).joined(separator: " "),
+            evidenceIDs: evidenceIDs,
+            source: .deterministic,
+            confidence: 1
+        )
         return ShotUnderstandingOutput(
             shot: StoryboardShotV2(
                 id: input.shot.id,
-                observedFacts: ObservedShotFacts(facts: [], unknownFields: [.action, .audioSummary])
+                observedFacts: ObservedShotFacts(facts: [fact], unknownFields: [.action])
             )
         )
     }
@@ -556,6 +620,58 @@ private func productionAssemblyLocations(root: URL) throws -> AppGroupLocations 
     return locations
 }
 
+private func productionAssemblyExportKeyframes(
+    for document: StoryboardDocumentV2
+) throws -> [ShotKeyframe] {
+    let JPEG = try productionAssemblyJPEG()
+    return document.shotGraph.shots.flatMap { shot in
+        shot.representativeFrameRefs.enumerated().map { index, reference in
+            let fraction = Double(index + 1) / Double(shot.representativeFrameRefs.count + 1)
+            return ShotKeyframe(
+                shotID: shot.id,
+                frame: SampledFrame(
+                    timestampSeconds: shot.timeRange.startSeconds
+                        + fraction * (shot.timeRange.endSeconds - shot.timeRange.startSeconds),
+                    jpegData: JPEG
+                ),
+                artifactRef: reference
+            )
+        }
+    }
+}
+
+private func productionAssemblyJPEG() throws -> Data {
+    guard let context = CGContext(
+        data: nil,
+        width: 4,
+        height: 4,
+        bitsPerComponent: 8,
+        bytesPerRow: 16,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { throw CocoaError(.fileWriteUnknown) }
+    context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+        data,
+        UTType.jpeg.identifier as CFString,
+        1,
+        nil
+    ) else { throw CocoaError(.fileWriteUnknown) }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+    return data as Data
+}
+
+private func productionArtifactURL(
+    _ format: StoryboardExportFormat,
+    in bundle: StoryboardExportBundle
+) throws -> URL {
+    try #require(bundle.artifacts.first(where: { $0.format == format })?.url)
+}
+
 private func savedAssemblyCapability(
     role: CloudProviderRole,
     fingerprint: String,
@@ -571,7 +687,7 @@ private func savedAssemblyCapability(
         probeLevel: .liveMedia,
         status: .available,
         observedCapabilities: [role.rawValue],
-        acceptedMediaKinds: [.tosObject],
+        acceptedMediaKinds: role == .lasEnhancedASR ? [.tosObject, .video] : [.tosObject],
         limits: CloudObservedLimits(maximumBytes: 10_000_000, maximumDurationSeconds: 3_600),
         supportsAsync: true,
         supportsIdempotency: false,
@@ -579,7 +695,7 @@ private func savedAssemblyCapability(
         reportsUsage: true,
         lastProbedAt: now,
         expiresAt: now.addingTimeInterval(86_400),
-        officialContractRevision: "las-first-2026-07-13-v1",
+        officialContractRevision: "volcengine-las-operator-docs-2026-07-13-v2",
         sanitizedEvidenceCode: "mock-wire-only"
     )
 }

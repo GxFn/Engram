@@ -182,7 +182,7 @@ private func capabilitySnapshot(
         reportsUsage: true,
         lastProbedAt: now,
         expiresAt: now.addingTimeInterval(86_400),
-        officialContractRevision: "las-first-2026-07-13-v1",
+        officialContractRevision: "volcengine-las-operator-docs-2026-07-13-v2",
         sanitizedEvidenceCode: "mock-live-media-contract"
     )
 }

@@ -388,6 +388,22 @@ import Testing
     #expect(!source.contains("if viewModel.visionBackend.requestedMode == .local"))
 }
 
+@Test func settingsPaneCatalogHasStableIndependentDestinations() {
+    #expect(SettingsPane.allCases == [.current, .local, .ark, .las])
+    #expect(SettingsPane.allCases.map(\.routeAccessibilityID) == [
+        "settings.route.current",
+        "settings.route.local",
+        "settings.route.ark",
+        "settings.route.las",
+    ])
+    #expect(SettingsPane.allCases.map(\.screenAccessibilityID) == [
+        "settings.screen.current",
+        "settings.screen.local",
+        "settings.screen.ark",
+        "settings.screen.las",
+    ])
+}
+
 private let fakeEngine = SettingsEngineOption(id: "fake", displayName: "Fake", kind: .mlx)
 
 private let recommendedModel = ModelIdentity(

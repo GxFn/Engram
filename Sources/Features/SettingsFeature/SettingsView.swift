@@ -1,6 +1,60 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
+    case current
+    case local
+    case ark
+    case las
+
+    public var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .current: "当前生效"
+        case .local: "Local"
+        case .ark: "Ark"
+        case .las: "LAS"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .current: "请求模式、实际角色与生成参数"
+        case .local: "设备、本地模型与存储"
+        case .ark: "文本与逐镜画面"
+        case .las: "整视频、增强 ASR 与 TOS 暂存"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .current: "checkmark.circle"
+        case .local: "desktopcomputer"
+        case .ark: "cloud"
+        case .las: "film.stack"
+        }
+    }
+
+    var routeAccessibilityID: String {
+        switch self {
+        case .current: "settings.route.current"
+        case .local: "settings.route.local"
+        case .ark: "settings.route.ark"
+        case .las: "settings.route.las"
+        }
+    }
+
+    var screenAccessibilityID: String {
+        switch self {
+        case .current: "settings.screen.current"
+        case .local: "settings.screen.local"
+        case .ark: "settings.screen.ark"
+        case .las: "settings.screen.las"
+        }
+    }
+}
+
 public struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @State private var importTarget: ManagedModel?
@@ -19,24 +73,29 @@ public struct SettingsView: View {
     }
 
     public var body: some View {
-        Form {
-            modeSection
-            activeRolesSection
-            deviceSection
-            arkSection
-            lasSection
-
-            if viewModel.visionBackend.requestedMode == .local {
-                modelGroup(.language)
-                modelGroup(.vision)
-                modelGroup(.retrieval)
+        List {
+            Section("配置") {
+                ForEach(SettingsPane.allCases) { pane in
+                    NavigationLink {
+                        paneDestination(pane)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(pane.title)
+                                Text(pane.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: pane.systemImage)
+                        }
+                    }
+                    .accessibilityIdentifier(pane.routeAccessibilityID)
+                }
             }
 
-            generationSection
-            storageSection
-
             if let errorMessage = viewModel.errorMessage {
-                Section {
+                Section("最近错误") {
                     Text(errorMessage)
                         .foregroundStyle(.red)
                 }
@@ -82,6 +141,38 @@ public struct SettingsView: View {
             Text("仅选择非私密小视频。文件会流式暂存到你的 TOS，并提交视频分镜、精细理解、剧本生成和增强 ASR；费用未知且可能收费，结束后会立即尝试删除暂存对象。")
         }
         .navigationTitle("设置")
+    }
+
+    @ViewBuilder
+    private func paneDestination(_ pane: SettingsPane) -> some View {
+        Form {
+            switch pane {
+            case .current:
+                modeSection
+                activeRolesSection
+                generationSection
+            case .local:
+                deviceSection
+                modelGroup(.language)
+                modelGroup(.vision)
+                modelGroup(.retrieval)
+                storageSection
+            case .ark:
+                arkSection
+            case .las:
+                lasSection
+            }
+
+            if let errorMessage = viewModel.errorMessage {
+                Section("最近错误") {
+                    Text(errorMessage)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle(pane.title)
+        .accessibilityIdentifier(pane.screenAccessibilityID)
+        .refreshable { await viewModel.refresh() }
     }
 
     private var modeSection: some View {

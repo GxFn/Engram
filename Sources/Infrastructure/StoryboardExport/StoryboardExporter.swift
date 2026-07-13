@@ -400,18 +400,28 @@ public enum StoryboardExportValidator {
         }
         guard rows.count == pdf.pageCount else { return false }
         for (index, row) in rows.enumerated() {
-            guard let text = pdf.page(at: index)?.string,
+            guard let text = pdf.page(at: index)?.string else { return false }
+            let searchableText = normalizedPDFText(text)
+            let structuredLines = row.professionalLines.filter({ !$0.hasPrefix("证据事实：") })
+            guard
                   !ExportSafetyScanner.containsSensitive(text),
-                  text.contains(row.segment.id.rawValue),
-                  text.contains(StoryboardExporter.seconds(row.segment.timeRange.startSeconds)),
-                  text.contains(StoryboardExporter.seconds(row.segment.timeRange.endSeconds)),
-                  row.professionalLines.allSatisfy({ line in
+                  searchableText.contains(row.segment.id.rawValue),
+                  searchableText.contains(StoryboardExporter.seconds(row.segment.timeRange.startSeconds)),
+                  searchableText.contains(StoryboardExporter.seconds(row.segment.timeRange.endSeconds)),
+                  structuredLines.allSatisfy({ line in
                       let value = line.split(separator: "：", maxSplits: 1).last.map(String.init) ?? ""
-                      return value.isEmpty || text.contains(value)
-                  })
+                      return value.isEmpty || searchableText.contains(normalizedPDFText(value))
+                  }),
+                  row.shot?.observedFacts.facts.allSatisfy({
+                      searchableText.contains(normalizedPDFText($0.value))
+                  }) != false
             else { return false }
         }
         return true
+    }
+
+    private static func normalizedPDFText(_ value: String) -> String {
+        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     private static func validateReferences(

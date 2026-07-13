@@ -369,7 +369,7 @@ private func lasAnalysisConfiguration(
             probeLevel: .liveMedia,
             status: .available,
             observedCapabilities: [role.rawValue],
-            acceptedMediaKinds: [.tosObject],
+            acceptedMediaKinds: role == .lasEnhancedASR ? [.tosObject, .video] : [.tosObject],
             limits: CloudObservedLimits(maximumBytes: 100, maximumDurationSeconds: 100),
             supportsAsync: true,
             supportsIdempotency: false,
@@ -377,7 +377,7 @@ private func lasAnalysisConfiguration(
             reportsUsage: true,
             lastProbedAt: now,
             expiresAt: now.addingTimeInterval(86_400),
-            officialContractRevision: "las-first-2026-07-13-v1",
+            officialContractRevision: "volcengine-las-operator-docs-2026-07-13-v2",
             sanitizedEvidenceCode: "mock-wire-only"
         )
     }
@@ -509,7 +509,7 @@ actor RecordingTOSStager: TOSMediaStaging {
             return Data(#"{"segments":[{"start_time":0,"end_time":1,"scene_description":"A verified provider scene."}]}"#.utf8)
         }
         if tosURL.hasSuffix("episode-1.md") {
-            return Data(#"{"shots":[{"start_seconds":0,"end_seconds":1,"purpose":"Grounded generated script one","subject_action":"LAS cloud action one","dialogue_or_vo":"LAS cloud dialogue one","on_screen_copy":"LAS cloud copy one","production_notes":"LAS cloud note one"},{"start_seconds":1,"end_seconds":2,"purpose":"Grounded generated script two","subject_action":"LAS cloud action two","dialogue_or_vo":"LAS cloud dialogue two","on_screen_copy":"LAS cloud copy two","production_notes":"LAS cloud note two"}]}"#.utf8)
+            return Data(#"{"shots":[{"start-seconds":0,"start_seconds":99,"end_seconds":1,"purpose":"Grounded generated script one","subject_action":"LAS cloud action one","dialogue_or_vo":"LAS cloud dialogue one","on_screen_copy":"LAS cloud copy one","production_notes":"LAS cloud note one"},{"start_seconds":1,"end_seconds":2,"target_duration_ms":800,"purpose":"Grounded generated script two","subject_action":"LAS cloud action two","dialogue_or_vo":"LAS cloud dialogue two","on_screen_copy":"LAS cloud copy two","production_notes":"LAS cloud note two"}]}"#.utf8)
         }
         return Data(#"{"character":"A verified character"}"#.utf8)
     }

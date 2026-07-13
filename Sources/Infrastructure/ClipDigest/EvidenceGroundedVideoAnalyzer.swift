@@ -264,17 +264,20 @@ public struct VisionComposerShotUnderstandingProvider: ShotUnderstandingProvidin
 public struct CloudStoryboardEnrichment: Codable, Hashable, Sendable {
     public let context: StoryboardExecutionContext
     public let evidence: [EvidenceRef]
+    public let productionPlans: [ShotProductionPlan]
     public let shotsNeedingReview: [ShotID]
     public let globalSummary: String?
 
     public init(
         context: StoryboardExecutionContext,
         evidence: [EvidenceRef] = [],
+        productionPlans: [ShotProductionPlan] = [],
         shotsNeedingReview: [ShotID] = [],
         globalSummary: String? = nil
     ) {
         self.context = context
         self.evidence = evidence
+        self.productionPlans = productionPlans
         self.shotsNeedingReview = shotsNeedingReview
         self.globalSummary = globalSummary
     }
@@ -626,10 +629,12 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             guard let existingIndex = updated.shots.firstIndex(where: { $0.id == output.shot.id }) else { continue }
             if updated.shots[existingIndex].productionPlan == nil {
                 var shots = updated.shots
-                let userFacts = shots[existingIndex].observedFacts.facts.filter { $0.source == .user }
+                let durableFacts = shots[existingIndex].observedFacts.facts.filter {
+                    $0.source == .user || $0.source == .cloudModel
+                }
                 shots[existingIndex] = StoryboardShotV2(
                     id: output.shot.id,
-                    observedFacts: Self.mergingUserFacts(output.shot.observedFacts, userFacts: userFacts),
+                    observedFacts: Self.mergingDurableFacts(output.shot.observedFacts, durableFacts: durableFacts),
                     productionPlan: output.shot.productionPlan,
                     userLockedFields: updated.shots[existingIndex].userLockedFields
                 )
@@ -643,24 +648,26 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 continue
             }
             let plan = output.shot.productionPlan
+            var refreshedValues: [EditablePlanField: String?] = [:]
+            if let value = plan?.purpose { refreshedValues[.purpose] = value }
+            if let value = plan?.subjectAction { refreshedValues[.subjectAction] = value }
+            if let value = plan?.dialogueOrVO { refreshedValues[.dialogueOrVO] = value }
+            if let value = plan?.onScreenCopy { refreshedValues[.onScreenCopy] = value }
+            if let value = plan?.productionNotes { refreshedValues[.productionNotes] = value }
             let edit = try StoryboardEditor.applyModelRefresh(
                 updated,
                 shotID: output.shot.id,
-                values: [
-                    .purpose: plan?.purpose,
-                    .subjectAction: plan?.subjectAction,
-                    .dialogueOrVO: plan?.dialogueOrVO,
-                    .onScreenCopy: plan?.onScreenCopy,
-                    .productionNotes: plan?.productionNotes,
-                ]
+                values: refreshedValues
             )
             var shots = edit.document.shots
             guard let index = shots.firstIndex(where: { $0.id == output.shot.id }) else { continue }
             let current = shots[index]
-            let userFacts = current.observedFacts.facts.filter { $0.source == .user }
+            let durableFacts = current.observedFacts.facts.filter {
+                $0.source == .user || $0.source == .cloudModel
+            }
             shots[index] = StoryboardShotV2(
                 id: current.id,
-                observedFacts: Self.mergingUserFacts(output.shot.observedFacts, userFacts: userFacts),
+                observedFacts: Self.mergingDurableFacts(output.shot.observedFacts, durableFacts: durableFacts),
                 productionPlan: current.productionPlan,
                 userLockedFields: current.userLockedFields
             )
@@ -991,11 +998,13 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         return try ShotGraph(asset: graph.asset, shots: shots)
     }
 
-    private static func mergingUserFacts(
+    private static func mergingDurableFacts(
         _ modelFacts: ObservedShotFacts,
-        userFacts: [GroundedFact]
+        durableFacts: [GroundedFact]
     ) -> ObservedShotFacts {
-        let merged = modelFacts.facts.filter { $0.source != .user } + userFacts
+        var seen = Set<GroundedFact>()
+        let merged = (modelFacts.facts.filter { $0.source != .user && $0.source != .cloudModel }
+            + durableFacts).filter { seen.insert($0).inserted }
         return ObservedShotFacts(
             facts: merged,
             unknownFields: modelFacts.unknownFields,
@@ -1041,6 +1050,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
     ) -> StoryboardDocumentV2 {
         let review = Set(cloud.shotsNeedingReview)
         let byID = Dictionary(uniqueKeysWithValues: understandings.map { ($0.shot.id, $0) })
+        let cloudPlans = Dictionary(uniqueKeysWithValues: cloud.productionPlans.map { ($0.shotID, $0) })
         let shots = graph.shots.enumerated().map { index, segment -> StoryboardShotV2 in
             guard let output = byID[segment.id] else {
                 return StoryboardShotV2(
@@ -1072,7 +1082,10 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
             return StoryboardShotV2(
                 id: segment.id,
                 observedFacts: observed,
-                productionPlan: output.shot.productionPlan,
+                productionPlan: mergeProductionPlan(
+                    primary: output.shot.productionPlan,
+                    fallback: cloudPlans[segment.id]
+                ),
                 userLockedFields: output.shot.userLockedFields
             )
         }
@@ -1109,6 +1122,43 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 callToAction: understandings.compactMap(\.callToAction).first,
                 referencedShotIDs: graph.shots.map(\.id)
             )
+        )
+    }
+
+    private static func mergeProductionPlan(
+        primary: ShotProductionPlan?,
+        fallback: ShotProductionPlan?
+    ) -> ShotProductionPlan? {
+        guard let fallback else { return primary }
+        guard let primary else { return fallback }
+        return ShotProductionPlan(
+            shotID: primary.shotID,
+            sequenceID: primary.sequenceID ?? fallback.sequenceID,
+            displayNumber: primary.displayNumber,
+            purpose: primary.purpose ?? fallback.purpose,
+            narrativeBeat: primary.narrativeBeat ?? fallback.narrativeBeat,
+            hookRole: primary.hookRole ?? fallback.hookRole,
+            targetDuration: primary.targetDuration ?? fallback.targetDuration,
+            shotSize: primary.shotSize ?? fallback.shotSize,
+            angle: primary.angle ?? fallback.angle,
+            movement: primary.movement ?? fallback.movement,
+            lensIntent: primary.lensIntent ?? fallback.lensIntent,
+            subjectAction: primary.subjectAction ?? fallback.subjectAction,
+            composition: primary.composition ?? fallback.composition,
+            background: primary.background ?? fallback.background,
+            lightingColor: primary.lightingColor ?? fallback.lightingColor,
+            propsWardrobe: primary.propsWardrobe ?? fallback.propsWardrobe,
+            dialogueOrVO: primary.dialogueOrVO ?? fallback.dialogueOrVO,
+            onScreenCopy: primary.onScreenCopy ?? fallback.onScreenCopy,
+            musicSFX: primary.musicSFX ?? fallback.musicSFX,
+            transition: primary.transition ?? fallback.transition,
+            continuity: primary.continuity ?? fallback.continuity,
+            generationPrompt: primary.generationPrompt ?? fallback.generationPrompt,
+            productionNotes: primary.productionNotes ?? fallback.productionNotes,
+            sourceShotRefs: Array(Set(primary.sourceShotRefs + fallback.sourceShotRefs)).sorted(),
+            confidence: primary.confidence ?? fallback.confidence,
+            userLockedFields: primary.userLockedFields.union(fallback.userLockedFields),
+            isDerivedCreativePlan: primary.isDerivedCreativePlan || fallback.isDerivedCreativePlan
         )
     }
 

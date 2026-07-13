@@ -317,6 +317,7 @@ let package = Package(
                 "VideoUnderstanding",
                 "CloudVision",
                 "SettingsFeature",
+                "StoryboardExport",
             ],
             path: "Tests/AppShellTests"
         ),

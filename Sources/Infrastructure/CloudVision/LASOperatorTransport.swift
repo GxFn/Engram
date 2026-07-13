@@ -21,6 +21,22 @@ public enum LASServiceRegion: String, Codable, CaseIterable, Hashable, Sendable 
     }
 }
 
+public struct LASOperatorContractSource: Codable, Hashable, Sendable {
+    public let documentID: String
+    public let officialURL: URL
+    public let submitPath: String
+    public let pollPath: String
+    public let reviewedAt: String
+
+    public init(documentID: String, reviewedAt: String = "2026-07-13") {
+        self.documentID = documentID
+        self.officialURL = URL(string: "https://www.volcengine.com/docs/6492/\(documentID)")!
+        self.submitPath = "/api/v1/submit"
+        self.pollPath = "/api/v1/poll"
+        self.reviewedAt = reviewedAt
+    }
+}
+
 /// Provider IDs and versions copied from the corresponding official operator pages. The ASR
 /// page currently shows `v2` in one parameter table but uses `v1` in both submit and poll curl
 /// examples; this contract follows the executable examples and keeps the revision explicit.
@@ -41,6 +57,17 @@ public enum LASOperatorContract: String, Codable, CaseIterable, Hashable, Sendab
 
     public var operatorVersion: String { "v1" }
 
+    public var source: LASOperatorContractSource {
+        switch self {
+        case .videoStoryboard: LASOperatorContractSource(documentID: "2299022")
+        case .videoFineUnderstanding: LASOperatorContractSource(documentID: "2275546")
+        case .scriptGeneration: LASOperatorContractSource(documentID: "2371959")
+        case .enhancedASR: LASOperatorContractSource(documentID: "2275584")
+        }
+    }
+
+    public static let documentedASRFormats: Set<String> = ["raw", "wav", "mp3", "ogg"]
+
     public var role: CloudProviderRole {
         switch self {
         case .videoStoryboard: .lasVideoStoryboard
@@ -51,11 +78,24 @@ public enum LASOperatorContract: String, Codable, CaseIterable, Hashable, Sendab
     }
 }
 
+/// The enhanced-ASR page advertises video containers as a capability, but its required
+/// `audio.format` table documents only raw/wav/mp3/ogg. A video container is therefore sent only
+/// by the explicit paid diagnostic or after that exact LAS role has live-media evidence.
+public enum LASASRFormatAuthorization: String, Codable, Hashable, Sendable {
+    case officialDocumented
+    case explicitLiveDiagnostic
+    case liveProbeValidated
+}
+
 public enum LASOperatorInvocation: Hashable, Sendable {
     case videoStoryboard(videoTOSURL: String, outputTOSPath: String)
     case fineUnderstanding(videoTOSURL: String, query: String)
     case scriptGeneration(videoTOSURLs: [String], outputTOSPath: String)
-    case enhancedASR(audioTOSURL: String, format: String)
+    case enhancedASR(
+        audioTOSURL: String,
+        format: String,
+        authorization: LASASRFormatAuthorization = .officialDocumented
+    )
 
     public var contract: LASOperatorContract {
         switch self {
@@ -100,14 +140,22 @@ public enum LASOperatorInvocation: Hashable, Sendable {
                 "video_urls": videoTOSURLs,
                 "output_tos_path": outputTOSPath,
             ]
-        case let .enhancedASR(audioTOSURL, format):
+        case let .enhancedASR(audioTOSURL, format, authorization):
             try Self.validateProviderMediaURL(audioTOSURL)
-            guard !format.isEmpty else {
+            let normalizedFormat = format.lowercased()
+            guard !normalizedFormat.isEmpty else {
                 throw LASOperatorTransportError.invalidInvocation("asr-format-missing")
+            }
+            guard LASOperatorContract.documentedASRFormats.contains(normalizedFormat)
+                    || authorization != .officialDocumented
+            else {
+                throw LASOperatorTransportError.invalidInvocation(
+                    "lasEnhancedASR-format-unverified:\(normalizedFormat)"
+                )
             }
             data = [
                 "resource": "bigasr",
-                "audio": ["url": audioTOSURL, "format": format],
+                "audio": ["url": audioTOSURL, "format": normalizedFormat],
                 "request": [
                     "model_name": "bigmodel",
                     "enable_itn": true,
@@ -178,6 +226,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
     public let state: LASTaskState
     public let businessCode: String
     public let requestID: String?
+    public let globalSummary: String?
     public let observations: [CloudTimelineObservation]
     public let artifacts: [LASOperatorArtifact]
     public let usage: CloudProviderUsage
@@ -189,6 +238,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
         state: LASTaskState,
         businessCode: String,
         requestID: String?,
+        globalSummary: String? = nil,
         observations: [CloudTimelineObservation],
         artifacts: [LASOperatorArtifact] = [],
         usage: CloudProviderUsage,
@@ -199,6 +249,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
         self.state = state
         self.businessCode = businessCode
         self.requestID = requestID
+        self.globalSummary = globalSummary
         self.observations = observations
         self.artifacts = artifacts
         self.usage = usage
@@ -206,7 +257,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case operatorID, taskID, state, businessCode, requestID, observations, artifacts, usage, sanitizedError
+        case operatorID, taskID, state, businessCode, requestID, globalSummary, observations, artifacts, usage, sanitizedError
     }
 
     public init(from decoder: Decoder) throws {
@@ -217,6 +268,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
             state: try container.decode(LASTaskState.self, forKey: .state),
             businessCode: try container.decode(String.self, forKey: .businessCode),
             requestID: try container.decodeIfPresent(String.self, forKey: .requestID),
+            globalSummary: try container.decodeIfPresent(String.self, forKey: .globalSummary),
             observations: try container.decode([CloudTimelineObservation].self, forKey: .observations),
             artifacts: try container.decodeIfPresent([LASOperatorArtifact].self, forKey: .artifacts) ?? [],
             usage: try container.decode(CloudProviderUsage.self, forKey: .usage),
@@ -231,6 +283,7 @@ public struct LASOperatorTaskReceipt: Codable, Hashable, Sendable {
         try container.encode(state, forKey: .state)
         try container.encode(businessCode, forKey: .businessCode)
         try container.encodeIfPresent(requestID, forKey: .requestID)
+        try container.encodeIfPresent(globalSummary, forKey: .globalSummary)
         try container.encode(observations, forKey: .observations)
         if !artifacts.isEmpty { try container.encode(artifacts, forKey: .artifacts) }
         try container.encode(usage, forKey: .usage)
@@ -408,6 +461,8 @@ private struct LASEnvelope: Decodable {
         let charactersRegistryURL: String?
         let finalTablePath: String?
         let scriptsPath: String?
+        let status: String?
+        let failedVideoURLs: [String]?
 
         enum CodingKeys: String, CodingKey {
             case videoDuration = "video_duration"
@@ -419,6 +474,8 @@ private struct LASEnvelope: Decodable {
             case charactersRegistryURL = "characters_registry_url"
             case finalTablePath = "final_table_path"
             case scriptsPath = "scripts_path"
+            case status
+            case failedVideoURLs = "failed_video_urls"
         }
     }
 
@@ -427,12 +484,20 @@ private struct LASEnvelope: Decodable {
 
     func receipt(contract: LASOperatorContract) throws -> LASOperatorTaskReceipt {
         let state: LASTaskState = switch metadata.taskStatus.uppercased() {
-        case "PENDING": .pending
+        case "PENDING", "ACCEPTED": .pending
         case "RUNNING": .running
         case "COMPLETED": .completed
         case "FAILED": .failed
         case "TIMEOUT": .timeout
         default: throw LASOperatorTransportError.invalidResponse("unknown-task-status")
+        }
+        if state == .completed, metadata.businessCode != "0" {
+            throw LASOperatorTransportError.invalidResponse("provider-business-code-nonzero")
+        }
+        if contract == .scriptGeneration,
+           state == .completed,
+           data?.status?.lowercased() == "failed" {
+            throw LASOperatorTransportError.invalidResponse("script-result-failed")
         }
         let tokens = data?.tokenUsages ?? []
         let inputTokens = tokens.reduce(0) { $0 + ($1.tokenUsage?.promptTokens ?? 0) }
@@ -444,7 +509,7 @@ private struct LASEnvelope: Decodable {
         } else {
             0
         }
-        var observations = (data?.result?.utterances ?? []).enumerated().map { index, item in
+        let observations = (data?.result?.utterances ?? []).enumerated().map { index, item in
             CloudTimelineObservation(
                 id: "las-asr-\(index)",
                 startSeconds: Double(item.startTime) / 1_000,
@@ -453,16 +518,6 @@ private struct LASEnvelope: Decodable {
                 confidence: 1,
                 kind: .transcript
             )
-        }
-        if observations.isEmpty, let summary = data?.finalSummary, !summary.isEmpty {
-            observations = [CloudTimelineObservation(
-                id: "las-fine-summary",
-                startSeconds: 0,
-                endSeconds: data?.videoDuration ?? 0,
-                text: summary,
-                confidence: 1,
-                kind: .visual
-            )]
         }
         var artifacts: [LASOperatorArtifact] = []
         if let value = data?.segmentsURL,
@@ -481,12 +536,18 @@ private struct LASEnvelope: Decodable {
            let artifact = LASOperatorArtifact(kind: .generatedScripts, tosURL: value, isPrefix: true) {
             artifacts.append(artifact)
         }
+        let sanitizedError: String? = if data?.status?.lowercased() == "partial_success" {
+            "script-partial-success:\(data?.failedVideoURLs?.count ?? 0)"
+        } else {
+            metadata.errorMessage?.isEmpty == false ? metadata.errorMessage : nil
+        }
         return LASOperatorTaskReceipt(
             operatorID: contract.operatorID,
             taskID: metadata.taskID,
             state: state,
             businessCode: metadata.businessCode,
             requestID: metadata.requestID,
+            globalSummary: data?.finalSummary,
             observations: observations,
             artifacts: artifacts,
             usage: CloudProviderUsage(
@@ -496,7 +557,7 @@ private struct LASEnvelope: Decodable {
                 mediaMilliseconds: durationMilliseconds,
                 estimatedUSD: nil
             ),
-            sanitizedError: metadata.errorMessage?.isEmpty == false ? metadata.errorMessage : nil
+            sanitizedError: sanitizedError
         )
     }
 }

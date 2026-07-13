@@ -29,7 +29,7 @@ enum CloudSettingsDefaultsKey {
 /// A credential replacement increments a non-secret revision so only owning role snapshots and
 /// dependency fingerprints become stale; no secret value participates in a persisted hash.
 struct CloudSettingsStore: @unchecked Sendable {
-    private static let contractRevision = "las-first-2026-07-13-v1"
+    private static let contractRevision = "volcengine-las-operator-docs-2026-07-13-v2"
     private let defaults: UserDefaults?
 
     init(defaults: UserDefaults?) {

@@ -91,7 +91,8 @@ struct LASOperatorTransportTests {
         #expect(receipt.usage.inputTokens == 100)
         #expect(receipt.usage.outputTokens == 20)
         #expect(receipt.usage.mediaMilliseconds == 12_500)
-        #expect(receipt.observations.map(\.text) == ["A person enters."])
+        #expect(receipt.globalSummary == "A person enters.")
+        #expect(receipt.observations.isEmpty)
         let encoded = String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self)
         #expect(!encoded.contains("token_usages"))
         #expect(!encoded.contains("tos://"))
@@ -105,6 +106,28 @@ struct LASOperatorTransportTests {
         #expect(LASOperatorContract.enhancedASR.operatorID == "las_asr_pro")
         #expect(LASServiceRegion.cnBeijing.submitURL.path == "/api/v1/submit")
         #expect(LASServiceRegion.cnBeijing.pollURL.path == "/api/v1/poll")
+    }
+
+    @Test func enhancedASRVideoFormatRequiresExplicitLiveProbeEvidence() async throws {
+        let client = URLSessionLASOperatorClient(
+            region: .cnBeijing,
+            session: makeLASSession { _ in
+                Issue.record("Unverified ASR media must fail before HTTP")
+                throw URLError(.badURL)
+            }
+        )
+
+        await #expect(throws: LASOperatorTransportError.invalidInvocation(
+            "lasEnhancedASR-format-unverified:mp4"
+        )) {
+            try await client.submit(
+                .enhancedASR(
+                    audioTOSURL: "tos://engram-stage/source.mp4",
+                    format: "mp4"
+                ),
+                apiKey: "las-secret"
+            )
+        }
     }
 
     @Test func productionContractsCarryTraceableOfficialOperatorSources() throws {
