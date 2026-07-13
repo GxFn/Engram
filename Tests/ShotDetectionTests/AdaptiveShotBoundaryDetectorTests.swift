@@ -1,4 +1,5 @@
 import ShotDetection
+import Foundation
 import Testing
 import VideoUnderstanding
 
@@ -26,4 +27,29 @@ import VideoUnderstanding
     #expect(graph.shots[0].frameRange == FrameRange(startFrame: 0, endFrameExclusive: 30))
     #expect(graph.shots[1].frameRange == FrameRange(startFrame: 30, endFrameExclusive: 60))
     #expect(graph.shots[0].transitionOut == .cut)
+}
+
+@Test func realVideoProbeDetectorAndKeyframeSmoke() async throws {
+    guard let path = ProcessInfo.processInfo.environment["ENGRAM_REAL_VIDEO"] else { return }
+    let url = URL(fileURLWithPath: path)
+    let source = VideoSource(
+        id: "real-video-smoke",
+        localFileURL: url,
+        importedAt: Date(timeIntervalSince1970: 0)
+    )
+
+    let asset = try await AVFoundationVideoAssetProbe().probe(source)
+    let graph = try await AVFoundationShotBoundaryDetector().detect(
+        in: asset,
+        sourceURL: url,
+        quality: .fast
+    )
+    let keyframes = try await AVFoundationShotKeyframeSelector().select(in: graph, sourceURL: url)
+
+    #expect(asset.durationSeconds > 12)
+    #expect(asset.frameCount == 385)
+    #expect(graph.coverageRatio == 1)
+    #expect(!graph.shots.isEmpty)
+    #expect(keyframes.count == graph.shots.count)
+    #expect(keyframes.allSatisfy { $0.frame.jpegData.starts(with: [0xff, 0xd8]) })
 }
