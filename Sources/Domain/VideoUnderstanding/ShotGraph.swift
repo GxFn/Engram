@@ -245,6 +245,52 @@ public struct ShotGraph: Hashable, Sendable {
     }
 }
 
+public enum AnalysisQuality: String, Codable, Hashable, Sendable {
+    case fast
+    case balanced
+    case accurate
+}
+
+public struct ShotKeyframe: Codable, Hashable, Sendable {
+    public let shotID: ShotID
+    public let frame: SampledFrame
+    public let artifactRef: String
+
+    public init(shotID: ShotID, frame: SampledFrame, artifactRef: String) {
+        self.shotID = shotID
+        self.frame = frame
+        self.artifactRef = artifactRef
+    }
+}
+
+public struct ShotPlaybackDescriptor: Codable, Hashable, Sendable, Identifiable {
+    public let id: ShotID
+    public let sourceURL: URL
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let loops: Bool
+
+    public init(id: ShotID, sourceURL: URL, startSeconds: Double, endSeconds: Double, loops: Bool = true) {
+        self.id = id
+        self.sourceURL = sourceURL
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.loops = loops
+    }
+}
+
+public protocol VideoAssetProbing: Sendable {
+    func probe(_ source: VideoSource) async throws -> VideoAssetDescriptor
+}
+
+public protocol ShotBoundaryDetecting: Sendable {
+    func detect(in asset: VideoAssetDescriptor, sourceURL: URL, quality: AnalysisQuality) async throws -> ShotGraph
+}
+
+public protocol ShotKeyframeSelecting: Sendable {
+    func select(in graph: ShotGraph, sourceURL: URL) async throws -> [ShotKeyframe]
+}
+
 extension ShotGraph: Codable {
     private enum CodingKeys: String, CodingKey {
         case asset
