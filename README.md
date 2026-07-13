@@ -1,10 +1,12 @@
 # Engram
 
-> Clip it anywhere. Ask it anytime. Fully on-device.
+> Clip it anywhere. Ask it anytime. Local-first, with explicit cloud controls.
 
 **Engram** 是一个「剪藏记忆库」:在任意 app 里通过 share sheet 一键剪藏有价值的内容,之后随时用自然语言问出来——端侧 LLM + 本地 RAG,回答附剪藏原文引用,问答全程离线。
 
-名字来自神经科学术语 *engram*(记忆痕迹):记忆在大脑中留下的物理印记。在这里,你的记忆痕迹物理地存在你自己的设备上——不在任何人的云里。
+名字来自神经科学术语 *engram*(记忆痕迹):记忆在大脑中留下的物理印记。内容、索引、证据分镜和导出默认保存在设备上;可选云模式只调用用户自行配置的服务。
+
+视频拆解以 AVFoundation 生成的连续 `ShotGraph` 为时间轴真相,保存证据引用、V2 分镜文档、质量状态和确定性旧版投影。Memory、Ask、Insight 与分享继续消费兼容投影;用户还可导出 Markdown、JSON、CSV、PDF 和参考帧包。`cloudStandard` 只传抽样帧/文本;完整视频与云端 ASR 需要 capability probe、明确上传同意和费用上限,否则会诚实降级。
 
 ## 产品哲学:小而美、接缝级
 

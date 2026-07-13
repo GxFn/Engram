@@ -27,6 +27,20 @@ public struct EvidenceGroundedAnalysis: Sendable {
     }
 }
 
+public struct StoryboardExecutionContext: Codable, Hashable, Sendable {
+    public let cloudMode: EffectiveCloudMode
+    public let mediaUploaded: Bool
+    public let degradationNote: String?
+
+    public init(cloudMode: EffectiveCloudMode, mediaUploaded: Bool, degradationNote: String? = nil) {
+        self.cloudMode = cloudMode
+        self.mediaUploaded = mediaUploaded
+        self.degradationNote = degradationNote
+    }
+
+    public static let local = StoryboardExecutionContext(cloudMode: .local, mediaUploaded: false)
+}
+
 public protocol EvidenceGroundedVideoAnalyzing: VideoAnalyzing {
     func analyzeGrounded(
         _ source: VideoSource,
@@ -55,6 +69,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
     private let pipelineVersion: String
     private let quality: AnalysisQuality
     private let makeRunID: @Sendable () -> String
+    private let executionContext: @Sendable (VideoAssetDescriptor) async -> StoryboardExecutionContext
 
     public init(
         base: any VideoAnalyzing,
@@ -64,7 +79,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         artifactStore: AnalysisArtifactStore,
         pipelineVersion: String = "storyboard-v2.0",
         quality: AnalysisQuality = .balanced,
-        runID: @escaping @Sendable () -> String = { UUID().uuidString }
+        runID: @escaping @Sendable () -> String = { UUID().uuidString },
+        executionContext: @escaping @Sendable (VideoAssetDescriptor) async -> StoryboardExecutionContext = { _ in .local }
     ) {
         self.base = base
         self.probe = probe
@@ -74,6 +90,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         self.pipelineVersion = pipelineVersion
         self.quality = quality
         self.makeRunID = runID
+        self.executionContext = executionContext
     }
 
     public func analyzeGrounded(
@@ -82,6 +99,7 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
     ) async throws -> EvidenceGroundedAnalysis {
         let encoder = Self.encoder()
         let asset = try await probe.probe(source)
+        let context = await executionContext(asset)
         var run = try await artifactStore.createRun(
             clipID: source.id,
             fingerprint: asset.fingerprint,
@@ -105,9 +123,10 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
                 schemaVersion: 2,
                 pipelineVersion: pipelineVersion,
                 mode: .faithful,
-                actualCloudMode: .local,
-                mediaUploaded: false,
-                degradationNote: baseScript.degradationNote
+                actualCloudMode: context.cloudMode,
+                mediaUploaded: context.mediaUploaded,
+                degradationNote: [baseScript.degradationNote, context.degradationNote]
+                    .compactMap { $0 }.joined(separator: "; ").nilIfEmpty
             ),
             shotGraph: graph,
             shots: assembly.shots,
@@ -223,4 +242,8 @@ public struct EvidenceGroundedVideoAnalyzer: EvidenceGroundedVideoAnalyzing {
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

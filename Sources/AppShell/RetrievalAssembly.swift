@@ -143,7 +143,16 @@ enum RetrievalAssembly {
             probe: AVFoundationVideoAssetProbe(),
             detector: AVFoundationShotBoundaryDetector(),
             keyframeSelector: AVFoundationShotKeyframeSelector(),
-            artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot)
+            artifactStore: try AnalysisArtifactStore(rootURL: artifactRoot),
+            executionContext: { _ in
+                visionGenerator == nil
+                    ? .local
+                    : StoryboardExecutionContext(
+                        cloudMode: .cloudStandard,
+                        mediaUploaded: false,
+                        degradationNote: "cloudStandard sends sampled frames/text only; full-video upload was not requested"
+                    )
+            }
         )
     }
 }
