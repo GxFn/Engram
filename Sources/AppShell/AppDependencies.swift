@@ -13,6 +13,9 @@ import Persistence
 import RAGCore
 import ScriptComposer
 import ScriptCore
+import ShotDetection
+import StoryboardCore
+import StoryboardExport
 import SettingsFeature
 import SwiftData
 import SwiftUI
@@ -440,6 +443,28 @@ public final class AppDependencies {
                     let refiner = ScriptAnalysisRefiner(engine: refinerEngine, model: refinerModel)
                     let refined = try await refiner.refine(script)
                     return try await clipDigestService.updateScript(id: id) { _ in refined }
+                },
+                exportStoryboard: { id in
+                    let snapshots = try await clipDigestService.memorySnapshots()
+                    guard let snapshot = snapshots.first(where: { $0.id == id }),
+                          let json = snapshot.storyboardJSON,
+                          let data = json.data(using: .utf8),
+                          let document = try? JSONDecoder().decode(StoryboardDocumentV2.self, from: data),
+                          let sourceURL = snapshot.url
+                    else { throw MemoryClientError.exportUnavailable }
+                    let keyframes = try await AVFoundationShotKeyframeSelector().select(
+                        in: document.shotGraph,
+                        sourceURL: sourceURL
+                    )
+                    let root = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Engram-\(id)-storyboard-export", isDirectory: true)
+                    if FileManager.default.fileExists(atPath: root.path) {
+                        try FileManager.default.removeItem(at: root)
+                    }
+                    let bundle = try StoryboardExporter().export(document, keyframes: keyframes, to: root)
+                    let validation = StoryboardExportValidator.validate(bundle, document: document)
+                    guard validation.isValid else { throw MemoryClientError.exportUnavailable }
+                    return bundle.artifacts.map(\.url)
                 }
             ))
         } else {
@@ -721,6 +746,7 @@ public final class AppDependencies {
             failureRetryable: snapshot.failureRetryable,
             indexPreview: snapshot.indexPreview,
             scriptJSON: snapshot.scriptJSON,
+            storyboardJSON: snapshot.storyboardJSON,
             sourceKind: snapshot.sourceKind
         )
     }

@@ -25,6 +25,8 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
     public let indexPreview: String?
     /// Persisted ContentBreakdown (Script) JSON; nil for text/url clips or when not yet indexed.
     public let scriptJSON: String?
+    /// Authoritative evidence-grounded storyboard JSON. Legacy Script remains a projection.
+    public let storyboardJSON: String?
     /// Coarse content type, used to route the clip into the 剪藏 vs 拆解 library.
     public let sourceKind: ClipSourceKind
 
@@ -41,6 +43,7 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         failureRetryable: Bool,
         indexPreview: String?,
         scriptJSON: String? = nil,
+        storyboardJSON: String? = nil,
         sourceKind: ClipSourceKind = .text
     ) {
         self.id = id
@@ -55,6 +58,7 @@ public struct MemoryClip: Identifiable, Equatable, Sendable {
         self.failureRetryable = failureRetryable
         self.indexPreview = indexPreview
         self.scriptJSON = scriptJSON
+        self.storyboardJSON = storyboardJSON
         self.sourceKind = sourceKind
     }
 
@@ -119,6 +123,8 @@ public struct MemoryClient: Sendable {
     /// AI re-analysis: re-derives title/summary/爆点结构 from corrected 台词+字幕+背景; returns the
     /// updated script.
     public let reanalyzeScript: @Sendable (String) async throws -> Script
+    /// Exports Markdown/JSON/CSV/PDF/reference frames from the authoritative V2 document.
+    public let exportStoryboard: @Sendable (String) async throws -> [URL]
 
     public init(
         loadItems: @escaping @Sendable () async throws -> [MemoryClip],
@@ -133,6 +139,9 @@ public struct MemoryClient: Sendable {
         },
         reanalyzeScript: @escaping @Sendable (String) async throws -> Script = { _ in
             throw MemoryClientError.editingUnavailable
+        },
+        exportStoryboard: @escaping @Sendable (String) async throws -> [URL] = { _ in
+            throw MemoryClientError.exportUnavailable
         }
     ) {
         self.loadItems = loadItems
@@ -144,6 +153,7 @@ public struct MemoryClient: Sendable {
         self.editClip = editClip
         self.updateScript = updateScript
         self.reanalyzeScript = reanalyzeScript
+        self.exportStoryboard = exportStoryboard
     }
 
     public static let empty = MemoryClient(
@@ -159,8 +169,14 @@ public struct MemoryClient: Sendable {
 
 public enum MemoryClientError: Error, LocalizedError {
     case editingUnavailable
+    case exportUnavailable
 
-    public var errorDescription: String? { "剧本编辑暂不可用。" }
+    public var errorDescription: String? {
+        switch self {
+        case .editingUnavailable: "剧本编辑暂不可用。"
+        case .exportUnavailable: "证据分镜尚未生成，无法导出。"
+        }
+    }
 }
 
 /// In-app 剪藏 capture input (text snippet or a URL to fetch).
@@ -340,6 +356,17 @@ public final class MemoryViewModel {
         }
     }
 
+    public func exportStoryboard(_ item: MemoryClip) async -> [URL]? {
+        do {
+            let urls = try await client.exportStoryboard(item.id)
+            errorMessage = nil
+            return urls
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
     public func reportImportFailure(_ error: Error) {
         errorMessage = String(describing: error)
     }
@@ -388,7 +415,8 @@ public struct MemoryView: View {
                             onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
                             onAskAboutClip: onAskAboutClip,
                             onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
-                            onReanalyze: { await viewModel.reanalyzeScript(item) }
+                            onReanalyze: { await viewModel.reanalyzeScript(item) },
+                            onExportStoryboard: { await viewModel.exportStoryboard(item) }
                         )
                     } label: {
                         MemoryRow(item: item)
@@ -481,7 +509,8 @@ public struct MemoryView: View {
                     onSaveEdit: { newText in Task { await viewModel.editContent(item, newText: newText) } },
                     onAskAboutClip: onAskAboutClip,
                     onUpdateScript: { transform in await viewModel.updateScript(item, transform: transform) },
-                    onReanalyze: { await viewModel.reanalyzeScript(item) }
+                    onReanalyze: { await viewModel.reanalyzeScript(item) },
+                    onExportStoryboard: { await viewModel.exportStoryboard(item) }
                 )
             } else {
                 ContentUnavailableView("未找到内容", systemImage: "doc.text.magnifyingglass")
@@ -753,6 +782,7 @@ private struct MemoryDetailView: View {
     var onUpdateScript: (@escaping @Sendable (Script) -> Script) async -> Script? = { _ in nil }
     /// AI re-analysis from corrected facts + 背景; returns the updated script.
     var onReanalyze: () async -> Script? = { nil }
+    var onExportStoryboard: () async -> [URL]? = { nil }
 
     @State private var isEditing = false
     @State private var editDraft = ""
@@ -962,6 +992,15 @@ private struct MemoryDetailView: View {
                             } label: {
                                 Label("分享（附分镜截图）", systemImage: "photo.on.rectangle.angled")
                             }
+                        }
+                        Button {
+                            Task {
+                                if let urls = await onExportStoryboard(), !urls.isEmpty {
+                                    shareParcel = ShareParcel(items: urls)
+                                }
+                            }
+                        } label: {
+                            Label("导出五类分镜文件", systemImage: "archivebox")
                         }
                         Button {
                             UIPasteboard.general.string = item.handoffText

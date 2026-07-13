@@ -262,6 +262,7 @@ let package = Package(
                 "ClipDigest",
                 "AnalysisStore",
                 "ShotDetection",
+                "StoryboardExport",
                 "EmbeddingMLX",
                 "SpeechTranscription",
                 "FrameVision",
