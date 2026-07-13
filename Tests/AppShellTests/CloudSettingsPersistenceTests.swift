@@ -105,6 +105,80 @@ struct CloudSettingsPersistenceTests {
             #expect(VisionBackendKeychainAccount.tosSecretAccessKey != VisionBackendKeychainAccount.tosSecurityToken)
         }
     }
+
+    @Test
+    func capabilitySnapshotsPersistSanitizedEvidenceAndInvalidateOnlyOwningRoles() throws {
+        try withIsolatedCloudSettings { store, defaults in
+            store.save(VisionBackendSettings(
+                requestedMode: .lasDeep,
+                las: LASBackendSettings(
+                    isEnabled: true,
+                    videoStoryboardOperatorID: LASOperatorContract.videoStoryboard.operatorID,
+                    videoFineUnderstandingOperatorID: LASOperatorContract.videoFineUnderstanding.operatorID,
+                    scriptGenerationOperatorID: LASOperatorContract.scriptGeneration.operatorID,
+                    enhancedASROperatorID: LASOperatorContract.enhancedASR.operatorID
+                ),
+                staging: TOSStagingSettings(
+                    bucket: "fixture-bucket",
+                    objectPrefix: "engram/private/",
+                    credentialReferenceID: "sts-ref",
+                    temporaryCredentialExpiresAt: Date(timeIntervalSince1970: 100_000)
+                )
+            ))
+            try #require(store.setCredential(.lasAPIKey, value: "las-secret"))
+            try #require(store.setCredential(.tosAccessKeyID, value: "sts-access"))
+            try #require(store.setCredential(.tosSecretAccessKey, value: "sts-secret"))
+            try #require(store.setCredential(.tosSecurityToken, value: "sts-token"))
+            let fingerprints = store.configurationFingerprints()
+            let now = Date(timeIntervalSince1970: 10_000)
+            for role in CloudProviderRole.lasDeepRoles {
+                store.saveCapabilitySnapshot(capabilitySnapshot(
+                    role: role,
+                    fingerprint: try #require(fingerprints[role]),
+                    now: now
+                ))
+            }
+
+            #expect(store.loadCapabilitySnapshots().count == CloudProviderRole.lasDeepRoles.count)
+            let persisted = defaults.data(forKey: CloudSettingsDefaultsKey.capabilitySnapshots)
+            let encoded = String(decoding: try #require(persisted), as: UTF8.self)
+            #expect(!encoded.contains("las-secret"))
+            #expect(!encoded.contains("sts-token"))
+
+            try #require(store.setCredential(.lasAPIKey, value: "las-secret-rotated"))
+
+            let remaining = store.loadCapabilitySnapshots()
+            #expect(remaining.map(\.role) == [.mediaStaging])
+        }
+    }
+}
+
+private func capabilitySnapshot(
+    role: CloudProviderRole,
+    fingerprint: String,
+    now: Date
+) -> CloudRoleCapabilitySnapshot {
+    CloudRoleCapabilitySnapshot(
+        role: role,
+        providerKind: role.providerKind,
+        profileID: "production-\(role.rawValue)",
+        configurationFingerprint: fingerprint,
+        credentialScheme: role == .mediaStaging ? .temporarySTS : .apiKey,
+        credentialReferenceID: "credential-\(role.rawValue)",
+        probeLevel: .liveMedia,
+        status: .available,
+        observedCapabilities: [role.rawValue],
+        acceptedMediaKinds: [.tosObject],
+        limits: CloudObservedLimits(maximumBytes: 1_000_000, maximumDurationSeconds: 3_600),
+        supportsAsync: true,
+        supportsIdempotency: false,
+        supportsCancellation: false,
+        reportsUsage: true,
+        lastProbedAt: now,
+        expiresAt: now.addingTimeInterval(86_400),
+        officialContractRevision: "las-first-2026-07-13-v1",
+        sanitizedEvidenceCode: "mock-live-media-contract"
+    )
 }
 
 private func withIsolatedCloudSettings(
