@@ -217,7 +217,10 @@ struct SavedCloudProductionAssemblyTests {
         #expect(item.failureReason?.contains("generated-script-result-schema-unverified") == true)
         #expect(await stager.newUploadCount == 0)
         #expect(await client.submittedContracts.isEmpty)
-        #expect(await ledger.understandingShotIDs.isEmpty)
+        #expect(await ledger.understandingShotIDs == [
+            ShotID(rawValue: "S001"),
+            ShotID(rawValue: "S002"),
+        ])
         #expect(await ledger.refinementShotIDs.isEmpty)
       }
     }
